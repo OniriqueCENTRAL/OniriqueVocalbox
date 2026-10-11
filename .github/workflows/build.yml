@@ -71,7 +71,8 @@ jobs:
           MESSAGE: ${{ github.event.head_commit.message }}
         run: |
           if [ -z "$CLE" ]; then echo "Secret ONIRIQUE_PUBLISH_KEY absent : rien n'est publié."; exit 0; fi
-          printf '%s\n' "$MESSAGE" | head -c 4000 > version/notes.txt
+          # notes de version = message du commit, sans les lignes de signature ni [skip ci]
+          printf '%s\n' "$MESSAGE" | grep -viE '^(co-authored-by|signed-off-by):' | sed -e 's/ *\[skip ci\]//' -e ':a' -e '/^[[:space:]]*$/{$d;N;ba' -e '}' | head -c 4000 > version/notes.txt
           mkdir -p ~/.ssh
           printf '%s\n' "$CLE" > ~/.ssh/publish && chmod 600 ~/.ssh/publish
           # clé du serveur épinglée (SHA256:s17azxD9lgapSvGarqB34msuvdMJLWvFV7ptd79FZsc)
