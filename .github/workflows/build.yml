@@ -1,0 +1,43 @@
+name: Build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  mac:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compiler (universel arm64 + x86_64)
+        run: |
+          cmake -B build -G Xcode
+          cmake --build build --config Release -- -quiet
+
+      - name: Signer (ad hoc) et empaqueter
+        run: |
+          OUT="build/OniriqueVocalBox_artefacts/Release"
+          mkdir -p dist
+          cp -R "$OUT/VST3/ONIRIQUE VOCALBOX.vst3" "$OUT/AU/ONIRIQUE VOCALBOX.component" "$OUT/Standalone/ONIRIQUE VOCALBOX.app" dist/
+          for p in dist/*; do codesign --force --deep --sign - "$p"; done
+          lipo -info "dist/ONIRIQUE VOCALBOX.vst3/Contents/MacOS/ONIRIQUE VOCALBOX"
+          cd dist && ditto -c -k --keepParent . ../OniriqueVocalBox-mac.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OniriqueVocalBox-mac
+          path: OniriqueVocalBox-mac.zip
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compiler
+        run: |
+          cmake -B build
+          cmake --build build --config Release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OniriqueVocalBox-windows
+          path: build/OniriqueVocalBox_artefacts/Release/VST3
