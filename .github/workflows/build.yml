@@ -22,12 +22,19 @@ jobs:
           cp -R "$OUT/VST3/ONIRIQUE VOCALBOX.vst3" "$OUT/AU/ONIRIQUE VOCALBOX.component" "$OUT/Standalone/ONIRIQUE VOCALBOX.app" dist/
           for p in dist/*; do codesign --force --deep --sign - "$p"; done
           lipo -info "dist/ONIRIQUE VOCALBOX.vst3/Contents/MacOS/ONIRIQUE VOCALBOX"
-          cd dist && ditto -c -k --keepParent . ../OniriqueVocalBox-mac.zip
+          # Format ONIRIQUE CENTRAL : « NOM.vst3.zip » avec NOM.vst3 et NOM.component à la racine
+          # (l'application range le .component dans ~/Library/Audio/Plug-Ins/Components).
+          mkdir central
+          cp -R "dist/ONIRIQUE VOCALBOX.vst3" "dist/ONIRIQUE VOCALBOX.component" central/
+          (cd central && ditto -c -k . "../ONIRIQUE VOCALBOX.vst3.zip")
+          (cd dist && ditto -c -k --keepParent "ONIRIQUE VOCALBOX.app" "../ONIRIQUE VOCALBOX Standalone.zip")
 
       - uses: actions/upload-artifact@v4
         with:
           name: OniriqueVocalBox-mac
-          path: OniriqueVocalBox-mac.zip
+          path: |
+            ONIRIQUE VOCALBOX.vst3.zip
+            ONIRIQUE VOCALBOX Standalone.zip
 
   windows:
     runs-on: windows-latest
