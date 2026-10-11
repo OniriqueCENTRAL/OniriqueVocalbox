@@ -1,40 +1,44 @@
 name: Build
 
+# À chaque envoi sur main : compile Mac (universel, VST3 + AU) et Windows (VST3), puis, si les deux
+# réussissent, publie la version dans ONIRIQUE CENTRAL (numéro attribué par le serveur, patch + 1).
 on:
   push:
+    branches: [main]
   workflow_dispatch:
+
+env:
+  TARGET: OniriqueVocalBox            # cible CMake
+  PRODUCT: ONIRIQUE VOCALBOX          # PRODUCT_NAME du plugin
+  SLUG: vocalbox                      # identifiant du plugin dans ONIRIQUE CENTRAL
 
 jobs:
   mac:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-
       - name: Compiler (universel arm64 + x86_64)
         run: |
           cmake -B build -G Xcode
           cmake --build build --config Release -- -quiet
-
       - name: Signer (ad hoc) et empaqueter
         run: |
-          OUT="build/OniriqueVocalBox_artefacts/Release"
-          mkdir -p dist
-          cp -R "$OUT/VST3/ONIRIQUE VOCALBOX.vst3" "$OUT/AU/ONIRIQUE VOCALBOX.component" "$OUT/Standalone/ONIRIQUE VOCALBOX.app" dist/
-          for p in dist/*; do codesign --force --deep --sign - "$p"; done
-          lipo -info "dist/ONIRIQUE VOCALBOX.vst3/Contents/MacOS/ONIRIQUE VOCALBOX"
-          # Format ONIRIQUE CENTRAL : « NOM.vst3.zip » avec NOM.vst3 et NOM.component à la racine
-          # (l'application range le .component dans ~/Library/Audio/Plug-Ins/Components).
+          OUT="build/${TARGET}_artefacts/Release"
           mkdir central
-          cp -R "dist/ONIRIQUE VOCALBOX.vst3" "dist/ONIRIQUE VOCALBOX.component" central/
-          (cd central && ditto -c -k . "../ONIRIQUE VOCALBOX.vst3.zip")
-          (cd dist && ditto -c -k --keepParent "ONIRIQUE VOCALBOX.app" "../ONIRIQUE VOCALBOX Standalone.zip")
-
+          cp -R "$OUT/VST3/$PRODUCT.vst3" "$OUT/AU/$PRODUCT.component" central/
+          for p in central/*; do codesign --force --deep --sign - "$p"; done
+          lipo -info "central/$PRODUCT.vst3/Contents/MacOS/$PRODUCT"
+          # Format ONIRIQUE CENTRAL : « NOM.vst3.zip » avec NOM.vst3 et NOM.component à la racine.
+          mkdir -p dist/mac
+          (cd central && ditto -c -k . "../dist/mac/$PRODUCT.vst3.zip")
+          if [ -d "$OUT/Standalone/$PRODUCT.app" ]; then
+            codesign --force --deep --sign - "$OUT/Standalone/$PRODUCT.app"
+            (cd "$OUT/Standalone" && ditto -c -k --keepParent "$PRODUCT.app" "$GITHUB_WORKSPACE/$PRODUCT Standalone.zip")
+          fi
       - uses: actions/upload-artifact@v4
-        with:
-          name: OniriqueVocalBox-mac
-          path: |
-            ONIRIQUE VOCALBOX.vst3.zip
-            ONIRIQUE VOCALBOX Standalone.zip
+        with: { name: mac, path: dist/mac }
+      - uses: actions/upload-artifact@v4
+        with: { name: mac-standalone, path: "*Standalone.zip", if-no-files-found: ignore }
 
   windows:
     runs-on: windows-latest
@@ -44,7 +48,33 @@ jobs:
         run: |
           cmake -B build
           cmake --build build --config Release
+      - name: Empaqueter
+        shell: bash
+        run: |
+          mkdir -p dist/win
+          cp "build/${TARGET}_artefacts/Release/VST3/$PRODUCT.vst3/Contents/x86_64-win/$PRODUCT.vst3" dist/win/
       - uses: actions/upload-artifact@v4
-        with:
-          name: OniriqueVocalBox-windows
-          path: build/OniriqueVocalBox_artefacts/Release/VST3
+        with: { name: win, path: dist/win }
+
+  publish:
+    needs: [mac, windows]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: mac, path: version/mac }
+      - uses: actions/download-artifact@v4
+        with: { name: win, path: version/win }
+      - name: Publier dans ONIRIQUE CENTRAL
+        env:
+          CLE: ${{ secrets.ONIRIQUE_PUBLISH_KEY }}
+          MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          if [ -z "$CLE" ]; then echo "Secret ONIRIQUE_PUBLISH_KEY absent : rien n'est publié."; exit 0; fi
+          printf '%s\n' "$MESSAGE" | head -c 4000 > version/notes.txt
+          mkdir -p ~/.ssh
+          printf '%s\n' "$CLE" > ~/.ssh/publish && chmod 600 ~/.ssh/publish
+          # clé du serveur épinglée (SHA256:s17azxD9lgapSvGarqB34msuvdMJLWvFV7ptd79FZsc)
+          echo "217.160.106.244 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICV3xBScmxJy34Jgjtvb0R4UCG3jmzkSU+/T1lDrvD/l" >> ~/.ssh/known_hosts
+          ls -R version
+          tar -C version -cf - . | ssh -i ~/.ssh/publish -o IdentitiesOnly=yes -o BatchMode=yes livraison@217.160.106.244 "publish $SLUG"
