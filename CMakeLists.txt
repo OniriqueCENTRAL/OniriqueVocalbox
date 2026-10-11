@@ -46,6 +46,10 @@ juce_add_binary_data(OniriqueAssets SOURCES Resources/logo.png)
 
 target_include_directories(OniriqueVocalBox PRIVATE Source)
 
+# Licence ONIRIQUE : vérification du fichier écrit par ONIRIQUE CENTRAL, pastille et page d'activation.
+include(License/OniriqueLicense.cmake)
+onirique_add_license(OniriqueVocalBox)
+
 target_compile_definitions(OniriqueVocalBox PUBLIC
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0

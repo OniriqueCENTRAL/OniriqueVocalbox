@@ -179,6 +179,8 @@ void OniriqueVocalBoxAudioProcessor::handleAsyncUpdate()
 
 void OniriqueVocalBoxAudioProcessor::prepareToPlay (double sr, int)
 {
+    license.refresh();   // beaucoup de DAW rappellent prepareToPlay juste avant un export
+
     // Toute l'allocation se fait ici ; processBlock n'alloue rien.
     currentRate = sr;
     configureChain (sr);
@@ -203,6 +205,7 @@ void OniriqueVocalBoxAudioProcessor::processBlock (juce::AudioBuffer<float>& buf
     inputTap.push (ch[0], ch[1], total);    // analyseur : signal d'entrée
     chain.process (ch, numCh, total);
     outputTap.push (ch[0], ch[1], total);   // analyseur : signal de sortie
+    license.process (buffer, getSampleRate(), isNonRealtime());
 
     // crête de sortie + correction d'Auto Gain pour l'interface
     float pk = 0.0f;

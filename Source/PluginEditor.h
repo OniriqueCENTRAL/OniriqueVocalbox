@@ -1,5 +1,6 @@
 #pragma once
 
+#include "License/LicenseOverlay.h"
 #include "PluginProcessor.h"
 #include "MultibandPresets.h"
 
@@ -754,6 +755,8 @@ private:
         void paint (juce::Graphics& g) override { if (draw) draw (g); }
     } veils;
     float overGlow = 0.0f;
+
+    std::unique_ptr<onirique::license::Overlay> licenseOverlay;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OniriqueVocalBoxAudioProcessorEditor)
 };

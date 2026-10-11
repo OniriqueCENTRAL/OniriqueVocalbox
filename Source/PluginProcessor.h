@@ -3,6 +3,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_dsp/juce_dsp.h>
 
+#include "License/LicenseGuard.h"
 #include "Parameters.h"
 #include "DSP/VocalChain.h"
 #include "DSP/SpectrumTap.h"
@@ -120,5 +121,10 @@ private:
     onirique::VocalChain chain;
     std::atomic<float> outPeak { 0.0f }, autoGainDbShown { 0.0f };
 
+public:
+    /** Licence ONIRIQUE (acheté, essai, démo) : voir License/LicenseGuard.h. */
+    onirique::license::Guard license { "vocalbox" };
+
+private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OniriqueVocalBoxAudioProcessor)
 };

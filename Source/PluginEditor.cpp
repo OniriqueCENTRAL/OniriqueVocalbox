@@ -3040,6 +3040,11 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
     showCompTab (compTabs.getSelected());
     processor.apvts.state.setProperty ("uiWidth", getWidth(), nullptr);
 
+    // Licence : pastille et page d'activation, par-dessus tout le reste.
+    licenseOverlay = std::make_unique<onirique::license::Overlay> ("ONIRIQUE VOCALBOX", processor.license);
+    addAndMakeVisible (*licenseOverlay);
+    resized();
+
     startTimerHz (60);
 }
 
@@ -3109,6 +3114,9 @@ void OniriqueVocalBoxAudioProcessorEditor::timerCallback()
 
 void OniriqueVocalBoxAudioProcessorEditor::resized()
 {
+    if (licenseOverlay != nullptr)
+        licenseOverlay->fit (getLocalBounds(), scale(), { 495, 20, 248, 26 });
+
     const float u = scale();
     const float W = (float) getWidth();
     // colonne gauche (EQ / DE-ESSER / SATURATION, RESONANCE) + colonne droite (COMPRESSION), puis rangée INPUT / AUTO GAIN / OUTPUT
