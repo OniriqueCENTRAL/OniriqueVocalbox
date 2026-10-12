@@ -4,6 +4,9 @@
 #include "PluginProcessor.h"
 #include "MultibandPresets.h"
 
+#include <array>
+#include <map>
+
 namespace onirique::ui
 {
 // ---- DA du site ONIRIQUE : nuit / sang, accent braise, lignes fines, lueurs
@@ -34,8 +37,14 @@ void strokeGlow (juce::Graphics&, const juce::Path&, juce::Colour, float width, 
 
 // ombre portée d'un rectangle arrondi (corner >= 0) ou d'une ellipse (corner < 0) : même rendu que
 // juce::DropShadow::drawForPath, mais le flou est calculé une seule fois par forme puis gardé en cache
-// (sur Mac, Core Graphics redessine de grandes zones à chaque image : recalculer les flous y faisait ramer l'interface)
-void drawCachedShadow (juce::Graphics&, const juce::DropShadow&, juce::Rectangle<float> shape, float corner);
+// (sur Mac, Core Graphics redessine de grandes zones à chaque image : recalculer les flous y faisait ramer l'interface).
+// Le cache appartient à l'interface (jamais statique) : ses images disparaissent avec elle, avant que l'hôte
+// décharge le plugin (un cache statique libéré au déchargement de la DLL bloquait FL Studio à la suppression).
+struct ShadowCache
+{
+    std::map<std::array<int, 8>, juce::Image> images;
+};
+void drawCachedShadow (juce::Graphics&, ShadowCache&, const juce::DropShadow&, juce::Rectangle<float> shape, float corner);
 
 // approche exponentielle d'une valeur animée ; renvoie true tant qu'elle bouge
 inline bool approach (float& v, float target, float k) noexcept
@@ -73,6 +82,9 @@ public:
     void getIdealPopupMenuItemSize (const juce::String& text, bool isSeparator, int standardMenuItemHeight,
                                     int& idealWidth, int& idealHeight) override;
     int getPopupMenuBorderSize() override { return 7; }
+
+private:
+    onirique::ui::ShadowCache shadows;   // ombres des boutons et des curseurs
 };
 
 // Bouton rotatif (ou curseur vertical, Layout::fader) complet : nom + contrôle + valeur dans une

@@ -83,11 +83,11 @@ void ui::strokeGlow (juce::Graphics& g, const juce::Path& p, juce::Colour c, flo
     }
 }
 
-void ui::drawCachedShadow (juce::Graphics& g, const juce::DropShadow& ds, juce::Rectangle<float> shape, float corner)
+void ui::drawCachedShadow (juce::Graphics& g, ShadowCache& shadowCache, const juce::DropShadow& ds, juce::Rectangle<float> shape, float corner)
 {
     // clé : taille et position dans le pixel de la forme, coin, flou, décalage (au 1/64 de pixel près)
     using Key = std::array<int, 8>;
-    static std::map<Key, juce::Image> cache;   // thread de l'interface uniquement
+    auto& cache = shadowCache.images;   // thread de l'interface uniquement
 
     const auto ib = shape.getSmallestIntegerContainer();
     const auto q = [] (float v) { return juce::roundToInt (v * 64.0f); };
@@ -100,7 +100,8 @@ void ui::drawCachedShadow (juce::Graphics& g, const juce::DropShadow& ds, juce::
     if (it == cache.end())
     {
         if (cache.size() > 512) cache.clear();
-        juce::Image pathImage (juce::Image::SingleChannel, area.getWidth(), area.getHeight(), true);
+        // image en mémoire ordinaire : rien qui dépende des ressources graphiques du système (Direct2D, Core Graphics)
+        juce::Image pathImage (juce::Image::SingleChannel, area.getWidth(), area.getHeight(), true, juce::SoftwareImageType());
         {
             juce::Graphics g2 (pathImage);
             g2.setColour (juce::Colours::white);
@@ -165,7 +166,7 @@ void OniriqueLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int
     // ---- corps : sphère sombre teintée sang, reflet en haut à gauche
     const float bodyR = R * 0.66f;
     const auto body = juce::Rectangle<float> (bodyR * 2.0f, bodyR * 2.0f).withCentre (c);
-    ui::drawCachedShadow (g, juce::DropShadow (juce::Colours::black.withAlpha (0.65f), juce::roundToInt (16.0f * u), { 0, juce::roundToInt (7.0f * u) }),
+    ui::drawCachedShadow (g, shadows, juce::DropShadow (juce::Colours::black.withAlpha (0.65f), juce::roundToInt (16.0f * u), { 0, juce::roundToInt (7.0f * u) }),
                           body, -1.0f);
 
     g.setGradientFill (juce::ColourGradient (juce::Colour (0xff3d282b), c.x - bodyR * 0.45f, c.y - bodyR * 0.55f,
@@ -378,7 +379,7 @@ void OniriqueLookAndFeel::drawLinearSlider (juce::Graphics& g, int x, int y, int
     g.fillRoundedRectangle (thumb.expanded (4.0f * u), th * 0.5f + 4.0f * u);
     juce::Path tp;
     tp.addRoundedRectangle (thumb, th * 0.5f);
-    ui::drawCachedShadow (g, juce::DropShadow (juce::Colours::black.withAlpha (0.5f), juce::roundToInt (8.0f * u), { 0, juce::roundToInt (3.0f * u) }),
+    ui::drawCachedShadow (g, shadows, juce::DropShadow (juce::Colours::black.withAlpha (0.5f), juce::roundToInt (8.0f * u), { 0, juce::roundToInt (3.0f * u) }),
                           thumb, th * 0.5f);
     g.setGradientFill (juce::ColourGradient (ui::mist, thumb.getX(), thumb.getY(), juce::Colour (0xffd9c9cb),
                                              thumb.getX(), thumb.getBottom(), false));
