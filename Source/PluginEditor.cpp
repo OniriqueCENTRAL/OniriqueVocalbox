@@ -7,7 +7,7 @@ using namespace onirique;
 
 namespace
 {
-constexpr float kBaseW = 1706.0f, kBaseH = 910.0f;   // 1706 : colonne PARALLEL à droite de COMPRESSION
+constexpr float kBaseW = 1706.0f, kBaseH = 966.0f;   // 1706 : colonne PARALLEL à droite de COMPRESSION ; 966 : rangée du haut agrandie (deux de-essers)
 constexpr int kMinW = 1000, kMaxW = 2600;
 constexpr float kPi = juce::MathConstants<float>::pi;
 
@@ -3042,9 +3042,9 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
     // second de-esser (+) et réglages manuels de la compression parallèle : affichés selon leur bouton
     for (auto* c : std::initializer_list<juce::Component*> { &deess2Button, &parAutoButton })
         addAndMakeVisible (c);
-    for (auto* c : std::initializer_list<juce::Component*> { &deess2FreqKnob, &deess2AmtKnob, &parThreshKnob, &parAttackKnob, &parReleaseKnob })
+    for (auto* c : std::initializer_list<juce::Component*> { &deess2FreqKnob, &deess2AmtKnob, &deess2Gr, &parThreshKnob, &parAttackKnob, &parReleaseKnob })
         addChildComponent (c);
-    for (auto* a : std::initializer_list<Animated*> { &deess2Button, &parAutoButton, &deess2FreqKnob, &deess2AmtKnob,
+    for (auto* a : std::initializer_list<Animated*> { &deess2Button, &parAutoButton, &deess2FreqKnob, &deess2AmtKnob, &deess2Gr,
                                                       &parThreshKnob, &parAttackKnob, &parReleaseKnob })
         animated.push_back (a);
     deess2Button.setTooltip ("Add a second de-esser with its own frequency and intensity (click again to remove it).");
@@ -3128,6 +3128,7 @@ void OniriqueVocalBoxAudioProcessorEditor::timerCallback()
     }
     vu1176.setActive (compPower.getToggleState() && cm != 1);
     deessGr.setActive (deessPower.getToggleState() && processor.apvts.getRawParameterValue (ids::bypass)->load() < 0.5f);
+    deess2Gr.setActive (deessPower.getToggleState() && processor.apvts.getRawParameterValue (ids::bypass)->load() < 0.5f);
     parGr.setActive (parPower.getToggleState() && processor.apvts.getRawParameterValue (ids::bypass)->load() < 0.5f);
 
     // second de-esser ajouté / retiré, AUTO coché / décoché (aussi par l'automation) : la carte se réorganise
@@ -3176,7 +3177,7 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
     // colonne gauche (EQ / DE-ESSER / SATURATION, RESONANCE) + colonne droite (COMPRESSION), puis rangée INPUT / AUTO GAIN / OUTPUT
     const float m = 22.0f * u, gap = 16.0f * u;
     const float leftW = 956.0f * u;                                  // +40 : DE-ESSER élargi (mètre GR)
-    const float topY = 96.0f * u, topH = 296.0f * u, resoY = topY + topH + gap, resoH = 264.0f * u;
+    const float topY = 96.0f * u, topH = 352.0f * u, resoY = topY + topH + gap, resoH = 264.0f * u;
     const float botY = resoY + resoH + gap, botH = 200.0f * u;
     // COMPRESSION (largeur fixe) puis colonne PARALLEL à sa droite
     const float compX = m + leftW + gap, compW = 504.0f * u;
@@ -3303,17 +3304,19 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
         // AUTO décoché : THRESHOLD, ATTACK et RELEASE apparaissent sous le bouton AUTO.
         auto pc = inner (sections[13].bounds);
         pc.removeFromTop (8.0f * u);
-        const float D = std::min (pc.getWidth() - 12.0f * u, 118.0f * u);
+        // AUTO décoché : AMOUNT un peu plus petit et mètre plus étroit, pour que les trois réglages restent lisibles
+        parManualShown = ! parAutoButton.getToggleState();
+        const float D = std::min (pc.getWidth() - 12.0f * u, parManualShown ? 92.0f * u : 118.0f * u);
         parAmountKnob.setMaxDiameter (D);
         parAmountKnob.setBounds (pc.removeFromTop (1.47f * D + 24.0f * u).toNearestInt());
-        pc.removeFromTop (18.0f * u);
-        const auto meterCol = pc.removeFromRight (58.0f * u);
-        parGr.setBounds (meterCol.withSizeKeepingCentre (58.0f * u, std::min (meterCol.getHeight() - 8.0f * u, 290.0f * u)).toNearestInt());
-        pc.removeFromRight (6.0f * u);
+        pc.removeFromTop (parManualShown ? 10.0f * u : 18.0f * u);
+        const float meterW = parManualShown ? 48.0f * u : 58.0f * u;
+        const auto meterCol = pc.removeFromRight (meterW);
+        parGr.setBounds (meterCol.withSizeKeepingCentre (meterW, std::min (meterCol.getHeight() - 8.0f * u, 290.0f * u)).toNearestInt());
+        pc.removeFromRight (4.0f * u);
         parAutoButton.setBounds (pc.removeFromTop (30.0f * u).toNearestInt());
-        pc.removeFromTop (10.0f * u);
+        pc.removeFromTop (8.0f * u);
 
-        parManualShown = ! parAutoButton.getToggleState();
         const float kh = pc.getHeight() / 3.0f;
         const float kd = std::max (24.0f * u, std::min (pc.getWidth() - 6.0f * u, (kh - 26.0f * u) / 1.47f));
         for (auto* k : { &parThreshKnob, &parAttackKnob, &parReleaseKnob })
@@ -3359,7 +3362,8 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
     eq.removeFromTop (stripGap);
     {
         // DE-ESSER / PLOSIVES : curseur PLOSIVES dans la bande au-dessus des boutons
-        const auto plos = de.removeFromTop (2.0f * (stripH + stripGap));
+        // second de-esser ajouté : une seule bande, pour laisser la hauteur aux deux rangées de boutons
+        const auto plos = de.removeFromTop ((deess2Button.getToggleState() ? 1.0f : 2.0f) * (stripH + stripGap));
         place (plosiveFader, plos.withSizeKeepingCentre (plos.getWidth() - 8.0f * u, 30.0f * u));
     }
     sat.removeFromTop (stripH + stripGap);
@@ -3373,36 +3377,42 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
     place (midKnob,   splitCols (eq, 3, 1));
     place (highKnob,  splitCols (eq, 3, 2));
     {
-        // en bas de la carte : le bouton + (second de-esser) ; une fois ajouté, ses deux curseurs FREQ 2 / INTENSITY 2
-        // prennent la place et les boutons du premier de-esser se resserrent au-dessus
+        // en bas de la carte : le bouton + (second de-esser, REMOVE une fois ajouté). Le second de-esser prend une
+        // seconde rangée, construite comme la première : FREQUENCY 2 | INTENSITY 2 | son propre mètre de réduction.
         deess2Shown = deess2Button.getToggleState();
         deess2Button.setButtonText (deess2Shown ? "REMOVE" : "+ DE-ESSER");
-        const float rowH = 28.0f * u;
         if (deess2Shown)
         {
-            auto rows = de.removeFromBottom (2.0f * rowH + 4.0f * u);
-            de.removeFromBottom (6.0f * u);
-            place (deess2FreqKnob, rows.removeFromTop (rowH));
-            rows.removeFromTop (4.0f * u);
-            place (deess2Button, rows.removeFromRight (78.0f * u).withSizeKeepingCentre (78.0f * u, 24.0f * u));
-            rows.removeFromRight (6.0f * u);
-            place (deess2AmtKnob, rows);
+            // REMOVE dans la barre de titre de la carte, à gauche du bouton power (comme LISTEN dans RESONANCE)
+            const auto& ds = sections[1].bounds;
+            place (deess2Button, juce::Rectangle<float> (88.0f * u, 24.0f * u).withRightX (ds.getRight() - 46.0f * u).withY (ds.getY() + 7.0f * u));
         }
         else
         {
-            const auto row = de.removeFromBottom (24.0f * u);
+            const auto buttonRow = de.removeFromBottom (24.0f * u);
             de.removeFromBottom (4.0f * u);
-            place (deess2Button, row.withSizeKeepingCentre (std::min (row.getWidth(), 120.0f * u), 24.0f * u));
+            place (deess2Button, buttonRow.withSizeKeepingCentre (std::min (buttonRow.getWidth(), 120.0f * u), 24.0f * u));
         }
-        deess2FreqKnob.setVisible (deess2Shown);
-        deess2AmtKnob.setVisible (deess2Shown);
+
+        auto layoutRow = [&] (juce::Rectangle<float> row, KnobComponent& f, KnobComponent& a, GainReductionBar& gr)
+        {
+            const auto grArea = row.removeFromRight (46.0f * u);
+            row.removeFromRight (4.0f * u);
+            place (gr, grArea.withSizeKeepingCentre (grArea.getWidth(), std::min (grArea.getHeight(), 150.0f * u)));
+            place (f, splitCols (row, 2, 0));
+            place (a, splitCols (row, 2, 1));
+        };
+        if (deess2Shown)
+        {
+            auto second = de.removeFromBottom ((de.getHeight() - 6.0f * u) * 0.5f);
+            de.removeFromBottom (6.0f * u);
+            layoutRow (second, deess2FreqKnob, deess2AmtKnob, deess2Gr);
+        }
+        for (auto* c : std::initializer_list<juce::Component*> { &deess2FreqKnob, &deess2AmtKnob, &deess2Gr })
+            c->setVisible (deess2Shown);
 
         // DE-ESSER : FREQUENCY | INTENSITY | mètre de réduction (GR) à droite
-        const auto grArea = de.removeFromRight (46.0f * u);
-        de.removeFromRight (4.0f * u);
-        place (deessGr, grArea.withSizeKeepingCentre (grArea.getWidth(), std::min (grArea.getHeight(), 150.0f * u)));
-        place (freqKnob, splitCols (de, 2, 0));
-        place (amtKnob,  splitCols (de, 2, 1));
+        layoutRow (de, freqKnob, amtKnob, deessGr);
     }
     place (driveKnob, sat.withSizeKeepingCentre (std::min (sat.getWidth(), colW), sat.getHeight()));
 

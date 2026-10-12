@@ -741,14 +741,16 @@ private:
     GainReductionBar deessGr { [this] { return processor.getDeEssReductionDb(); },
                                "De-esser gain reduction (dB): how much the sibilance is being pulled down right now." };
 
-    // ---- second de-esser (bouton + de la carte DE-ESSER) : deux curseurs sous les boutons quand il est ajouté
+    // ---- second de-esser (bouton + de la carte DE-ESSER) : une seconde rangée de boutons quand il est ajouté
     PillToggle deess2Button { "+ DE-ESSER", PillToggle::Style::mini };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> deess2Attachment;
-    KnobComponent deess2FreqKnob { processor.apvts, onirique::ids::deess2Freq, "FREQ 2", "", "", Layout::horizontal,
+    KnobComponent deess2FreqKnob { processor.apvts, onirique::ids::deess2Freq, "FREQUENCY 2", "3k", "10k", Layout::textBelow,
                                    "Second de-esser frequency, 3 to 10 kHz (default 7500 Hz): catch a second sibilance zone, "
                                    "for example the sharp 'ts' above the main 'sh'. Double-click to reset.", lnf };
-    KnobComponent deess2AmtKnob  { processor.apvts, onirique::ids::deess2Amt, "INTENSITY 2", "", "", Layout::horizontal,
-                                   "Second de-esser intensity. Double-click to reset.", lnf };
+    KnobComponent deess2AmtKnob  { processor.apvts, onirique::ids::deess2Amt, "INTENSITY 2", "0", "100", Layout::textBelow,
+                                   "Second de-esser intensity: how much the second sibilance zone is reduced. Double-click to reset.", lnf };
+    GainReductionBar deess2Gr { [this] { return processor.getDeEss2ReductionDb(); },
+                                "Second de-esser gain reduction (dB): how much the second sibilance zone is being pulled down right now." };
     bool deess2Shown = false;
 
     // ---- PARALLEL : AUTO (réglage d'usine) ou seuil / attaque / relâchement à la main

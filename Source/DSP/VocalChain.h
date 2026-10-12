@@ -239,7 +239,8 @@ public:
     }
 
     float getAutoGainDb() const noexcept { return autoGain.getGainDb(); }
-    float getDeEssReductionDb() const noexcept { return juce::jmax (deEsser.getReductionDb(), deEsser2.getReductionDb()); }
+    float getDeEssReductionDb() const noexcept { return deEsser.getReductionDb(); }
+    float getDeEss2ReductionDb() const noexcept { return deEsser2.getReductionDb(); }
     float getPlosiveReductionDb() const noexcept { return plosive.getReductionDb(); }
     float getParallelReductionDb() const noexcept { return parallel.getGainReductionDb(); }
 

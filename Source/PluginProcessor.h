@@ -59,6 +59,7 @@ public:
     float getPlosiveReductionDb() const noexcept { return chain.getPlosiveReductionDb(); }
     float getParallelReductionDb() const noexcept { return chain.getParallelReductionDb(); }
     float getDeEssReductionDb() const noexcept { return chain.getDeEssReductionDb(); }
+    float getDeEss2ReductionDb() const noexcept { return chain.getDeEss2ReductionDb(); }
     float consumeInputLevel (int c) noexcept  { return chain.consumeInputLevel (c); }
     float consumeOutputLevel (int c) noexcept { return chain.consumeOutputLevel (c); }
     const onirique::MultibandOpto::Meter& getMultibandMeter() const noexcept { return chain.getMultibandMeter(); }
