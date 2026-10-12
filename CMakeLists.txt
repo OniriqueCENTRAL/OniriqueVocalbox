@@ -56,6 +56,13 @@ target_compile_definitions(OniriqueVocalBox PUBLIC
     JUCE_VST3_CAN_REPLACE_VST2=0
     JUCE_DISPLAY_SPLASH_SCREEN=0)
 
+# Mac : sans cette option, Core Graphics fusionne toutes les petites zones animées (étoiles, logo, mètres,
+# analyseur) en une seule grande zone et redessine presque toute la fenêtre à chaque image. Avec elle, JUCE
+# passe par un rendu Metal qui ne redessine que les zones demandées.
+if(APPLE)
+    target_compile_definitions(OniriqueVocalBox PUBLIC JUCE_COREGRAPHICS_RENDER_WITH_MULTIPLE_PAINT_CALLS=1)
+endif()
+
 target_link_libraries(OniriqueVocalBox
     PRIVATE
         juce::juce_audio_utils

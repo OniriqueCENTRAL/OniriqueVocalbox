@@ -1,5 +1,7 @@
 #include "PluginEditor.h"
 #include <BinaryData.h>
+#include <array>
+#include <map>
 
 using namespace onirique;
 
@@ -81,6 +83,39 @@ void ui::strokeGlow (juce::Graphics& g, const juce::Path& p, juce::Colour c, flo
     }
 }
 
+void ui::drawCachedShadow (juce::Graphics& g, const juce::DropShadow& ds, juce::Rectangle<float> shape, float corner)
+{
+    // clé : taille et position dans le pixel de la forme, coin, flou, décalage (au 1/64 de pixel près)
+    using Key = std::array<int, 8>;
+    static std::map<Key, juce::Image> cache;   // thread de l'interface uniquement
+
+    const auto ib = shape.getSmallestIntegerContainer();
+    const auto q = [] (float v) { return juce::roundToInt (v * 64.0f); };
+    const Key key { q (shape.getWidth()), q (shape.getHeight()), q (shape.getX() - (float) ib.getX()), q (shape.getY() - (float) ib.getY()),
+                    corner < 0.0f ? -1 : q (corner), ds.radius, ds.offset.x, ds.offset.y };
+
+    // zone de l'ombre relative au coin de la forme, comme DropShadow::drawForPath (sans le découpage par la zone à redessiner)
+    const auto area = (ib.withZeroOrigin() + ds.offset).expanded (ds.radius + 1);
+    auto it = cache.find (key);
+    if (it == cache.end())
+    {
+        if (cache.size() > 512) cache.clear();
+        juce::Image pathImage (juce::Image::SingleChannel, area.getWidth(), area.getHeight(), true);
+        {
+            juce::Graphics g2 (pathImage);
+            g2.setColour (juce::Colours::white);
+            const auto local = shape.translated ((float) (ds.offset.x - ib.getX() - area.getX()), (float) (ds.offset.y - ib.getY() - area.getY()));
+            if (corner < 0.0f) g2.fillEllipse (local);
+            else               g2.fillRoundedRectangle (local, corner);
+        }
+        juce::Image blurred;
+        juce::ImageEffects::applySingleChannelBoxBlurEffect (ds.radius, pathImage, blurred);
+        it = cache.emplace (key, blurred).first;
+    }
+    g.setColour (ds.colour);
+    g.drawImageAt (it->second, ib.getX() + area.getX(), ib.getY() + area.getY(), true);
+}
+
 //==============================================================================
 OniriqueLookAndFeel::OniriqueLookAndFeel()
 {
@@ -130,10 +165,8 @@ void OniriqueLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int
     // ---- corps : sphère sombre teintée sang, reflet en haut à gauche
     const float bodyR = R * 0.66f;
     const auto body = juce::Rectangle<float> (bodyR * 2.0f, bodyR * 2.0f).withCentre (c);
-    juce::Path bodyPath;
-    bodyPath.addEllipse (body);
-    juce::DropShadow (juce::Colours::black.withAlpha (0.65f), juce::roundToInt (16.0f * u), { 0, juce::roundToInt (7.0f * u) })
-        .drawForPath (g, bodyPath);
+    ui::drawCachedShadow (g, juce::DropShadow (juce::Colours::black.withAlpha (0.65f), juce::roundToInt (16.0f * u), { 0, juce::roundToInt (7.0f * u) }),
+                          body, -1.0f);
 
     g.setGradientFill (juce::ColourGradient (juce::Colour (0xff3d282b), c.x - bodyR * 0.45f, c.y - bodyR * 0.55f,
                                              juce::Colour (0xff0e0708), c.x + bodyR * 0.75f, c.y + bodyR * 0.95f, true));
@@ -345,8 +378,8 @@ void OniriqueLookAndFeel::drawLinearSlider (juce::Graphics& g, int x, int y, int
     g.fillRoundedRectangle (thumb.expanded (4.0f * u), th * 0.5f + 4.0f * u);
     juce::Path tp;
     tp.addRoundedRectangle (thumb, th * 0.5f);
-    juce::DropShadow (juce::Colours::black.withAlpha (0.5f), juce::roundToInt (8.0f * u), { 0, juce::roundToInt (3.0f * u) })
-        .drawForPath (g, tp);
+    ui::drawCachedShadow (g, juce::DropShadow (juce::Colours::black.withAlpha (0.5f), juce::roundToInt (8.0f * u), { 0, juce::roundToInt (3.0f * u) }),
+                          thumb, th * 0.5f);
     g.setGradientFill (juce::ColourGradient (ui::mist, thumb.getX(), thumb.getY(), juce::Colour (0xffd9c9cb),
                                              thumb.getX(), thumb.getBottom(), false));
     g.fillPath (tp);
@@ -3114,6 +3147,8 @@ void OniriqueVocalBoxAudioProcessorEditor::timerCallback()
 
 void OniriqueVocalBoxAudioProcessorEditor::resized()
 {
+    backdropLayer = {};   // fond et cartes redessinés à la nouvelle taille au prochain paint()
+
     if (licenseOverlay != nullptr)
         licenseOverlay->fit (getLocalBounds(), scale(), { 495, 20, 248, 26 });
 
@@ -3524,22 +3559,91 @@ void OniriqueVocalBoxAudioProcessorEditor::paintHeader (juce::Graphics& g)
 void OniriqueVocalBoxAudioProcessorEditor::paint (juce::Graphics& g)
 {
     const float u = scale();
-    const float W = (float) getWidth(), H = (float) getHeight();
 
-    // ---- fond : sang -> nuit, halo braise en haut à droite
-    g.fillAll (ui::night);
-    g.setGradientFill (juce::ColourGradient (ui::blood.withAlpha (0.85f), 0.0f, 0.0f, ui::night.withAlpha (0.0f), 0.0f, H * 0.62f, false));
-    g.fillRect (getLocalBounds());
-    g.setGradientFill (juce::ColourGradient (ui::ember.withAlpha (0.20f), W * 0.74f, -40.0f * u,
-                                             ui::ember.withAlpha (0.0f), W * 0.74f + W * 0.42f, -40.0f * u, true));
-    g.fillRect (getLocalBounds());
+    // fond et cartes : images prêtes, à la résolution réelle de l'écran (Retina : x2)
+    const float ps = juce::jmax (1.0f, g.getInternalContext().getPhysicalPixelScaleFactor());
+    if (! backdropLayer.isValid() || std::abs (ps - layersScale) > 1.0e-3f)
+        rebuildLayers (ps);
+    const auto toLogical = juce::AffineTransform::scale (1.0f / layersScale);
+    g.setOpacity (1.0f);
+    g.drawImageTransformed (backdropLayer, toLogical);
 
     {
         juce::Graphics::ScopedSaveState ss (g);
         paintHeader (g);
     }
 
-    // ---- cartes : verre sombre, filet fin, ombre portée, titre + point braise
+    g.setOpacity (1.0f);
+    g.drawImageTransformed (cardsLayer, toLogical);
+
+    // ---- point braise des cartes : suit le bouton power du module
+    for (const auto& s : sections)
+    {
+        if (s.hidden || s.plain || s.sub) continue;
+        const auto r = s.bounds;
+        const bool on = s.power == nullptr || s.power->getToggleState();
+        const float dot = 6.0f * u;
+        const auto dotR = juce::Rectangle<float> (dot, dot).withCentre ({ r.getX() + 20.0f * u, r.getY() + 19.0f * u });
+        g.setColour (ui::ember.withAlpha (on ? 0.35f : 0.0f));
+        g.fillEllipse (dotR.expanded (dot * 0.7f));
+        g.setColour (on ? ui::ember : ui::haze.withAlpha (0.5f));
+        g.fillEllipse (dotR);
+    }
+
+    // ---- témoin OVER (carte OUTPUT)
+    {
+        const float d = 8.0f * u;
+        const auto dot = juce::Rectangle<float> (d, d).withCentre ({ overRect.getX() + d * 0.5f, overRect.getCentreY() });
+        g.setColour (ui::ember.withAlpha (0.45f * overGlow));
+        g.fillEllipse (dot.expanded (d * 0.9f));
+        g.setColour (ui::haze.withAlpha (0.35f).interpolatedWith (ui::ember, overGlow));
+        g.fillEllipse (dot);
+        g.setColour (ui::haze.interpolatedWith (ui::bone, overGlow));
+        g.setFont (ui::fitFont (ui::Face::mono, 11.0f * u, overRect.getWidth() - d - 8.0f * u, "OVER", true, 0.1f));
+        g.drawText ("OVER", overRect.withTrimmedLeft (d + 8.0f * u), juce::Justification::centredLeft, false);
+    }
+}
+
+void OniriqueVocalBoxAudioProcessorEditor::rebuildLayers (float pixelScale)
+{
+    layersScale = pixelScale;
+    const int w = juce::jmax (1, juce::roundToInt ((float) getWidth() * pixelScale));
+    const int h = juce::jmax (1, juce::roundToInt ((float) getHeight() * pixelScale));
+    const auto toPixels = juce::AffineTransform::scale (pixelScale);
+
+    backdropLayer = juce::Image (juce::Image::RGB, w, h, false);
+    {
+        juce::Graphics bg (backdropLayer);
+        bg.addTransform (toPixels);
+        paintBackdrop (bg);
+    }
+    cardsLayer = juce::Image (juce::Image::ARGB, w, h, true);
+    {
+        juce::Graphics cg (cardsLayer);
+        cg.addTransform (toPixels);
+        paintCards (cg);
+    }
+}
+
+// ---- fond : sang -> nuit, halo braise en haut à droite
+void OniriqueVocalBoxAudioProcessorEditor::paintBackdrop (juce::Graphics& g)
+{
+    const float u = scale();
+    const float W = (float) getWidth(), H = (float) getHeight();
+
+    g.fillAll (ui::night);
+    g.setGradientFill (juce::ColourGradient (ui::blood.withAlpha (0.85f), 0.0f, 0.0f, ui::night.withAlpha (0.0f), 0.0f, H * 0.62f, false));
+    g.fillRect (getLocalBounds());
+    g.setGradientFill (juce::ColourGradient (ui::ember.withAlpha (0.20f), W * 0.74f, -40.0f * u,
+                                             ui::ember.withAlpha (0.0f), W * 0.74f + W * 0.42f, -40.0f * u, true));
+    g.fillRect (getLocalBounds());
+}
+
+// ---- cartes : verre sombre, filet fin, ombre portée, titre (le point braise est dessiné à part, il suit le module)
+void OniriqueVocalBoxAudioProcessorEditor::paintCards (juce::Graphics& g)
+{
+    const float u = scale();
+
     for (const auto& s : sections)
     {
         const auto r = s.bounds;
@@ -3578,32 +3682,11 @@ void OniriqueVocalBoxAudioProcessorEditor::paint (juce::Graphics& g)
         g.setColour (juce::Colours::white.withAlpha (0.045f));
         g.drawHorizontalLine (juce::roundToInt (r.getY() + 1.5f * u), r.getX() + rad, r.getRight() - rad);
 
-        const bool on = s.power == nullptr || s.power->getToggleState();
-        const float dot = 6.0f * u;
-        const auto dotR = juce::Rectangle<float> (dot, dot).withCentre ({ r.getX() + 20.0f * u, r.getY() + 19.0f * u });
-        g.setColour (ui::ember.withAlpha (on ? 0.35f : 0.0f));
-        g.fillEllipse (dotR.expanded (dot * 0.7f));
-        g.setColour (on ? ui::ember : ui::haze.withAlpha (0.5f));
-        g.fillEllipse (dotR);
-
         const float maxW = r.getWidth() - (s.power != nullptr ? 90.0f : 60.0f) * u;
         g.setColour (ui::mist.withAlpha (0.92f));
         g.setFont (ui::fitFont (ui::Face::body, 13.0f * u, maxW, s.title, true, 0.18f));
         g.drawText (s.title, juce::Rectangle<float> (r.getX() + 32.0f * u, r.getY() + 8.0f * u, maxW, 22.0f * u),
                     juce::Justification::centredLeft, false);
-    }
-
-    // ---- témoin OVER (carte OUTPUT)
-    {
-        const float d = 8.0f * u;
-        const auto dot = juce::Rectangle<float> (d, d).withCentre ({ overRect.getX() + d * 0.5f, overRect.getCentreY() });
-        g.setColour (ui::ember.withAlpha (0.45f * overGlow));
-        g.fillEllipse (dot.expanded (d * 0.9f));
-        g.setColour (ui::haze.withAlpha (0.35f).interpolatedWith (ui::ember, overGlow));
-        g.fillEllipse (dot);
-        g.setColour (ui::haze.interpolatedWith (ui::bone, overGlow));
-        g.setFont (ui::fitFont (ui::Face::mono, 11.0f * u, overRect.getWidth() - d - 8.0f * u, "OVER", true, 0.1f));
-        g.drawText ("OVER", overRect.withTrimmedLeft (d + 8.0f * u), juce::Justification::centredLeft, false);
     }
 }
 
