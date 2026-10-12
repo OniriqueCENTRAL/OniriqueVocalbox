@@ -740,6 +740,27 @@ private:
                              "How hard the parallel bus is being crushed (dB of gain reduction).", 36.0f };
     GainReductionBar deessGr { [this] { return processor.getDeEssReductionDb(); },
                                "De-esser gain reduction (dB): how much the sibilance is being pulled down right now." };
+
+    // ---- second de-esser (bouton + de la carte DE-ESSER) : deux curseurs sous les boutons quand il est ajouté
+    PillToggle deess2Button { "+ DE-ESSER", PillToggle::Style::mini };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> deess2Attachment;
+    KnobComponent deess2FreqKnob { processor.apvts, onirique::ids::deess2Freq, "FREQ 2", "", "", Layout::horizontal,
+                                   "Second de-esser frequency, 3 to 10 kHz (default 7500 Hz): catch a second sibilance zone, "
+                                   "for example the sharp 'ts' above the main 'sh'. Double-click to reset.", lnf };
+    KnobComponent deess2AmtKnob  { processor.apvts, onirique::ids::deess2Amt, "INTENSITY 2", "", "", Layout::horizontal,
+                                   "Second de-esser intensity. Double-click to reset.", lnf };
+    bool deess2Shown = false;
+
+    // ---- PARALLEL : AUTO (réglage d'usine) ou seuil / attaque / relâchement à la main
+    PillToggle parAutoButton { "AUTO", PillToggle::Style::small };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> parAutoAttachment;
+    KnobComponent parThreshKnob  { processor.apvts, onirique::ids::parThresh, "THRESHOLD", "-57", "-9", Layout::textBelow,
+                                   "Level above which the parallel bus is crushed (dBFS). Lower = harder. Double-click to reset.", lnf };
+    KnobComponent parAttackKnob  { processor.apvts, onirique::ids::parAttack, "ATTACK", "", "", Layout::textBelow,
+                                   "Attack of the parallel 1176 (20 us to 0.8 ms). Double-click to reset.", lnf };
+    KnobComponent parReleaseKnob { processor.apvts, onirique::ids::parRelease, "RELEASE", "", "", Layout::textBelow,
+                                   "Release of the parallel 1176 (50 ms to 1.1 s). Double-click to reset.", lnf };
+    bool parManualShown = false;
     LevelMeter inMeter  { [this] (int c) { return processor.consumeInputLevel (c); } };
     LevelMeter outMeter { [this] (int c) { return processor.consumeOutputLevel (c); } };
     PillToggle mbListen1 { "LISTEN", PillToggle::Style::mini }, mbListen2 { "LISTEN", PillToggle::Style::mini },

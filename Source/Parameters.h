@@ -31,6 +31,13 @@ namespace ids
     inline constexpr const char* compMaster = "compMaster";
     inline constexpr const char* parOn     = "parallelOn";
     inline constexpr const char* parAmount = "parallelAmount";
+    inline constexpr const char* parAuto    = "parallelAuto";       // AUTO : réglage d'usine du 1176 écrasé
+    inline constexpr const char* parThresh  = "parallelThreshold";  // AUTO coupé : seuil, attaque, relâchement
+    inline constexpr const char* parAttack  = "parallelAttack";
+    inline constexpr const char* parRelease = "parallelRelease";
+    inline constexpr const char* deess2On   = "deess2On";           // second de-esser (bouton + de la carte)
+    inline constexpr const char* deess2Freq = "deess2Freq";
+    inline constexpr const char* deess2Amt  = "deess2Amt";
     inline constexpr const char* compMode  = "compMode";
     inline constexpr const char* compOrder = "compOrder";
     inline constexpr const char* fetIn     = "fetInput";
@@ -164,6 +171,19 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         Attr().withLabel ("%").withStringFromValueFunction ([] (float v, int)
                                                             { return String (juce::roundToInt (v)) + " %"; })));
 
+    // second de-esser : ajouté par le bouton + de la carte, plus haut dans les aigus par défaut
+    p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::deess2On, 1 }, "De-Esser 2 On", false));
+    p.push_back (std::make_unique<AudioParameterFloat> (
+        ParameterID { ids::deess2Freq, 1 }, "De-Ess 2 Freq",
+        freqRange, 7500.0f,
+        Attr().withLabel ("Hz").withStringFromValueFunction ([] (float v, int)
+                                                             { return String (juce::roundToInt (v)) + " Hz"; })));
+    p.push_back (std::make_unique<AudioParameterFloat> (
+        ParameterID { ids::deess2Amt, 1 }, "De-Ess 2 Amount",
+        NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f,
+        Attr().withLabel ("%").withStringFromValueFunction ([] (float v, int)
+                                                            { return String (juce::roundToInt (v)) + " %"; })));
+
     p.push_back (std::make_unique<AudioParameterFloat> (
         ParameterID { ids::drive, 1 }, "Drive",
         NormalisableRange<float> (0.0f, 10.0f, 0.01f), 0.0f,
@@ -249,6 +269,21 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         { return timeText (1.1f * std::pow (0.05f / 1.1f, (v - 1.0f) / 6.0f)); })));
     p.push_back (std::make_unique<AudioParameterChoice> (
         ParameterID { ids::fetRatio, 1 }, "1176 Ratio", StringArray { "4", "8", "12", "20", "All" }, 0));
+
+    // compression parallèle : AUTO = réglage d'usine (1176 ALL, INPUT +16 dB, attaque ~37 us, relâchement ~65 ms) ;
+    // AUTO coupé, ces trois réglages reprennent la main. Leurs valeurs par défaut sont exactement celles d'AUTO.
+    p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::parAuto, 1 }, "Parallel Compression Auto", true));
+    p.push_back (std::make_unique<AudioParameterFloat> (
+        ParameterID { ids::parThresh, 1 }, "Parallel Compression Threshold", NormalisableRange<float> (-57.0f, -9.0f, 0.1f), -37.0f,
+        Attr().withLabel ("dB").withStringFromValueFunction ([] (float v, int) { return String (v, 1) + " dB"; })));
+    p.push_back (std::make_unique<AudioParameterFloat> (
+        ParameterID { ids::parAttack, 1 }, "Parallel Compression Attack", NormalisableRange<float> (1.0f, 7.0f, 0.01f), 6.0f,
+        Attr().withStringFromValueFunction ([timeText] (float v, int)
+        { return timeText (800.0e-6f * std::pow (20.0f / 800.0f, (v - 1.0f) / 6.0f)); })));
+    p.push_back (std::make_unique<AudioParameterFloat> (
+        ParameterID { ids::parRelease, 1 }, "Parallel Compression Release", NormalisableRange<float> (1.0f, 7.0f, 0.01f), 6.5f,
+        Attr().withStringFromValueFunction ([timeText] (float v, int)
+        { return timeText (1.1f * std::pow (0.05f / 1.1f, (v - 1.0f) / 6.0f)); })));
 
     p.push_back (std::make_unique<AudioParameterFloat> (
         ParameterID { ids::laGain, 1 }, "LA-2A Gain", NormalisableRange<float> (-12.0f, 30.0f, 0.1f), 0.0f,

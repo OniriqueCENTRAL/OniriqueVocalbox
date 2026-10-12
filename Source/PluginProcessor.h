@@ -82,6 +82,8 @@ private:
     std::atomic<float>* pCompMaster = nullptr;
     std::atomic<float>* pParOn = nullptr;
     std::atomic<float>* pParAmount = nullptr;
+    std::atomic<float> *pParAuto = nullptr, *pParThresh = nullptr, *pParAttack = nullptr, *pParRelease = nullptr;
+    std::atomic<float> *pDeess2On = nullptr, *pDeess2Freq = nullptr, *pDeess2Amt = nullptr;
     std::atomic<float>* pMbX[3] {};
     std::atomic<float>* pMbThr[4] {};
     std::atomic<float>* pMbGain[4] {};

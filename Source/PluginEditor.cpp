@@ -3038,6 +3038,20 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
     animated.push_back (&parAmountKnob);
     animated.push_back (&parGr);
     animated.push_back (&deessGr);
+
+    // second de-esser (+) et réglages manuels de la compression parallèle : affichés selon leur bouton
+    for (auto* c : std::initializer_list<juce::Component*> { &deess2Button, &parAutoButton })
+        addAndMakeVisible (c);
+    for (auto* c : std::initializer_list<juce::Component*> { &deess2FreqKnob, &deess2AmtKnob, &parThreshKnob, &parAttackKnob, &parReleaseKnob })
+        addChildComponent (c);
+    for (auto* a : std::initializer_list<Animated*> { &deess2Button, &parAutoButton, &deess2FreqKnob, &deess2AmtKnob,
+                                                      &parThreshKnob, &parAttackKnob, &parReleaseKnob })
+        animated.push_back (a);
+    deess2Button.setTooltip ("Add a second de-esser with its own frequency and intensity (click again to remove it).");
+    parAutoButton.setTooltip ("AUTO: the factory setting (1176 ALL, fast attack and release, ~-37 dB threshold). "
+                              "Turn it off to set the threshold, attack and release yourself.");
+    deess2Attachment = std::make_unique<ButtonAttachment> (processor.apvts, ids::deess2On, deess2Button);
+    parAutoAttachment = std::make_unique<ButtonAttachment> (processor.apvts, ids::parAuto, parAutoButton);
     addAndMakeVisible (inMeter);
     addAndMakeVisible (outMeter);
     animated.push_back (&inMeter);
@@ -3115,6 +3129,10 @@ void OniriqueVocalBoxAudioProcessorEditor::timerCallback()
     vu1176.setActive (compPower.getToggleState() && cm != 1);
     deessGr.setActive (deessPower.getToggleState() && processor.apvts.getRawParameterValue (ids::bypass)->load() < 0.5f);
     parGr.setActive (parPower.getToggleState() && processor.apvts.getRawParameterValue (ids::bypass)->load() < 0.5f);
+
+    // second de-esser ajouté / retiré, AUTO coché / décoché (aussi par l'automation) : la carte se réorganise
+    if (deess2Button.getToggleState() != deess2Shown || parAutoButton.getToggleState() == parManualShown)
+        resized();
     // suréchantillonnage : verrouillé (grisé) en mode LIVE
     osSel.setLocked (processor.apvts.getRawParameterValue (ids::liveMode)->load() > 0.5f, "MIX MODE ONLY",
                      "Oversampling only works in MIX mode: LIVE runs without oversampling to stay at zero latency. "
@@ -3281,14 +3299,29 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
     sections.push_back ({ "COMPAREA", mbArea, nullptr, 0.0f, true, mbTab, true });     // idem pour 1176 / LA-2A
     sections.push_back ({ "PARALLEL", { parX, topY, parW, resoY + resoH - topY }, &parPower });   // index 13
     {
-        // PARALLEL : AMOUNT en haut, mètre de réduction du bus écrasé dessous
+        // PARALLEL : AMOUNT en haut ; dessous, AUTO à gauche et le mètre de réduction du bus écrasé à droite.
+        // AUTO décoché : THRESHOLD, ATTACK et RELEASE apparaissent sous le bouton AUTO.
         auto pc = inner (sections[13].bounds);
         pc.removeFromTop (8.0f * u);
         const float D = std::min (pc.getWidth() - 12.0f * u, 118.0f * u);
         parAmountKnob.setMaxDiameter (D);
         parAmountKnob.setBounds (pc.removeFromTop (1.47f * D + 24.0f * u).toNearestInt());
         pc.removeFromTop (18.0f * u);
-        parGr.setBounds (pc.withSizeKeepingCentre (58.0f * u, std::min (pc.getHeight() - 8.0f * u, 290.0f * u)).toNearestInt());
+        const auto meterCol = pc.removeFromRight (58.0f * u);
+        parGr.setBounds (meterCol.withSizeKeepingCentre (58.0f * u, std::min (meterCol.getHeight() - 8.0f * u, 290.0f * u)).toNearestInt());
+        pc.removeFromRight (6.0f * u);
+        parAutoButton.setBounds (pc.removeFromTop (30.0f * u).toNearestInt());
+        pc.removeFromTop (10.0f * u);
+
+        parManualShown = ! parAutoButton.getToggleState();
+        const float kh = pc.getHeight() / 3.0f;
+        const float kd = std::max (24.0f * u, std::min (pc.getWidth() - 6.0f * u, (kh - 26.0f * u) / 1.47f));
+        for (auto* k : { &parThreshKnob, &parAttackKnob, &parReleaseKnob })
+        {
+            k->setMaxDiameter (kd);
+            k->setBounds (pc.removeFromTop (kh).toNearestInt());
+            k->setVisible (parManualShown);
+        }
     }
 
     for (auto& s : sections)
@@ -3340,6 +3373,30 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
     place (midKnob,   splitCols (eq, 3, 1));
     place (highKnob,  splitCols (eq, 3, 2));
     {
+        // en bas de la carte : le bouton + (second de-esser) ; une fois ajouté, ses deux curseurs FREQ 2 / INTENSITY 2
+        // prennent la place et les boutons du premier de-esser se resserrent au-dessus
+        deess2Shown = deess2Button.getToggleState();
+        deess2Button.setButtonText (deess2Shown ? "REMOVE" : "+ DE-ESSER");
+        const float rowH = 28.0f * u;
+        if (deess2Shown)
+        {
+            auto rows = de.removeFromBottom (2.0f * rowH + 4.0f * u);
+            de.removeFromBottom (6.0f * u);
+            place (deess2FreqKnob, rows.removeFromTop (rowH));
+            rows.removeFromTop (4.0f * u);
+            place (deess2Button, rows.removeFromRight (78.0f * u).withSizeKeepingCentre (78.0f * u, 24.0f * u));
+            rows.removeFromRight (6.0f * u);
+            place (deess2AmtKnob, rows);
+        }
+        else
+        {
+            const auto row = de.removeFromBottom (24.0f * u);
+            de.removeFromBottom (4.0f * u);
+            place (deess2Button, row.withSizeKeepingCentre (std::min (row.getWidth(), 120.0f * u), 24.0f * u));
+        }
+        deess2FreqKnob.setVisible (deess2Shown);
+        deess2AmtKnob.setVisible (deess2Shown);
+
         // DE-ESSER : FREQUENCY | INTENSITY | mètre de réduction (GR) à droite
         const auto grArea = de.removeFromRight (46.0f * u);
         de.removeFromRight (4.0f * u);

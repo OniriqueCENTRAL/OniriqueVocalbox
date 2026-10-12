@@ -90,6 +90,8 @@ public:
         bool compOn = false, compMaster = true;          // compMaster : interrupteur général de la carte COMPRESSION
         bool parOn = false;                             // compression parallèle
         float parAmount = 50.0f;                        // %
+        bool parAuto = true;                            // AUTO : réglage d'usine ; sinon seuil / attaque / relâchement
+        float parThresh = -37.0f, parAttack = 6.0f, parRelease = 6.5f;
         int compMode = 0, compOrder = 0;                // 0 1176, 1 LA-2A, 2 Duo ; 0 1176 > LA-2A, 1 LA-2A > 1176
         float fetIn = 0.0f, fetOut = 0.0f, fetAttack = 3.0f, fetRelease = 5.0f;
         int fetRatio = 0;                               // 4, 8, 12, 20, All
@@ -105,6 +107,8 @@ public:
         float resoAmt = 0.0f, resoLow = 40.0f, resoMid = 100.0f, resoHigh = 80.0f;   // en %
         float resoFreq[3] { 180.0f, 1200.0f, 6500.0f }, resoWidth[3] { 1.5f, 2.0f, 2.0f };   // Hz, octaves
         float deessFreq = 4000.0f, deessAmt = 0.0f;     // amt en %
+        bool deess2On = false;                          // second de-esser (bouton +)
+        float deess2Freq = 7500.0f, deess2Amt = 0.0f;
         float drive = 0.0f, outputDb = 0.0f;
         int satType = 0;                                // 0 Tube, 1 Analog, 2 Tape
         bool eqOn = true, resoOn = true, deessOn = true, satOn = true;
@@ -131,6 +135,7 @@ public:
         peq.prepare (fsOS);
         reso.prepare (fsOS, live);
         deEsser.prepare (fsOS, live, osFactor);
+        deEsser2.prepare (fsOS, live, osFactor);   // toujours dans la chaîne : la latence ne change pas avec le bouton +
         plosive.prepare (fsOS);
         comp.prepare (fsOS, blockOS);
         parallel.prepare (fsOS, blockOS);
@@ -143,16 +148,16 @@ public:
         compSw.prepare (fsOS, 0, blockOS);
         parSw.prepare (fsOS, 0, blockOS);
         mbSw.prepare (fsOS, 0, blockOS);
-        deessSw.prepare (fsOS, deEsser.getLatencySamples(), blockOS);
+        deessSw.prepare (fsOS, deessLatency(), blockOS);
         satSw.prepare (fsOS, sat.getLatencySamples(), blockOS);
 
         // latence totale (à la cadence de l'hôte) : filtres de suréchantillonnage + modules (multiples du facteur)
-        const int modulesOS = reso.getLatencySamples() + deEsser.getLatencySamples() + sat.getLatencySamples();
+        const int modulesOS = reso.getLatencySamples() + deessLatency() + sat.getLatencySamples();
         jassert (modulesOS % osFactor == 0);
         latency = juce::roundToInt (os->getLatencyInSamples()) + modulesOS / osFactor;
         for (auto& d : dryDelay) d.prepare (latency);
         // écoute RESONANCE : ce qui est retiré est retardé comme le reste de la chaîne (DE-ESSER + SATURATION)
-        for (auto& d : listenDelay) d.prepare (deEsser.getLatencySamples() + sat.getLatencySamples());
+        for (auto& d : listenDelay) d.prepare (deessLatency() + sat.getLatencySamples());
         listenMix.reset (fs, 0.03);
         orderStep = 1.0f / (float) std::max (1, juce::roundToInt (0.015 * fs));
 
@@ -207,6 +212,7 @@ public:
         // même quand le module DE-ESSER est coupé (seule la bande utilisateur est alors neutralisée)
         const bool smartOn = p.smartS && p.eqOn;
         deEsser.setParams (p.deessFreq, p.deessOn ? p.deessAmt * 0.01f : 0.0f, smartOn ? p.high * 0.1f : 0.0f, snap);
+        deEsser2.setParams (p.deess2Freq, p.deessOn && p.deess2On ? p.deess2Amt * 0.01f : 0.0f, 0.0f, snap);
         sat.setDrive (p.drive, snap);
         sat.setMode (p.satType, snap);
 
@@ -215,6 +221,7 @@ public:
         compSw.set (p.compOn && p.compMaster, snap);
         parSw.set (p.parOn, snap);
         parallel.setAmount (p.parAmount * 0.01f, snap);
+        parallel.setControl (p.parAuto, p.parThresh, p.parAttack, p.parRelease, snap);
         mbSw.set (p.mbOn && p.compMaster, snap);
         deessSw.set (p.deessOn || smartOn, snap);   // les plosives suivent l'interrupteur DE-ESSER / PLOSIVES
         satSw.set (p.satOn, snap);
@@ -232,7 +239,7 @@ public:
     }
 
     float getAutoGainDb() const noexcept { return autoGain.getGainDb(); }
-    float getDeEssReductionDb() const noexcept { return deEsser.getReductionDb(); }
+    float getDeEssReductionDb() const noexcept { return juce::jmax (deEsser.getReductionDb(), deEsser2.getReductionDb()); }
     float getPlosiveReductionDb() const noexcept { return plosive.getReductionDb(); }
     float getParallelReductionDb() const noexcept { return parallel.getGainReductionDb(); }
 
@@ -298,7 +305,7 @@ private:
                     parSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { parallel.process (s, nc, q); });
                     break;
                 case 3: mbSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { multiband.process (s, nc, q); }); break;
-                case 4: deessSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { plosive.process (s, nc, q); deEsser.process (s, nc, q); }); break;
+                case 4: deessSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { plosive.process (s, nc, q); deEsser.process (s, nc, q); deEsser2.process (s, nc, q); }); break;
                 default: satSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { sat.process (s, nc, q); }); break;
             }
         }
@@ -341,7 +348,8 @@ private:
     CompressorModule comp;
     ParallelComp parallel;
     MultibandOpto multiband;
-    DeEsser deEsser;
+    DeEsser deEsser, deEsser2;   // deEsser2 : second de-esser (bouton + de la carte)
+    int deessLatency() const noexcept { return deEsser.getLatencySamples() + deEsser2.getLatencySamples(); }
     SaturationLab sat;
     AutoGain autoGain;
     ModuleSwitch eqSw, resoSw, compSw, parSw, mbSw, deessSw, satSw;
@@ -362,7 +370,7 @@ private:
         bool seen = false;
         for (int m : order)
         {
-            if (seen && m == 4) after += deEsser.getLatencySamples();
+            if (seen && m == 4) after += deessLatency();
             if (seen && m == 5) after += sat.getLatencySamples();
             if (m == 1) seen = true;
         }

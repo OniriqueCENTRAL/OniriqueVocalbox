@@ -25,6 +25,13 @@ OniriqueVocalBoxAudioProcessor::OniriqueVocalBoxAudioProcessor()
     pCompMaster = apvts.getRawParameterValue (ids::compMaster);
     pParOn      = apvts.getRawParameterValue (ids::parOn);
     pParAmount  = apvts.getRawParameterValue (ids::parAmount);
+    pParAuto    = apvts.getRawParameterValue (ids::parAuto);
+    pParThresh  = apvts.getRawParameterValue (ids::parThresh);
+    pParAttack  = apvts.getRawParameterValue (ids::parAttack);
+    pParRelease = apvts.getRawParameterValue (ids::parRelease);
+    pDeess2On   = apvts.getRawParameterValue (ids::deess2On);
+    pDeess2Freq = apvts.getRawParameterValue (ids::deess2Freq);
+    pDeess2Amt  = apvts.getRawParameterValue (ids::deess2Amt);
     pMbAttack  = apvts.getRawParameterValue (ids::mbAttack);
     pMbRelease = apvts.getRawParameterValue (ids::mbRelease);
     for (int b = 0; b < 6; ++b)
@@ -91,6 +98,13 @@ VocalChain::Params OniriqueVocalBoxAudioProcessor::readParams() const noexcept
     p.compMaster = pCompMaster->load() > 0.5f;
     p.parOn      = pParOn->load() > 0.5f;
     p.parAmount  = pParAmount->load();
+    p.parAuto    = pParAuto->load() > 0.5f;
+    p.parThresh  = pParThresh->load();
+    p.parAttack  = pParAttack->load();
+    p.parRelease = pParRelease->load();
+    p.deess2On   = pDeess2On->load() > 0.5f;
+    p.deess2Freq = pDeess2Freq->load();
+    p.deess2Amt  = pDeess2Amt->load();
     p.mb.x1 = pMbX[0]->load(); p.mb.x2 = pMbX[1]->load(); p.mb.x3 = pMbX[2]->load();
     for (int b = 0; b < 4; ++b) { p.mb.thr[(size_t) b] = pMbThr[b]->load(); p.mb.gain[(size_t) b] = pMbGain[b]->load(); }
     p.mb.attackMs  = pMbAttack->load();

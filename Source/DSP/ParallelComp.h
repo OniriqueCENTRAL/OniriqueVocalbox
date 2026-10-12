@@ -39,6 +39,14 @@ public:
         match = 1.0f;
     }
 
+    // AUTO : réglage d'usine ci-dessus. Sinon seuil (dBFS), attaque et relâchement (boutons 1..7 du 1176).
+    // Le seuil du 1176 en ratio ALL est fixe (-21 dBFS) : régler le seuil revient à régler son INPUT.
+    void setControl (bool autoMode, float thresholdDb, float attack, float release, bool snap) noexcept
+    {
+        if (autoMode) crush.setParams (16.0f, 0.0f, 6.0f, 6.5f, 4, snap);
+        else          crush.setParams (juce::jlimit (-12.0f, 36.0f, -21.0f - thresholdDb), 0.0f, attack, release, 4, snap);
+    }
+
     void setAmount (float amount01, bool snap) noexcept
     {
         amount01 = juce::jlimit (0.0f, 1.0f, amount01);
