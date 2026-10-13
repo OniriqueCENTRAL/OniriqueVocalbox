@@ -62,6 +62,19 @@ public:
             for (auto* p : xml->getChildWithTagNameIterator ("PARAM"))
                 values[p->getStringAttribute ("id")] = (float) p->getDoubleAttribute ("value");
 
+        // presets d'avant la séparation EQ paramétrique / EQ ANALOG (ordre à 6 modules, un seul interrupteur EQ)
+        if (values.count (ids::chainOrder) == 0 && values.count (ids::legacyChainOrder) != 0)
+            values[ids::chainOrder] = (float) convertLegacyOrder (juce::roundToInt (values[ids::legacyChainOrder]));
+        if (values.count (ids::peqPower) == 0 && values.count (ids::eqOn) != 0)
+            values[ids::peqPower] = values[ids::eqOn];
+
+        applyValues (values, e.name);
+    }
+
+    // tous les réglages d'un coup (valeurs en unités réelles) ; un paramètre absent reprend sa valeur par défaut.
+    // Sert aux presets et à l'ASSISTANT.
+    void applyValues (const std::map<juce::String, float>& values, const juce::String& name)
+    {
         for (auto* p : params())
         {
             const auto it = values.find (p->getParameterID());
@@ -70,8 +83,16 @@ public:
             p->setValueNotifyingHost (norm);
             p->endChangeGesture();
         }
-        apvts.state.setProperty ("presetName", e.name, nullptr);
+        apvts.state.setProperty ("presetName", name, nullptr);
         takeSnapshot();
+    }
+
+    // valeurs actuelles de tous les réglages (unités réelles) : sert à annuler une application de l'ASSISTANT
+    std::map<juce::String, float> currentValues() const
+    {
+        std::map<juce::String, float> v;
+        for (auto* p : params()) v[p->getParameterID()] = p->convertFrom0to1 (p->getValue());
+        return v;
     }
 
     // renvoie false si le nom est vide ; un nom d'usine est suffixé pour ne jamais l'écraser

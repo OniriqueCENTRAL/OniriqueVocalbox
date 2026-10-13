@@ -21,7 +21,8 @@ namespace ids
     inline constexpr const char* oversampling = "oversampling";
     inline constexpr const char* plosive   = "plosive";
     inline constexpr const char* resoListen = "resoListen";
-    inline constexpr const char* chainOrder = "chainOrder";
+    inline constexpr const char* chainOrder = "processOrder";      // 7 modules (EQ paramétrique et EQ ANALOG séparés)
+    inline constexpr const char* legacyChainOrder = "chainOrder";  // ancien ordre à 6 modules (projets < 1.1), converti au chargement
     inline constexpr const char* mbSolo[4] { "mbSolo1", "mbSolo2", "mbSolo3", "mbSolo4" };
     inline constexpr const char* lowFreq   = "lowFreq";
     inline constexpr const char* highFreq  = "highFreq";
@@ -54,12 +55,16 @@ namespace ids
     inline constexpr const char* mbGain[4] { "mbGain1", "mbGain2", "mbGain3", "mbGain4" };
     inline constexpr const char* mbAttack  = "mbAttack";
     inline constexpr const char* mbRelease = "mbRelease";
-    // EQ paramétrique : 6 bandes
-    inline constexpr const char* peqOn[6]   { "peq1On", "peq2On", "peq3On", "peq4On", "peq5On", "peq6On" };
-    inline constexpr const char* peqType[6] { "peq1Type", "peq2Type", "peq3Type", "peq4Type", "peq5Type", "peq6Type" };
-    inline constexpr const char* peqFreq[6] { "peq1Freq", "peq2Freq", "peq3Freq", "peq4Freq", "peq5Freq", "peq6Freq" };
-    inline constexpr const char* peqGain[6] { "peq1Gain", "peq2Gain", "peq3Gain", "peq4Gain", "peq5Gain", "peq6Gain" };
-    inline constexpr const char* peqQ[6]    { "peq1Q", "peq2Q", "peq3Q", "peq4Q", "peq5Q", "peq6Q" };
+    // EQ paramétrique : 8 bandes (pente des coupe-bas / coupe-haut, mode dynamique par bande) + interrupteur du module
+    inline constexpr const char* peqPower = "peqPower";
+    inline constexpr const char* peqOn[8]    { "peq1On", "peq2On", "peq3On", "peq4On", "peq5On", "peq6On", "peq7On", "peq8On" };
+    inline constexpr const char* peqType[8]  { "peq1Type", "peq2Type", "peq3Type", "peq4Type", "peq5Type", "peq6Type", "peq7Type", "peq8Type" };
+    inline constexpr const char* peqFreq[8]  { "peq1Freq", "peq2Freq", "peq3Freq", "peq4Freq", "peq5Freq", "peq6Freq", "peq7Freq", "peq8Freq" };
+    inline constexpr const char* peqGain[8]  { "peq1Gain", "peq2Gain", "peq3Gain", "peq4Gain", "peq5Gain", "peq6Gain", "peq7Gain", "peq8Gain" };
+    inline constexpr const char* peqQ[8]     { "peq1Q", "peq2Q", "peq3Q", "peq4Q", "peq5Q", "peq6Q", "peq7Q", "peq8Q" };
+    inline constexpr const char* peqSlope[8] { "peq1Slope", "peq2Slope", "peq3Slope", "peq4Slope", "peq5Slope", "peq6Slope", "peq7Slope", "peq8Slope" };
+    inline constexpr const char* peqDyn[8]   { "peq1Dyn", "peq2Dyn", "peq3Dyn", "peq4Dyn", "peq5Dyn", "peq6Dyn", "peq7Dyn", "peq8Dyn" };
+    inline constexpr const char* peqThr[8]   { "peq1Thresh", "peq2Thresh", "peq3Thresh", "peq4Thresh", "peq5Thresh", "peq6Thresh", "peq7Thresh", "peq8Thresh" };
     inline constexpr const char* resoAmt   = "resoAmount";
     inline constexpr const char* resoLow   = "resoLow";
     inline constexpr const char* resoMid   = "resoMid";
@@ -76,44 +81,77 @@ namespace ids
     inline constexpr const char* satOn     = "satOn";
 }
 
-// ---- ordre de traitement des 6 modules (EQ, RESONANCE, COMP, MULTIBAND, DE-ESSER, SATURATION) :
-//      une permutation, rangée dans un seul paramètre entier 0..719 (code de Lehmer, 0 = ordre d'origine)
-constexpr int kOrderModules = 6;
+// ---- ordre de traitement des 7 modules : EQ (paramétrique), RESONANCE, COMP, MULTIBAND, EQ ANALOG, DE-ESSER, SATURATION.
+//      Une permutation, rangée dans un seul paramètre entier 0..5039 (code de Lehmer, 0 = ordre d'origine :
+//      l'EQ paramétrique nettoie en premier, l'EQ ANALOG colore juste après la compression multibande).
+constexpr int kOrderModules = 7;
+constexpr int kMaxOrderIndex = 5039;
 inline const char* orderName (int module)
 {
-    static const char* n[kOrderModules] { "EQ", "RESO", "COMP", "MULTI", "DE-ESS", "SAT" };
+    static const char* n[kOrderModules] { "EQ", "RESO", "COMP", "MULTI", "ANALOG", "DE-ESS", "SAT" };
     return n[juce::jlimit (0, kOrderModules - 1, module)];
 }
 
-inline std::array<int, kOrderModules> decodeOrder (int index)
+template <int N>
+inline std::array<int, N> factorials()
 {
-    static constexpr int fact[kOrderModules] { 120, 24, 6, 2, 1, 1 };
-    std::vector<int> pool { 0, 1, 2, 3, 4, 5 };
-    std::array<int, kOrderModules> out {};
-    index = juce::jlimit (0, 719, index);
-    for (int i = 0; i < kOrderModules; ++i)
+    std::array<int, N> fact {};
+    fact[(size_t) N - 1] = 1;
+    for (int i = N - 2; i >= 0; --i) fact[(size_t) i] = fact[(size_t) i + 1] * (N - 1 - i);
+    return fact;
+}
+
+template <int N>
+inline std::array<int, N> decodePermutation (int index)
+{
+    const auto fact = factorials<N>();
+    std::vector<int> pool;
+    for (int i = 0; i < N; ++i) pool.push_back (i);
+    std::array<int, N> out {};
+    index = juce::jlimit (0, fact[0] * N - 1, index);
+    for (int i = 0; i < N; ++i)
     {
-        const int k = index / fact[i];
-        index %= fact[i];
+        const int k = index / fact[(size_t) i];
+        index %= fact[(size_t) i];
         out[(size_t) i] = pool[(size_t) k];
         pool.erase (pool.begin() + k);
     }
     return out;
 }
 
-inline int encodeOrder (const std::array<int, kOrderModules>& order)
+template <int N>
+inline int encodePermutation (const std::array<int, N>& order)
 {
-    static constexpr int fact[kOrderModules] { 120, 24, 6, 2, 1, 1 };
-    std::vector<int> pool { 0, 1, 2, 3, 4, 5 };
+    const auto fact = factorials<N>();
+    std::vector<int> pool;
+    for (int i = 0; i < N; ++i) pool.push_back (i);
     int index = 0;
-    for (int i = 0; i < kOrderModules; ++i)
+    for (int i = 0; i < N; ++i)
     {
         const auto it = std::find (pool.begin(), pool.end(), order[(size_t) i]);
-        const int k = (int) (it - pool.begin());
-        index += k * fact[i];
+        if (it == pool.end()) return 0;
+        index += (int) (it - pool.begin()) * fact[(size_t) i];
         pool.erase (it);
     }
     return index;
+}
+
+inline std::array<int, kOrderModules> decodeOrder (int index) { return decodePermutation<kOrderModules> (index); }
+inline int encodeOrder (const std::array<int, kOrderModules>& order) { return encodePermutation<kOrderModules> (order); }
+
+// ancien ordre (6 modules : EQ, RESO, COMP, MULTI, DE-ESS, SAT) -> nouvel ordre : l'ancien EQ devient l'EQ paramétrique
+// (même place) et l'EQ ANALOG s'insère juste après le MULTIBAND
+inline int convertLegacyOrder (int legacyIndex)
+{
+    static constexpr int remap[6] { 0, 1, 2, 3, 5, 6 };
+    std::array<int, kOrderModules> out {};
+    size_t k = 0;
+    for (int m : decodePermutation<6> (legacyIndex))
+    {
+        out[k++] = remap[m];
+        if (m == 3) out[k++] = 4;
+    }
+    return encodeOrder (out);
 }
 
 inline juce::String orderText (int index)
@@ -214,7 +252,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         ParameterID { ids::plosive, 1 }, "Plosives", NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f,
         Attr().withLabel ("%").withStringFromValueFunction ([] (float v, int) { return String (juce::roundToInt (v)) + " %"; })));
     p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::resoListen, 1 }, "Resonance Listen", false));
-    p.push_back (std::make_unique<AudioParameterInt> (ParameterID { ids::chainOrder, 1 }, "Processing Order", 0, 719, 0,
+    p.push_back (std::make_unique<AudioParameterInt> (ParameterID { ids::chainOrder, 1 }, "Processing Order", 0, kMaxOrderIndex, 0,
         AudioParameterIntAttributes().withStringFromValueFunction ([] (int v, int) { return orderText (v); })));
     for (int b = 0; b < 4; ++b)   // écoute d'une bande du multibande (solo)
         p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::mbSolo[b], 1 }, "Multiband Listen " + String (b + 1), false));
@@ -329,19 +367,20 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
                                                             Attr().withLabel ("ms").withStringFromValueFunction (ms)));
     }
 
-    // ---- EQ PARAMÉTRIQUE : 6 bandes, toutes coupées par défaut (positions de départ utiles pour la voix)
+    // ---- EQ PARAMÉTRIQUE : 8 bandes, toutes coupées par défaut (positions de départ utiles pour la voix)
+    p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::peqPower, 1 }, "Parametric EQ On", true));
     {
         auto hz = [] (float v, int) { return v >= 1000.0f ? String (v / 1000.0f, v >= 10000.0f ? 1 : 2) + " kHz" : String (juce::roundToInt (v)) + " Hz"; };
         auto qText = [] (float v, int) { return String (v, 2); };
-        const int defType[6] { 3, 1, 0, 0, 0, 2 };                         // LOW CUT, LOW SHELF, BELL x3, HIGH SHELF
-        const float defFreq[6] { 80.0f, 150.0f, 400.0f, 2000.0f, 5000.0f, 10000.0f };
-        const float defQ[6] { 0.71f, 0.71f, 1.0f, 1.0f, 1.0f, 0.71f };
-        for (int b = 0; b < 6; ++b)
+        const int defType[8] { 3, 1, 0, 0, 0, 2, 0, 0 };                   // LOW CUT, LOW SHELF, BELL x3, HIGH SHELF, BELL x2
+        const float defFreq[8] { 80.0f, 150.0f, 400.0f, 2000.0f, 5000.0f, 10000.0f, 250.0f, 1000.0f };
+        const float defQ[8] { 0.71f, 0.71f, 1.0f, 1.0f, 1.0f, 0.71f, 1.0f, 1.0f };
+        for (int b = 0; b < 8; ++b)
         {
             const String n = "Param EQ " + String (b + 1) + " ";
             p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::peqOn[b], 1 }, n + "On", false));
             p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { ids::peqType[b], 1 }, n + "Type",
-                StringArray { "Bell", "Low Shelf", "High Shelf", "Low Cut", "High Cut" }, defType[b]));
+                StringArray { "Bell", "Low Shelf", "High Shelf", "Low Cut", "High Cut", "Notch" }, defType[b]));
             NormalisableRange<float> fr (20.0f, 20000.0f, 0.1f);
             fr.setSkewForCentre (1000.0f);
             p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::peqFreq[b], 1 }, n + "Freq", fr, defFreq[b],
@@ -352,6 +391,13 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
             qr.setSkewForCentre (1.0f);
             p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::peqQ[b], 1 }, n + "Q", qr, defQ[b],
                                                                 Attr().withStringFromValueFunction (qText)));
+            // pente des coupe-bas / coupe-haut ; mode dynamique (cloche, shelfs, notch) et son seuil
+            p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { ids::peqSlope[b], 1 }, n + "Slope",
+                StringArray { "12 dB/oct", "24 dB/oct", "36 dB/oct", "48 dB/oct" }, 0));
+            p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::peqDyn[b], 1 }, n + "Dynamic", false));
+            p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::peqThr[b], 1 }, n + "Threshold",
+                NormalisableRange<float> (-60.0f, 0.0f, 0.1f), -30.0f,
+                Attr().withLabel ("dB").withStringFromValueFunction ([] (float v, int) { return String (v, 1) + " dB"; })));
         }
     }
 
@@ -397,7 +443,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
 
     // interrupteurs de module (bouton power) : actifs par défaut
     using Switch = std::pair<const char*, const char*>;
-    for (auto [id, name] : { Switch { ids::eqOn, "EQ On" }, Switch { ids::resoOn, "Resonance On" },
+    for (auto [id, name] : { Switch { ids::eqOn, "EQ Analog On" }, Switch { ids::resoOn, "Resonance On" },
                              Switch { ids::deessOn, "De-Esser On" }, Switch { ids::satOn, "Saturation On" } })
         p.push_back (std::make_unique<AudioParameterBool> (ParameterID { id, 1 }, name, true));
 

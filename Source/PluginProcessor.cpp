@@ -34,11 +34,13 @@ OniriqueVocalBoxAudioProcessor::OniriqueVocalBoxAudioProcessor()
     pDeess2Amt  = apvts.getRawParameterValue (ids::deess2Amt);
     pMbAttack  = apvts.getRawParameterValue (ids::mbAttack);
     pMbRelease = apvts.getRawParameterValue (ids::mbRelease);
-    for (int b = 0; b < 6; ++b)
+    for (int b = 0; b < 8; ++b)
     {
-        const char* id[5] { ids::peqOn[b], ids::peqType[b], ids::peqFreq[b], ids::peqGain[b], ids::peqQ[b] };
-        for (int k = 0; k < 5; ++k) pPeq[b][k] = apvts.getRawParameterValue (id[k]);
+        const char* id[8] { ids::peqOn[b], ids::peqType[b], ids::peqFreq[b], ids::peqGain[b], ids::peqQ[b],
+                            ids::peqSlope[b], ids::peqDyn[b], ids::peqThr[b] };
+        for (int k = 0; k < 8; ++k) pPeq[b][k] = apvts.getRawParameterValue (id[k]);
     }
+    pPeqPower = apvts.getRawParameterValue (ids::peqPower);
     for (int i = 0; i < 3; ++i) pMbX[i] = apvts.getRawParameterValue (ids::mbX[i]);
     for (int b = 0; b < 4; ++b)
     {
@@ -109,7 +111,7 @@ VocalChain::Params OniriqueVocalBoxAudioProcessor::readParams() const noexcept
     for (int b = 0; b < 4; ++b) { p.mb.thr[(size_t) b] = pMbThr[b]->load(); p.mb.gain[(size_t) b] = pMbGain[b]->load(); }
     p.mb.attackMs  = pMbAttack->load();
     p.mb.releaseMs = pMbRelease->load();
-    for (int b = 0; b < 6; ++b)
+    for (int b = 0; b < 8; ++b)
     {
         auto& band = p.peq[(size_t) b];
         band.on = pPeq[b][0]->load() > 0.5f;
@@ -117,7 +119,11 @@ VocalChain::Params OniriqueVocalBoxAudioProcessor::readParams() const noexcept
         band.freq = pPeq[b][2]->load();
         band.gainDb = pPeq[b][3]->load();
         band.q = pPeq[b][4]->load();
+        band.slope = juce::roundToInt (pPeq[b][5]->load());
+        band.dyn = pPeq[b][6]->load() > 0.5f;
+        band.thrDb = pPeq[b][7]->load();
     }
+    p.peqOn = pPeqPower->load() > 0.5f;
     p.compOn    = pComp[0]->load() > 0.5f;
     p.compMode  = juce::roundToInt (pComp[1]->load());
     p.compOrder = juce::roundToInt (pComp[2]->load());
@@ -217,6 +223,8 @@ void OniriqueVocalBoxAudioProcessor::processBlock (juce::AudioBuffer<float>& buf
 
     float* ch[2] { buffer.getWritePointer (0), numCh > 1 ? buffer.getWritePointer (1) : nullptr };
     inputTap.push (ch[0], ch[1], total);    // analyseur : signal d'entrée
+    if (assistListening.load (std::memory_order_relaxed))
+        assistTap.push (ch[0], ch[1], total);   // ASSISTANT : la voix brute, telle qu'elle arrive
     chain.process (ch, numCh, total);
     outputTap.push (ch[0], ch[1], total);   // analyseur : signal de sortie
     license.process (buffer, getSampleRate(), isNonRealtime());
@@ -246,6 +254,28 @@ void OniriqueVocalBoxAudioProcessor::setStateInformation (const void* data, int 
     if (auto xml = getXmlFromBinary (data, size))
         if (xml->hasTagName (apvts.state.getType()))
         {
+            // projets d'avant la séparation EQ paramétrique / EQ ANALOG : l'ordre à 6 modules est converti
+            // (l'EQ ANALOG se place juste après le MULTIBAND) et l'EQ paramétrique suit l'ancien interrupteur EQ
+            auto findParam = [&xml] (const char* id) -> juce::XmlElement*
+            {
+                for (auto* e : xml->getChildWithTagNameIterator ("PARAM"))
+                    if (e->getStringAttribute ("id") == id) return e;
+                return nullptr;
+            };
+            if (findParam (ids::chainOrder) == nullptr)
+            {
+                auto* e = xml->createNewChildElement ("PARAM");
+                e->setAttribute ("id", ids::chainOrder);
+                const auto* old = findParam (ids::legacyChainOrder);
+                e->setAttribute ("value", old != nullptr ? convertLegacyOrder (old->getIntAttribute ("value")) : 0);
+            }
+            if (findParam (ids::peqPower) == nullptr)
+                if (const auto* eq = findParam (ids::eqOn))
+                {
+                    auto* e = xml->createNewChildElement ("PARAM");
+                    e->setAttribute ("id", ids::peqPower);
+                    e->setAttribute ("value", eq->getDoubleAttribute ("value"));
+                }
             apvts.replaceState (juce::ValueTree::fromXml (*xml));
             presets.takeSnapshot();   // l'état rechargé sert de référence pour l'indicateur "modifié"
         }

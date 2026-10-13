@@ -60,7 +60,12 @@ public:
     float getParallelReductionDb() const noexcept { return chain.getParallelReductionDb(); }
     float getDeEssReductionDb() const noexcept { return chain.getDeEssReductionDb(); }
     float getDeEss2ReductionDb() const noexcept { return chain.getDeEss2ReductionDb(); }
+    float getPeqBandGainDb (int b) const noexcept { return chain.getPeqBandGainDb (b); }
     float consumeInputLevel (int c) noexcept  { return chain.consumeInputLevel (c); }
+
+    // ASSISTANT : pendant l'écoute, le signal d'entrée (avant tout traitement, mono) est copié dans cette prise
+    onirique::SpectrumTap assistTap;
+    std::atomic<bool> assistListening { false };
     float consumeOutputLevel (int c) noexcept { return chain.consumeOutputLevel (c); }
     const onirique::MultibandOpto::Meter& getMultibandMeter() const noexcept { return chain.getMultibandMeter(); }
 
@@ -90,7 +95,8 @@ private:
     std::atomic<float>* pMbGain[4] {};
     std::atomic<float>* pMbAttack = nullptr;
     std::atomic<float>* pMbRelease = nullptr;
-    std::atomic<float>* pPeq[6][5] {};   // on, type, freq, gain, q
+    std::atomic<float>* pPeq[8][8] {};   // on, type, freq, gain, q, pente, dynamique, seuil
+    std::atomic<float>* pPeqPower = nullptr;
     std::atomic<float>* pComp[11] {};   // compOn, mode, order, 1176 in/out/attack/release/ratio, LA-2A gain/peak/limit
     std::atomic<float>* pResoAmt = nullptr;
     std::atomic<float>* pResoLow = nullptr;

@@ -5,7 +5,8 @@
 
 namespace onirique
 {
-/*  EQ vocal 3 boutons (0..10), implémentation originale, 100 % IIR minimum-phase
+/*  EQ ANALOG : EQ de coloration 3 boutons (0..10), placé après la compression multibande dans la chaîne.
+    Implémentation originale, 100 % IIR minimum-phase
     (aucun problème de phase entre bandes : les filtres s'additionnent en dB).
 
     LOW  (Pultec-like) : shelf large sur la fréquence choisie (80 / 100 / 125 Hz, 125 Hz à
@@ -148,22 +149,26 @@ public:
     // Partagé avec l'analyseur de l'interface : la courbe affichée est exactement celle appliquée.
     static void design (double fs, float l, float m, float h, float f, float hf, BiquadCoeffs out[12]) noexcept
     {
+        // fin de course : au-delà de ~6, chaque bouton va chercher plus loin (jusqu'à +55 % à 10) ; en dessous de 5,
+        // la courbe reste celle d'origine à 7 % près (les anciens réglages sonnent pareil)
+        auto reach = [] (float x, float k) { return 1.0 + (double) k * std::pow ((double) x, 3.0); };
+
         // ---- LOW
-        const double a = taper (l, 1.25f), cd = taper (l, 1.05f);
+        const double a = taper (l, 1.25f) * reach (l, 0.55f), cd = taper (l, 1.05f) * reach (l, 0.25f);
         out[0] = BiquadCoeffs::highpass (fs, 12.0 + 10.0 * l, 0.707);
         out[1] = BiquadCoeffs::lowShelf (fs, f, 0.55, 6.0 * a);
         out[2] = BiquadCoeffs::peaking  (fs, 0.76 * f, 1.0, 1.6 * a);
         out[3] = BiquadCoeffs::peaking  (fs, 2.16 * f, 0.9, -2.4 * cd);
 
         // ---- MUD
-        const double t = taper (m, 1.15f);
+        const double t = taper (m, 1.15f) * reach (m, 0.45f), mc = m * reach (m, 0.45f);
         out[4] = BiquadCoeffs::peaking (fs, 300.0, 0.85, -6.5 * t);
         out[5] = BiquadCoeffs::peaking (fs, 450.0, 1.2, -1.0 * t);
-        out[6] = BiquadCoeffs::peaking (fs, 140.0, 0.9, 1.6 * m);
-        out[7] = BiquadCoeffs::peaking (fs, 2300.0, 0.9, 0.6 * m);
+        out[6] = BiquadCoeffs::peaking (fs, 140.0, 0.9, 1.6 * mc);
+        out[7] = BiquadCoeffs::peaking (fs, 2300.0, 0.9, 0.6 * mc);
 
         // ---- HIGH
-        const double u = taper (h, 1.1f);
+        const double u = taper (h, 1.1f) * reach (h, 0.5f);
         const double fAir = std::min ((double) hf, 0.42 * fs);
         const double fTop = std::min (1.41 * hf, 0.45 * fs);
         const double qAir = hf > 15000.0f ? 0.35 : 0.5;     // 20K : pente très large, l'air descend en douceur

@@ -3,6 +3,7 @@
 #include "License/LicenseOverlay.h"
 #include "PluginProcessor.h"
 #include "MultibandPresets.h"
+#include "Assistant/AssistantEngine.h"
 
 #include <array>
 #include <map>
@@ -312,17 +313,22 @@ private:
     bool dragMoved = false;
 };
 
-// Analyseur en temps réel (comme sur le site) : spectre d'entrée, spectre de sortie, et la courbe EXACTE de l'EQ
-// (mêmes filtres que l'audio, LOW CUT compris), qui glisse quand on tourne un bouton.
+// Analyseur en temps réel + EQ paramétrique : spectres d'entrée et de sortie (FFT 8192, lissage 1/6 d'octave et
+// retombée douce, courbes lissées), courbe EXACTE de l'EQ paramétrique (mêmes filtres que l'audio, gain dynamique en
+// direct) et, en pointillés, la couleur de l'EQ ANALOG. Les points numérotés se tirent à la souris ; clic droit = menu
+// de la bande (type, pente, mode dynamique). fullScreen : version plein écran (plus de repères, étiquettes de bande).
 class SpectrumAnalyzer : public juce::Component, public juce::TooltipClient, public Animated
 {
 public:
-    explicit SpectrumAnalyzer (OniriqueVocalBoxAudioProcessor&);
+    SpectrumAnalyzer (OniriqueVocalBoxAudioProcessor&, bool fullScreen = false);
 
     // EQ paramétrique : bande sélectionnée (affichée dans la barre de réglage de la carte)
     std::function<void (int)> onSelect;
     int getSelected() const noexcept { return selected; }
     void select (int band);
+    void setSelectedSilently (int band) { selected = juce::jlimit (0, kPeq - 1, band); eqDirty = true; }
+    // un seul analyseur lit les prises à la fois (celui qui est affiché)
+    void setActive (bool a) { active = a; }
 
     void paint (juce::Graphics&) override;
     void tick() override;
@@ -335,46 +341,68 @@ public:
     void mouseDoubleClick (const juce::MouseEvent&) override;
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
-    static void showTypeMenu (juce::Component& target, juce::AudioProcessorValueTreeState&, int band);
+    // menu de bande : type, pente (coupe-bas / coupe-haut), mode dynamique, allumer / couper, remise à zéro
+    static void showBandMenu (juce::Component& target, juce::AudioProcessorValueTreeState&, int band);
 
 private:
-    static constexpr int kOrder = 12, kN = 1 << kOrder, kPts = 256, kPeq = onirique::ParametricEQ::kBands;
-    static constexpr float kEqRange = 18.0f;
+    static constexpr int kOrder = 13, kN = 1 << kOrder, kPts = 320, kPeq = onirique::ParametricEQ::kBands;
+    static constexpr float kEqRange = 20.0f;
 
+    struct PointMap { int b0 = 1, b1 = 1; float pos = 1.0f, width = 1.0f; bool interp = true; };
+    void buildMap (double fs);
     void analyse (onirique::SpectrumTap&, std::vector<float>& hist, int& writePos, std::array<float, kPts>& spec);
+    bool updateCurves (double fs);
+    void paintGrid (juce::Graphics&);
+    void paintEq (juce::Graphics&);
     float hzAt (int i) const noexcept { return 20.0f * std::pow (1000.0f, (float) i / (float) (kPts - 1)); }
     float param (const char* id) const { return processor.apvts.getRawParameterValue (id)->load(); }
+    float unit() const noexcept;
     juce::Rectangle<float> plotArea() const noexcept;
     float xOf (float hz) const noexcept;
     float hzOf (float x) const noexcept;
     float yEq (float db) const noexcept;
     float dbOf (float y) const noexcept;
+    float ySpec (float db) const noexcept;
     onirique::ParametricEQ::Band band (int b) const;
     juce::Point<float> nodePos (int b) const;
     int nodeAt (juce::Point<float>) const;
     void setParam (const char* id, float v, bool gesture = true);
+    juce::Path smoothPath (const std::array<float, kPts>& ys, bool closeToBottom, float bottom) const;
 
     OniriqueVocalBoxAudioProcessor& processor;
+    const bool full;
+    bool active = true;
     juce::dsp::FFT fft { kOrder };
     std::vector<float> window, histIn, histOut, scratch, fftBuf;
-    int writeIn = 0, writeOut = 0, frame = 0;
+    std::array<PointMap, kPts> pmap {};
+    double mapFs = 0.0;
+    int writeIn = 0, writeOut = 0;
     float windowGain = 1.0f;
-    std::array<float, kPts> specIn {}, specOut {}, curve {}, selCurve {};
-    float l = 0.0f, m = 0.0f, h = 0.0f, lf = 125.0f, hf = 10000.0f, lc = 0.0f, eqAmt = 1.0f;
+    std::array<float, kPts> specIn {}, specOut {}, curve {}, maxCurve {}, selCurve {}, analogCurve {};
+    std::array<float, kPeq * 8 + 2> lastSig {};
+    juce::Image gridLayer, eqLayer;   // calques : grille (taille) et courbes d'EQ (réglages) ; seuls les spectres sont redessinés à chaque image
+    bool eqDirty = true;
+    float l = 0.0f, m = 0.0f, h = 0.0f, lf = 125.0f, hf = 10000.0f, lc = 0.0f, eqAmt = 1.0f, analogAmt = 1.0f;
+    bool anyDyn = false;
     int selected = 2, hoverNode = -1, dragNode = -1;
-    float nodeGlow[kPeq] {};
+    float nodeGlow[kPeq] {}, liveGain[kPeq] {};
+    juce::Point<float> dragStart;
+    float dragF0 = 1000.0f, dragG0 = 0.0f;
     int qFlashBand = -1, qFlashFrames = 0;   // étiquette "Q x.xx" affichée pendant le réglage à la molette
 };
 
-// Barre de réglage de la bande sélectionnée de l'EQ paramétrique : n° + LED (on/off) + type (menu).
+// Barre de réglage d'une bande de l'EQ paramétrique : n° + LED (on/off) + type (menu), "DYN" quand elle est dynamique.
 class PeqBandChip : public juce::Component, public juce::SettableTooltipClient, public Animated
 {
 public:
     explicit PeqBandChip (juce::AudioProcessorValueTreeState& s) : apvts (s)
     {
-        setTooltip ("Selected parametric band: click the LED to switch it on/off, click the name to change its type.");
+        setTooltip ("Parametric band: click the LED to switch it on/off, click the name for its menu "
+                    "(type, slope, dynamic mode).");
     }
     void setBand (int b) { band = b; repaint(); }
+    void setHighlighted (bool h) { if (h != highlighted) { highlighted = h; repaint(); } }
+    std::function<void()> onClick;
     void paint (juce::Graphics&) override;
     void tick() override;
     void mouseDown (const juce::MouseEvent&) override;
@@ -383,7 +411,56 @@ private:
     juce::AudioProcessorValueTreeState& apvts;
     int band = 2;
     float lit = 0.0f;
+    bool highlighted = false;
     juce::String shownType;
+};
+
+// Petit bouton à pictogramme (plein écran / sortie du plein écran), même verre sombre que les pastilles.
+class IconButton : public juce::Button, public Animated
+{
+public:
+    enum class Icon { expand, collapse };
+    explicit IconButton (Icon i) : juce::Button ("icon"), icon (i) {}
+    void setText (const juce::String& t) { text = t; repaint(); }
+    void paintButton (juce::Graphics&, bool highlighted, bool down) override;
+    void tick() override;
+
+private:
+    Icon icon;
+    juce::String text;
+    float glow = 0.0f;
+};
+
+// EQ paramétrique en plein écran (dans la fenêtre du plugin) : grand analyseur + les 8 bandes réglables d'un coup d'œil.
+class EqFullView : public juce::Component, public Animated
+{
+public:
+    explicit EqFullView (OniriqueVocalBoxAudioProcessor&);
+    ~EqFullView() override;
+    std::function<void()> onClose;
+    std::function<void (int)> onSelect;
+    void selectBand (int b);
+    void setShown (bool shown);
+
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void tick() override;
+    bool keyPressed (const juce::KeyPress&) override;
+
+    SpectrumAnalyzer analyzer;
+
+private:
+    OniriqueVocalBoxAudioProcessor& processor;
+    IconButton exitButton { IconButton::Icon::collapse };
+    PowerButton power;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> powerAtt;
+    std::array<std::unique_ptr<PeqBandChip>, 8> chips;
+    std::array<std::unique_ptr<DragValue>, 8> freqV, gainV, qV, thrV;
+    std::array<std::unique_ptr<PillToggle>, 8> dynB;
+    std::array<std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>, 8> dynAtt;
+    std::vector<Animated*> children;
+    juce::Rectangle<float> titleArea, bandsArea;
+    int selected = 2;
 };
 
 // Barre de presets (en-tête) : précédent / nom (menu) / suivant + SAVE (champ de nom intégré).
@@ -500,7 +577,7 @@ private:
     float glow = 0.0f;
 };
 
-// Ordre de traitement (en-tête) : 6 pastilles EQ > RESO > COMP > MULTI > DE-ESS > SAT à glisser à la souris.
+// Ordre de traitement (en-tête) : 7 pastilles EQ > RESO > COMP > MULTI > ANALOG > DE-ESS > SAT à glisser à la souris.
 // Les autres pastilles s'écartent pendant le glisser ; au lâcher, la chaîne se réordonne (fondu de 15 ms).
 class ProcessingOrderBar : public juce::Component, public juce::TooltipClient, public Animated
 {
@@ -528,7 +605,7 @@ private:
 
     juce::AudioProcessorValueTreeState& apvts;
     std::unique_ptr<juce::ParameterAttachment> attachment;
-    std::array<int, kN> order { 0, 1, 2, 3, 4, 5 };
+    std::array<int, kN> order { 0, 1, 2, 3, 4, 5, 6 };
     std::array<float, kN> chipX {}, lit {}, hoverGlow {};
     bool placed = false;
     int dragModule = -1, hoverModule = -1;
@@ -574,6 +651,93 @@ private:
     float gr = 0.0f, hold = 0.0f, range = 18.0f;   // échelle 0 .. -range dB
     int holdFrames = 0;
     bool active = true;
+};
+
+// Bouton de l'en-tête qui ouvre l'ASSISTANT : pastille braise, étincelle, liseré qui tourne doucement.
+class AiButton : public juce::Button, public Animated
+{
+public:
+    AiButton() : juce::Button ("AI ASSISTANT") {}
+    void paintButton (juce::Graphics&, bool highlighted, bool down) override;
+    void tick() override;
+
+private:
+    float phase = 0.0f, glow = 0.0f;
+};
+
+// ASSISTANT IA : fenêtre (dans le plugin) qui écoute la voix pendant que le morceau joue, l'analyse, puis règle tous
+// les modules (voir Assistant/AssistantEngine.h). Choix du style et de l'intensité, résultats détaillés, APPLIQUER /
+// ANNULER. L'analyse et l'optimisation tournent sur un fil à part : l'interface et l'audio restent fluides.
+class AssistantPanel : public juce::Component, public Animated, private juce::Thread
+{
+public:
+    explicit AssistantPanel (OniriqueVocalBoxAudioProcessor&);
+    ~AssistantPanel() override;
+    void open();
+    void close();
+   #if ONIRIQUE_UI_TEST
+    void testWithFile (const juce::File&);   // essais locaux : analyse un fichier au lieu d'écouter le DAW
+   #endif
+
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void tick() override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseExit (const juce::MouseEvent&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    bool keyPressed (const juce::KeyPress&) override;
+
+private:
+    enum class State { idle, listening, analysing, ready, applied, failed };
+    enum Zone { zNone = -1, zClose = 0, zStyle = 10, zIntensity = 20, zListen = 30, zApply = 31, zUndo = 32, zAnalyseNow = 33, zBackdrop = 40 };
+    static constexpr float kTargetVoiceSec = 12.0f, kMinVoiceSec = 4.0f;
+
+    void run() override;
+    void startListening();
+    void finishListening();
+    void startWork (bool reuseAnalysis);
+    void apply();
+    void undo();
+    float u() const noexcept;
+    juce::Rectangle<float> card() const noexcept;
+    int zoneAt (juce::Point<float>) const;
+    void addZone (int id, juce::Rectangle<float> r) const { zones.push_back ({ id, r }); }
+
+    void paintLeft (juce::Graphics&, juce::Rectangle<float>);
+    void paintRight (juce::Graphics&, juce::Rectangle<float>);
+    void paintListening (juce::Graphics&, juce::Rectangle<float>);
+    void paintProgress (juce::Graphics&, juce::Rectangle<float>);
+    void paintResults (juce::Graphics&, juce::Rectangle<float>);
+    void paintIntro (juce::Graphics&, juce::Rectangle<float>);
+    void paintButtonPill (juce::Graphics&, juce::Rectangle<float>, const juce::String&, bool primary, bool enabled, int zone) const;
+
+    OniriqueVocalBoxAudioProcessor& processor;
+    State state = State::idle;
+    int style = 0, intensity = 1, hover = zNone;
+    mutable std::vector<std::pair<int, juce::Rectangle<float>>> zones;
+
+    // capture de la voix
+    std::vector<float> capture, scratch;
+    double captureFs = 48000.0;
+    float voiceSec = 0.0f, silentSec = 0.0f, levelNow = -100.0f;
+    std::vector<float> levelHist;           // niveau des 0.1 s passées (onde affichée pendant l'écoute)
+    double blockAcc = 0.0; int blockN = 0;
+
+    // travail en arrière-plan
+    juce::CriticalSection lock;
+    float progress = 0.0f, shownProgress = 0.0f;
+    juce::String stage;
+    std::atomic<bool> cancel { false }, workDone { false };
+    bool reuse = false;
+    std::unique_ptr<onirique::assist::Engine> engine;
+    onirique::assist::Analysis analysis;
+    onirique::assist::Proposal proposal;
+    juce::String failure;
+
+    std::map<juce::String, float> undoValues;
+    juce::String undoName;
+    float appear = 0.0f, pulse = 0.0f;
+    bool closing = false;
 };
 
 class OniriqueVocalBoxAudioProcessorEditor : public juce::AudioProcessorEditor,
@@ -729,7 +893,10 @@ private:
 
     SpectrumAnalyzer analyzer { processor };
     PeqBandChip peqChip { processor.apvts };
-    std::array<std::unique_ptr<DragValue>, 6> peqFreqV, peqGainV, peqQV;   // réglages précis de la bande sélectionnée
+    std::array<std::unique_ptr<DragValue>, 8> peqFreqV, peqGainV, peqQV, peqThrV;   // réglages précis de la bande sélectionnée
+    IconButton fullButton { IconButton::Icon::expand };
+    bool peqDynShown = false;
+    AiButton aiButton;
     PresetBar presetBar { processor.presets };
     ProcessingOrderBar orderBar { processor.apvts };
     // ---- PARALLEL : compression parallèle (1176 écrasé remis dans la voix)
@@ -778,8 +945,13 @@ private:
     PillToggle bypassButton { "BYPASS", PillToggle::Style::small };
     std::unique_ptr<ButtonAttachment> autoAttachment, bypassAttachment;
 
-    PowerButton eqPower, resoPower, cardPower, compPower, mbPower, parPower, deessPower, satPower;
-    std::unique_ptr<ButtonAttachment> eqPowerAtt, resoPowerAtt, cardPowerAtt, compPowerAtt, mbPowerAtt, parPowerAtt, deessPowerAtt, satPowerAtt;
+    PowerButton eqPower, resoPower, cardPower, compPower, mbPower, parPower, deessPower, satPower, peqPower;
+    std::unique_ptr<ButtonAttachment> eqPowerAtt, resoPowerAtt, cardPowerAtt, compPowerAtt, mbPowerAtt, parPowerAtt, deessPowerAtt, satPowerAtt, peqPowerAtt;
+
+    // EQ paramétrique plein écran et ASSISTANT : par-dessus les modules (et leurs voiles), sous la licence
+    EqFullView eqFull { processor };
+    AssistantPanel assistant { processor };
+    void showEqFull (bool show);
 
 
     std::vector<Animated*> animated;

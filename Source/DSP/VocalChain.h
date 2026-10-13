@@ -39,9 +39,15 @@ public:
         else      mix.setTargetValue (on ? 1.0f : 0.0f);
     }
 
+    // simulation hors temps réel (ASSISTANT) : un module coupé n'est pas calculé du tout
+    bool skipWhenOff = false;
+
     template <typename Fn>
     void process (float* const* ch, int numCh, int n, Fn&& runModule) noexcept
     {
+        if (skipWhenOff && ! mix.isSmoothing() && mix.getTargetValue() <= 0.0f)
+            return;
+
         for (int c = 0; c < numCh; ++c)
             for (int i = 0; i < n; ++i)
                 dry[c][(size_t) i] = delay[c].process (ch[c][i]);
@@ -68,8 +74,9 @@ private:
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> mix;
 };
 
-/*  Chaîne complète : INPUT -> EQ -> RESONANCE -> COMPRESSION -> MULTIBAND -> DE-ESSER -> SATURATION LAB -> AUTO GAIN -> OUTPUT
-    + interrupteur par module (EQ, RESONANCE, COMPRESSION, MULTIBAND, DE-ESSER, SATURATION LAB)
+/*  Chaîne complète : INPUT -> EQ PARAMÉTRIQUE -> RESONANCE -> COMPRESSION -> MULTIBAND -> EQ ANALOG -> DE-ESSER
+    -> SATURATION LAB -> AUTO GAIN -> OUTPUT (ordre des 7 modules réglable)
+    + interrupteur par module (EQ, RESONANCE, COMPRESSION, MULTIBAND, EQ ANALOG, DE-ESSER, SATURATION LAB)
     + BYPASS global (fondu 20 ms, signal sec retardé de la latence totale du plugin).
 
     Garanties temps réel : aucune allocation dans process() (tout est dans prepare()),
@@ -99,11 +106,12 @@ public:
         bool laLimit = false;
         float plosive = 0.0f;                           // %
         bool resoListen = false;
-        int chainOrder = 0;                             // permutation des 6 modules (voir decodeOrder)
+        int chainOrder = 0;                             // permutation des 7 modules (voir decodeOrder)
         std::array<bool, 4> mbSolo {};                  // écoute par bande du multibande
         bool mbOn = false;
         MultibandOpto::Params mb;
-        std::array<ParametricEQ::Band, ParametricEQ::kBands> peq {};   // EQ paramétrique (dans le module EQ)
+        std::array<ParametricEQ::Band, ParametricEQ::kBands> peq {};   // EQ paramétrique (premier module)
+        bool peqOn = true;                              // interrupteur de l'EQ paramétrique (eqOn = EQ ANALOG)
         float resoAmt = 0.0f, resoLow = 40.0f, resoMid = 100.0f, resoHigh = 80.0f;   // en %
         float resoFreq[3] { 180.0f, 1200.0f, 6500.0f }, resoWidth[3] { 1.5f, 2.0f, 2.0f };   // Hz, octaves
         float deessFreq = 4000.0f, deessAmt = 0.0f;     // amt en %
@@ -144,6 +152,7 @@ public:
         autoGain.prepare (fs);
 
         eqSw.prepare (fsOS, 0, blockOS);
+        peqSw.prepare (fsOS, 0, blockOS);
         resoSw.prepare (fsOS, reso.getLatencySamples(), blockOS);
         compSw.prepare (fsOS, 0, blockOS);
         parSw.prepare (fsOS, 0, blockOS);
@@ -168,6 +177,12 @@ public:
     }
 
     int getLatencySamples() const noexcept { return latency; }
+
+    // ASSISTANT : chaîne préparée en LIVE (latence nulle) pour une simulation ; les modules coupés ne sont pas calculés
+    void setSimulationMode (bool on) noexcept
+    {
+        for (auto* s : { &eqSw, &peqSw, &resoSw, &compSw, &parSw, &mbSw, &deessSw, &satSw }) s->skipWhenOff = on;
+    }
 
     void setParams (const Params& p, bool snap = false) noexcept
     {
@@ -217,6 +232,7 @@ public:
         sat.setMode (p.satType, snap);
 
         eqSw.set (p.eqOn, snap);
+        peqSw.set (p.peqOn, snap);
         resoSw.set (p.resoOn, snap);
         compSw.set (p.compOn && p.compMaster, snap);
         parSw.set (p.parOn, snap);
@@ -243,6 +259,7 @@ public:
     float getDeEss2ReductionDb() const noexcept { return deEsser2.getReductionDb(); }
     float getPlosiveReductionDb() const noexcept { return plosive.getReductionDb(); }
     float getParallelReductionDb() const noexcept { return parallel.getGainReductionDb(); }
+    float getPeqBandGainDb (int b) const noexcept { return peq.getBandGainDb (b); }
 
     // mètres (crête linéaire par canal depuis la dernière lecture) : lus et remis à zéro par l'interface
     float consumeInputLevel (int c) noexcept  { return inLevel[c & 1].exchange (0.0f, std::memory_order_relaxed); }
@@ -286,12 +303,12 @@ private:
         float* x[2] { up.getChannelPointer (0), up.getChannelPointer (1) };
         float* rem[2] { up.getChannelPointer (2), up.getChannelPointer (3) };
 
-        // 4) les 6 modules dans l'ordre choisi (cadence suréchantillonnée)
+        // 4) les 7 modules dans l'ordre choisi (cadence suréchantillonnée)
         for (int k = 0; k < kOrderModules; ++k)
         {
             switch (order[(size_t) k])
             {
-                case 0: eqSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { eq.process (s, nc, q); peq.process (s, nc, q); }); break;
+                case 0: peqSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { peq.process (s, nc, q); }); break;
                 case 1:
                     resoSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { reso.process (s, nc, q); });
                     // LISTEN : ce que RESONANCE retire = son entrée (alignée) - sa sortie
@@ -306,7 +323,8 @@ private:
                     parSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { parallel.process (s, nc, q); });
                     break;
                 case 3: mbSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { multiband.process (s, nc, q); }); break;
-                case 4: deessSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { plosive.process (s, nc, q); deEsser.process (s, nc, q); deEsser2.process (s, nc, q); }); break;
+                case 4: eqSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { eq.process (s, nc, q); }); break;   // EQ ANALOG
+                case 5: deessSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { plosive.process (s, nc, q); deEsser.process (s, nc, q); deEsser2.process (s, nc, q); }); break;
                 default: satSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { sat.process (s, nc, q); }); break;
             }
         }
@@ -353,7 +371,7 @@ private:
     int deessLatency() const noexcept { return deEsser.getLatencySamples() + deEsser2.getLatencySamples(); }
     SaturationLab sat;
     AutoGain autoGain;
-    ModuleSwitch eqSw, resoSw, compSw, parSw, mbSw, deessSw, satSw;
+    ModuleSwitch eqSw, peqSw, resoSw, compSw, parSw, mbSw, deessSw, satSw;
     DelayLine dryDelay[2];
     float dry[2][kChunk] {}, removed[2][kChunk] {}, monoSpare[kChunk] {};
     DelayLine listenDelay[2];
@@ -371,14 +389,14 @@ private:
         bool seen = false;
         for (int m : order)
         {
-            if (seen && m == 4) after += deessLatency();
-            if (seen && m == 5) after += sat.getLatencySamples();
+            if (seen && m == 5) after += deessLatency();
+            if (seen && m == 6) after += sat.getLatencySamples();
             if (m == 1) seen = true;
         }
         for (auto& d : listenDelay) d.setLength (after);
     }
 
-    std::array<int, kOrderModules> order { 0, 1, 2, 3, 4, 5 }, pendingOrder { 0, 1, 2, 3, 4, 5 };
+    std::array<int, kOrderModules> order { 0, 1, 2, 3, 4, 5, 6 }, pendingOrder { 0, 1, 2, 3, 4, 5, 6 };
     float orderGain = 1.0f, orderStep = 0.001f;
     bool orderJustSwapped = false;
     PlosiveSuppressor plosive;
