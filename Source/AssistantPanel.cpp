@@ -54,16 +54,53 @@ float AssistantPanel::u() const noexcept { return ui::editorScale (*this); }
 juce::Rectangle<float> AssistantPanel::card() const noexcept
 {
     const float s = u();
-    return juce::Rectangle<float> (1200.0f * s, 780.0f * s).withCentre (getLocalBounds().toFloat().getCentre())
-               .translated (0.0f, (1.0f - appear) * 24.0f * s);
+    return juce::Rectangle<float> (1200.0f * s, 780.0f * s).withCentre (getLocalBounds().toFloat().getCentre());
 }
 
 void AssistantPanel::open()
 {
+    // verre dépoli : capture du plugin (réduite au quart) floutée une fois, puis fondue sous la fenêtre
+    if (auto* parent = getParentComponent(); parent != nullptr && ! isVisible())
+    {
+        auto snap = parent->createComponentSnapshot (parent->getLocalBounds(), true, 0.25f);
+        backdrop = juce::Image (juce::Image::ARGB, snap.getWidth(), snap.getHeight(), true, juce::SoftwareImageType());
+        juce::ImageConvolutionKernel k (11);
+        k.createGaussianBlur (3.2f);
+        k.applyToImage (backdrop, snap, snap.getBounds());
+    }
+    if (! isVisible() || closing)
+    {
+        animStart = juce::Time::getMillisecondCounterHiRes();   // rouvert pendant la fermeture : repart d'où il en est (appear ne redescend pas)
+        if (! isVisible()) appear = 0.0f;
+    }
     closing = false;
     setVisible (true);
     toFront (true);
     grabKeyboardFocus();
+}
+
+// animation dans le temps (pas en images) : ouverture 420 ms (fondu doux, la fenêtre grandit avec un léger rebond),
+// fermeture 230 ms (accélère en partant)
+void AssistantPanel::updateAnimation()
+{
+    const double now = juce::Time::getMillisecondCounterHiRes();
+    const float t = (float) juce::jlimit (0.0, 1.0, (now - animStart) / (closing ? 230.0 : 420.0));
+    if (! closing)
+    {
+        const float fade = 1.0f - std::pow (1.0f - t, 3.0f);                     // ease-out cubique
+        const float c1 = 1.4f, c3 = c1 + 1.0f;                                    // ease-out "back" : léger dépassement
+        const float back = 1.0f + c3 * std::pow (t - 1.0f, 3.0f) + c1 * std::pow (t - 1.0f, 2.0f);
+        appear = std::max (appear, fade);
+        cardScale = 0.93f + 0.07f * back;
+        cardShift = (1.0f - fade) * 20.0f;
+    }
+    else
+    {
+        const float e = t * t * t;                                                // ease-in cubique
+        appear = std::min (appear, 1.0f - e);
+        cardScale = 1.0f - 0.05f * e;
+        cardShift = e * 12.0f;
+    }
 }
 
 void AssistantPanel::close()
@@ -73,6 +110,7 @@ void AssistantPanel::close()
         processor.assistListening.store (false);
         state = proposal.values.empty() ? State::idle : State::ready;
     }
+    if (! closing) animStart = juce::Time::getMillisecondCounterHiRes();
     closing = true;
 }
 
@@ -202,8 +240,8 @@ void AssistantPanel::undo()
 void AssistantPanel::tick()
 {
     if (! isVisible()) return;
-    ui::approach (appear, closing ? 0.0f : 1.0f, closing ? 0.25f : 0.16f);
-    if (closing && appear < 0.02f) { setVisible (false); return; }
+    updateAnimation();
+    if (closing && appear <= 0.001f) { setVisible (false); closing = false; backdrop = {}; return; }
     pulse += 1.0f / 60.0f;
 
     if (state == State::listening)
@@ -266,6 +304,7 @@ void AssistantPanel::mouseExit (const juce::MouseEvent&) { hover = zNone; }
 
 void AssistantPanel::mouseDown (const juce::MouseEvent& e)
 {
+    if (animating()) return;   // la fenêtre bouge encore : les zones cliquables ne sont pas à leur place
     const int z = zoneAt (e.position);
     const bool hasResults = state == State::ready || state == State::applied;
     if (z == zClose) close();
@@ -333,12 +372,26 @@ void AssistantPanel::paint (juce::Graphics& g)
 {
     zones.clear();
     const float s = u();
-    g.setColour (juce::Colours::black.withAlpha (0.66f * appear));
+    if (backdrop.isValid())
+    {
+        g.setOpacity (appear);
+        g.drawImage (backdrop, getLocalBounds().toFloat(), juce::RectanglePlacement::stretchToFit);
+    }
+    g.setColour (juce::Colours::black.withAlpha (0.52f * appear));
     g.fillAll();
     if (appear < 0.01f) return;
     g.setOpacity (1.0f);
 
+    // fenêtre : grandit / remonte depuis son centre et se fond pendant l'animation
     const auto c = card();
+    const bool anim = animating();
+    if (anim)
+    {
+        g.addTransform (juce::AffineTransform::scale (cardScale, cardScale, c.getCentreX(), c.getCentreY())
+                            .translated (0.0f, cardShift * s));
+        g.beginTransparencyLayer (juce::jlimit (0.0f, 1.0f, appear));
+    }
+    struct LayerEnd { juce::Graphics& g; bool on; ~LayerEnd() { if (on) g.endTransparencyLayer(); } } layerEnd { g, anim };
     {
         // ombre douce (quelques voiles) + verre sombre + liseré braise
         for (int i = 3; i >= 1; --i)

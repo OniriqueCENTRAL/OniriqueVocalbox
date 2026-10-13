@@ -7,8 +7,8 @@ using namespace onirique;
 
 namespace
 {
-constexpr float kBaseW = 1706.0f, kBaseH = 1016.0f;  // 1706 : colonne PARALLEL à droite de COMPRESSION ; 1016 : deux de-essers + EQ paramétrique agrandi
-constexpr int kMinW = 1000, kMaxW = 2600;
+constexpr float kBaseW = 2022.0f, kBaseH = 1016.0f;  // 2022 : colonne NOISE GATE à gauche + PARALLEL à droite ; 1016 : deux de-essers + EQ paramétrique agrandi
+constexpr int kMinW = 1180, kMaxW = 3100;
 constexpr float kPi = juce::MathConstants<float>::pi;
 
 juce::Point<float> onCircle (juce::Point<float> c, float r, float ang)
@@ -52,8 +52,8 @@ juce::Font ui::font (Face f, float h, bool bold, float kerning)
 
 float ui::editorScale (const juce::Component& c)
 {
-    if (auto* ed = c.findParentComponentOfClass<juce::AudioProcessorEditor>()) return (float) ed->getWidth() / 1706.0f;
-    if (auto* ed = dynamic_cast<const juce::AudioProcessorEditor*> (&c)) return (float) ed->getWidth() / 1706.0f;
+    if (auto* ed = c.findParentComponentOfClass<juce::AudioProcessorEditor>()) return (float) ed->getWidth() / 2022.0f;
+    if (auto* ed = dynamic_cast<const juce::AudioProcessorEditor*> (&c)) return (float) ed->getWidth() / 2022.0f;
     return 1.0f;
 }
 
@@ -805,9 +805,11 @@ void SegmentSelector::paint (juce::Graphics& g)
     }
 
     // pastille braise qui glisse vers le choix
-    auto pill = juce::Rectangle<float> (a.getX() + segW * pos, a.getY(), segW, a.getHeight()).reduced (2.5f * u);
-    if (pill.getWidth() < pill.getHeight())   // segment étroit (ex. 2X / 4X / 8X) : pastille ronde, jamais un ovale vertical
-        pill = pill.withSizeKeepingCentre (pill.getWidth(), pill.getWidth());
+    // segment étroit (ex. OFF / 2X / 4X / 8X) : pastille un peu moins haute, jamais un ovale vertical ; le texte garde
+    // toute la largeur du segment (plus de pastille ronde qui écrasait les libellés)
+    auto pill = juce::Rectangle<float> (a.getX() + segW * pos, a.getY(), segW, a.getHeight()).reduced (2.0f * u, 2.5f * u);
+    if (pill.getWidth() < pill.getHeight() * 1.2f)
+        pill = pill.withSizeKeepingCentre (pill.getWidth(), std::max (pill.getHeight() * 0.72f, std::min (pill.getHeight(), pill.getWidth() * 0.8f)));
     juce::Path pp;
     pp.addRoundedRectangle (pill, pill.getHeight() * 0.5f);
     ui::strokeGlow (g, pp, ui::ember, 1.0f * u, 0.6f * dim);
@@ -816,9 +818,8 @@ void SegmentSelector::paint (juce::Graphics& g)
     g.fillPath (pp);
 
     // une seule taille de texte pour tous les choix, qui tient dans la pastille (ronde si le segment est étroit)
-    const bool round = pill.getWidth() <= pill.getHeight() + 0.5f && segW < a.getHeight();
-    const float fitW = round ? pill.getWidth() * 0.74f : segW - 6.0f * u;
-    auto labelFont = ui::font (ui::Face::body, r.getHeight() * 0.52f, true, 0.06f);
+    const float fitW = pill.getWidth() - 4.0f * u;
+    auto labelFont = ui::font (ui::Face::body, r.getHeight() * 0.48f, true, 0.04f);
     for (const auto& l : labels)
     {
         const float tw = ui::textWidth (labelFont, l);
@@ -2252,6 +2253,285 @@ void SpectrumAnalyzer::paint (juce::Graphics& g)
 }
 
 //==============================================================================
+GateDisplay::GateDisplay (OniriqueVocalBoxAudioProcessor& p) : processor (p)
+{
+    thrP = p.apvts.getParameter (ids::gateThr);
+    level.fill (-100.0f);
+    gainHist.fill (0.0f);
+    thrShown = param (ids::gateThr);
+    hystShown = param (ids::gateHyst);
+}
+
+juce::Rectangle<float> GateDisplay::plotArea() const noexcept
+{
+    const float u = ui::editorScale (*this);
+    return getLocalBounds().toFloat().reduced (10.0f * u, 8.0f * u).withTrimmedRight (30.0f * u).withTrimmedTop (26.0f * u);
+}
+
+juce::Rectangle<float> GateDisplay::learnArea() const noexcept
+{
+    const float u = ui::editorScale (*this);
+    const auto a = getLocalBounds().toFloat();
+    return { a.getRight() - 104.0f * u, a.getY() + 6.0f * u, 96.0f * u, 22.0f * u };
+}
+
+float GateDisplay::yOf (float db) const noexcept
+{
+    const auto p = plotArea();
+    return p.getY() + juce::jlimit (0.0f, 1.0f, db / kMinDb) * p.getHeight();
+}
+
+float GateDisplay::dbOf (float y) const noexcept
+{
+    const auto p = plotArea();
+    return kMinDb * juce::jlimit (0.0f, 1.0f, (y - p.getY()) / p.getHeight());
+}
+
+void GateDisplay::tick()
+{
+    const auto& m = processor.getGateMeter();
+    const bool on = param (ids::gateOn) > 0.5f && param (ids::bypass) < 0.5f;
+    const float lv = m.levelDb.load (std::memory_order_relaxed);
+    level[(size_t) head] = lv;
+    const bool bypassed = param (ids::bypass) > 0.5f;
+    gainHist[(size_t) head] = bypassed ? 0.0f : m.gainDb.load (std::memory_order_relaxed);
+    head = (head + 1) % kHist;
+
+    ui::approach (thrShown, param (ids::gateThr), 0.3f);
+    ui::approach (hystShown, param (ids::gateHyst), 0.3f);
+    ui::approach (floorShown, m.floorDb.load (std::memory_order_relaxed), 0.05f);
+    ui::approach (openLed, on && m.open.load (std::memory_order_relaxed) ? 1.0f : 0.0f, 0.25f);
+    ui::approach (active, on ? 1.0f : 0.0f, 0.15f);
+    ui::approach (thrGlow, (dragging || hoverThr) ? 1.0f : 0.0f, 0.2f);
+    ui::approach (learnGlow, (hoverLearn || learnFrames > 0) ? 1.0f : 0.0f, 0.2f);
+
+    // LEARN : on écoute le bruit de la pièce 1.5 s, le seuil se place 6 dB au-dessus de sa crête
+    if (learnFrames > 0)
+    {
+        learnMin = std::max (learnMin, lv);
+        if (--learnFrames == 0 && thrP != nullptr)
+        {
+            const float t = juce::jlimit (-80.0f, -20.0f, learnMin + 6.0f);
+            thrP->beginChangeGesture();
+            thrP->setValueNotifyingHost (thrP->convertTo0to1 (t));
+            thrP->endChangeGesture();
+            learnMessage = learnMin + 6.0f > -20.0f ? juce::String ("TOO LOUD - STAY SILENT AND RETRY")
+                                                    : "THRESHOLD " + juce::String (t, 1) + " dB";
+            messageFrames = 150;
+        }
+    }
+    if (messageFrames > 0) --messageFrames;
+    repaint();
+}
+
+void GateDisplay::mouseMove (const juce::MouseEvent& e)
+{
+    hoverLearn = learnArea().contains (e.position);
+    hoverThr = ! hoverLearn && std::abs (e.position.y - yOf (thrShown)) < 8.0f * ui::editorScale (*this);
+    setMouseCursor (hoverLearn ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::UpDownResizeCursor);
+}
+
+void GateDisplay::mouseExit (const juce::MouseEvent&)
+{
+    hoverLearn = false;
+    if (! dragging) hoverThr = false;
+}
+
+void GateDisplay::mouseDown (const juce::MouseEvent& e)
+{
+    if (learnArea().contains (e.position))
+    {
+        learnFrames = 90;
+        learnMin = -120.0f;
+        messageFrames = 0;
+        return;
+    }
+    if (thrP == nullptr) return;
+    dragging = true;
+    thrP->beginChangeGesture();
+    thrP->setValueNotifyingHost (thrP->convertTo0to1 (juce::jlimit (-80.0f, 0.0f, dbOf (e.position.y))));
+}
+
+void GateDisplay::mouseDrag (const juce::MouseEvent& e)
+{
+    if (dragging && thrP != nullptr)
+        thrP->setValueNotifyingHost (thrP->convertTo0to1 (juce::jlimit (-80.0f, 0.0f, dbOf (e.position.y))));
+}
+
+void GateDisplay::mouseUp (const juce::MouseEvent&)
+{
+    if (dragging && thrP != nullptr) thrP->endChangeGesture();
+    dragging = false;
+}
+
+void GateDisplay::mouseDoubleClick (const juce::MouseEvent& e)
+{
+    if (thrP == nullptr || learnArea().contains (e.position)) return;
+    thrP->beginChangeGesture();
+    thrP->setValueNotifyingHost (thrP->getDefaultValue());
+    thrP->endChangeGesture();
+}
+
+juce::String GateDisplay::getTooltip()
+{
+    if (hoverLearn)
+        return "LEARN: stay silent for 1.5 s - the gate measures your room noise and sets the threshold just above it.";
+    return "Noise gate: the voice level scrolls from right to left. Drag up/down to set the threshold (red line); the dashed "
+           "line below is where it closes again (hysteresis). The white curve on top is the gain applied (drops by RANGE when closed). Double-click = reset.";
+}
+
+void GateDisplay::paint (juce::Graphics& g)
+{
+    const auto area = getLocalBounds().toFloat();
+    const float u = ui::editorScale (*this);
+    const float es = ui::editorScale (*this);
+    const auto plot = plotArea();
+
+    g.setGradientFill (juce::ColourGradient (juce::Colours::black.withAlpha (0.55f), 0.0f, area.getY(),
+                                             ui::night.withAlpha (0.85f), 0.0f, area.getBottom(), false));
+    g.fillRoundedRectangle (area, 12.0f * u);
+    g.setColour (ui::line);
+    g.drawRoundedRectangle (area.reduced (0.5f), 12.0f * u, std::max (1.0f, u));
+
+    // ---- graduations
+    g.setFont (ui::font (ui::Face::mono, std::max (9.5f * u, 9.5f * es)));
+    for (int db = -10; db >= -70; db -= 10)
+    {
+        const float y = yOf ((float) db);
+        g.setColour (juce::Colours::white.withAlpha (0.04f));
+        g.fillRect (juce::Rectangle<float> (plot.getX(), y, plot.getWidth(), 1.0f));
+        if (db % 20 == 0)
+        {
+            g.setColour (ui::haze.withAlpha (0.6f));
+            g.drawText (juce::String (db), juce::Rectangle<float> (plot.getRight() + 4.0f * u, y - 6.0f * u, 26.0f * u, 12.0f * u),
+                        juce::Justification::centredLeft, false);
+        }
+    }
+
+    const float a = 0.45f + 0.55f * active;
+    const float colW = plot.getWidth() / (float) (kHist - 1);
+    {
+        juce::Graphics::ScopedSaveState ss (g);
+        g.reduceClipRegion (plot.toNearestInt());
+
+        // ---- niveau : colonnes os quand le gate est ouvert, estompées quand il ferme
+        for (int i = 0; i < kHist; ++i)
+        {
+            const int idx = (head + i) % kHist;
+            const float x = plot.getX() + (float) i * colW;
+            const float y = yOf (level[(size_t) idx]);
+            if (y >= plot.getBottom() - 0.5f) continue;
+            const float openness = juce::jlimit (0.0f, 1.0f, 1.0f + gainHist[(size_t) idx] / 12.0f);
+            g.setColour (ui::haze.withAlpha (0.18f * a).interpolatedWith (ui::bone.withAlpha (0.55f * a), openness));
+            g.fillRect (juce::Rectangle<float> (x, y, colW + 0.6f, plot.getBottom() - y));
+        }
+
+        // ---- bruit de fond mesuré
+        if (floorShown > kMinDb)
+        {
+            const float fy = yOf (floorShown);
+            const float dash[] { 2.0f * u, 4.0f * u };
+            g.setColour (ui::haze.withAlpha (0.5f));
+            g.drawDashedLine ({ plot.getX(), fy, plot.getRight(), fy }, dash, 2, std::max (1.0f, u));
+            g.setFont (ui::font (ui::Face::mono, std::max (9.0f * u, 9.0f * es), true));
+            g.drawText ("ROOM " + juce::String (floorShown, 0), juce::Rectangle<float> (plot.getX() + 6.0f * u, fy + 2.0f * u, 90.0f * u, 12.0f * u),
+                        juce::Justification::centredLeft, false);
+        }
+
+        // ---- courbe de gain : en haut quand le gate est ouvert, descend de RANGE quand il ferme
+        juce::Path gp;
+        for (int i = 0; i < kHist; ++i)
+        {
+            const int idx = (head + i) % kHist;
+            const float x = plot.getX() + (float) i * colW;
+            const float y = plot.getY() + 2.0f * u + juce::jlimit (0.0f, 1.0f, -gainHist[(size_t) idx] / 80.0f) * plot.getHeight();
+            if (i == 0) gp.startNewSubPath (x, y); else gp.lineTo (x, y);
+        }
+        ui::strokeGlow (g, gp, ui::bone, 1.0f * u, 0.25f * active);
+        g.setColour (ui::bone.withAlpha (0.25f + 0.5f * active));
+        g.strokePath (gp, juce::PathStrokeType (std::max (1.2f, 1.8f * u), juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+
+        // ---- hystérésis (fermeture) puis seuil (ouverture)
+        const float hy = yOf (thrShown - hystShown);
+        const float dash[] { 4.0f * u, 4.0f * u };
+        g.setColour (ui::ember.withAlpha (0.35f * a));
+        g.drawDashedLine ({ plot.getX(), hy, plot.getRight(), hy }, dash, 2, std::max (1.0f, u));
+    }
+
+    const float ty = yOf (thrShown);
+    juce::Path tl;
+    tl.startNewSubPath (plot.getX(), ty);
+    tl.lineTo (plot.getRight(), ty);
+    ui::strokeGlow (g, tl, ui::ember, 1.4f * u, (0.4f + 0.6f * thrGlow) * a);
+    g.setColour (ui::ember.withAlpha ((0.75f + 0.25f * thrGlow) * a));
+    g.strokePath (tl, juce::PathStrokeType (std::max (1.2f, (1.6f + 0.6f * thrGlow) * u)));
+    {
+        const juce::String txt = "THR " + juce::String (thrShown, 1);
+        const auto f = ui::font (ui::Face::mono, std::max (10.0f * u, 10.0f * es), true);
+        const float tw = ui::textWidth (f, txt) + 14.0f * u;
+        auto box = juce::Rectangle<float> (tw, 17.0f * u).withRightX (plot.getRight() - 4.0f * u).withCentre ({ plot.getRight() - 4.0f * u - tw * 0.5f, ty - 11.0f * u });
+        if (box.getY() < plot.getY()) box.setY (ty + 3.0f * u);
+        g.setColour (ui::night.withAlpha (0.92f));
+        g.fillRoundedRectangle (box, box.getHeight() * 0.5f);
+        g.setColour (ui::ember.withAlpha (0.6f + 0.4f * thrGlow));
+        g.drawRoundedRectangle (box, box.getHeight() * 0.5f, std::max (1.0f, u));
+        g.setColour (ui::bone);
+        g.setFont (f);
+        g.drawText (txt, box, juce::Justification::centred, false);
+    }
+
+    // ---- état : OPEN / CLOSED
+    {
+        const float d = 8.0f * u;
+        const auto led = juce::Rectangle<float> (d, d).withCentre ({ area.getX() + 18.0f * u, area.getY() + 18.0f * u });
+        const auto c = active < 0.5f ? ui::haze : juce::Colour (0xff3BD98A).interpolatedWith (ui::ember, 1.0f - openLed);
+        g.setColour (c.withAlpha (0.4f * active));
+        g.fillEllipse (led.expanded (d * 0.8f));
+        g.setColour (c.withAlpha (0.4f + 0.6f * active));
+        g.fillEllipse (led);
+        const juce::String st = active < 0.5f ? "BYPASSED" : (openLed > 0.5f ? "OPEN" : "CLOSED");
+        g.setColour (ui::mist.withAlpha (0.85f));
+        g.setFont (ui::font (ui::Face::mono, std::max (11.0f * u, 10.5f * es), true, 0.1f));
+        g.drawText (st, juce::Rectangle<float> (led.getRight() + 8.0f * u, led.getCentreY() - 8.0f * u, 140.0f * u, 16.0f * u),
+                    juce::Justification::centredLeft, false);
+    }
+
+    // ---- LEARN
+    {
+        const auto r = learnArea();
+        juce::Path p;
+        p.addRoundedRectangle (r, r.getHeight() * 0.5f);
+        const float pulse = learnFrames > 0 ? 0.5f + 0.5f * std::sin ((float) learnFrames * 0.35f) : 0.0f;
+        ui::strokeGlow (g, p, ui::ember, 1.0f * u, 0.6f * learnGlow + 0.4f * pulse);
+        g.setColour (juce::Colours::black.withAlpha (0.4f));
+        g.fillPath (p);
+        g.setColour (ui::ember.withAlpha (0.12f * learnGlow + 0.25f * pulse));
+        g.fillPath (p);
+        g.setColour (ui::line.interpolatedWith (ui::ember, learnGlow));
+        g.strokePath (p, juce::PathStrokeType (std::max (1.0f, u)));
+        const juce::String txt = learnFrames > 0 ? "LISTENING..." : "LEARN";
+        g.setColour (ui::haze.interpolatedWith (ui::bone, learnGlow));
+        g.setFont (ui::fitFont (ui::Face::body, r.getHeight() * 0.48f, r.getWidth() - 12.0f * u, txt, true, 0.12f));
+        g.drawText (txt, r, juce::Justification::centred, false);
+    }
+
+    if (messageFrames > 0)
+    {
+        const float al = juce::jlimit (0.0f, 1.0f, (float) messageFrames / 20.0f);
+        const auto f = ui::font (ui::Face::mono, std::max (10.5f * u, 10.5f * es), true);
+        const float tw = ui::textWidth (f, learnMessage) + 20.0f * u;
+        const auto box = juce::Rectangle<float> (tw, 20.0f * u).withCentre (plot.getCentre());
+        g.setColour (ui::night.withAlpha (0.92f * al));
+        g.fillRoundedRectangle (box, box.getHeight() * 0.5f);
+        g.setColour (ui::ember.withAlpha (al));
+        g.drawRoundedRectangle (box, box.getHeight() * 0.5f, std::max (1.0f, u));
+        g.setColour (ui::bone.withAlpha (al));
+        g.setFont (f);
+        g.drawText (learnMessage, box, juce::Justification::centred, false);
+    }
+}
+
+//==============================================================================
 void IconButton::tick()
 {
     if (ui::approach (glow, isDown() ? 1.0f : (isOver() ? 0.7f : 0.0f), 0.2f)) repaint();
@@ -3168,7 +3448,7 @@ ProcessingOrderBar::ProcessingOrderBar (juce::AudioProcessorValueTreeState& s) :
 
 float ProcessingOrderBar::chipW() const noexcept
 {
-    return ((float) getWidth() - (float) (kN - 1) * gapW()) / (float) kN;
+    return ((float) getWidth() - (float) kN * gapW()) / (float) (kN + 1);   // + la pastille GATE fixe
 }
 
 bool ProcessingOrderBar::moduleOn (int module) const
@@ -3192,7 +3472,7 @@ std::array<int, ProcessingOrderBar::kN> ProcessingOrderBar::previewOrder() const
 {
     if (dragModule < 0) return order;
     const float centre = dragX + chipW() * 0.5f;
-    const int slot = juce::jlimit (0, kN - 1, (int) std::floor (centre / (chipW() + gapW())));
+    const int slot = juce::jlimit (0, kN - 1, (int) std::floor ((centre - slotX (0) + gapW() * 0.5f) / (chipW() + gapW())));
     std::vector<int> rest;
     for (int m : order) if (m != dragModule) rest.push_back (m);
     rest.insert (rest.begin() + slot, dragModule);
@@ -3218,6 +3498,7 @@ void ProcessingOrderBar::tick()
         changed |= ui::approach (lit[(size_t) m], moduleOn (m) ? 1.0f : 0.0f, 0.15f);
         changed |= ui::approach (hoverGlow[(size_t) m], (m == hoverModule || m == dragModule) ? 1.0f : 0.0f, 0.2f);
     }
+    changed |= ui::approach (gateLit, apvts.getRawParameterValue (ids::gateOn)->load() > 0.5f ? 1.0f : 0.0f, 0.15f);
     if (changed) repaint();
 }
 
@@ -3233,7 +3514,7 @@ void ProcessingOrderBar::mouseDown (const juce::MouseEvent& e)
 void ProcessingOrderBar::mouseDrag (const juce::MouseEvent& e)
 {
     if (dragModule < 0) return;
-    dragX = juce::jlimit (0.0f, (float) getWidth() - chipW(), e.position.x - dragOffset);
+    dragX = juce::jlimit (slotX (0), (float) getWidth() - chipW(), e.position.x - dragOffset);
     if (e.getDistanceFromDragStart() > 3) dragMoved = true;
     setMouseCursor (juce::MouseCursor::DraggingHandCursor);
 }
@@ -3267,7 +3548,7 @@ void ProcessingOrderBar::mouseDoubleClick (const juce::MouseEvent&)
 
 juce::String ProcessingOrderBar::getTooltip()
 {
-    return "Processing order: drag a module left or right to move it in the chain (smooth 15 ms crossfade). "
+    return "Processing order: the noise GATE always comes first; drag a module left or right to move it in the chain (smooth 15 ms crossfade). "
            "Lit = module on. Double-click = original order.";
 }
 
@@ -3276,7 +3557,7 @@ void ProcessingOrderBar::paint (juce::Graphics& g)
     const float h = (float) getHeight(), w = chipW(), u = h / 20.0f;
 
     // chevrons fixes entre les places
-    for (int s = 0; s < kN - 1; ++s)
+    for (int s = -1; s < kN - 1; ++s)
     {
         const float cx = slotX (s) + w + gapW() * 0.5f, cy = h * 0.5f;
         juce::Path ch;
@@ -3285,6 +3566,25 @@ void ProcessingOrderBar::paint (juce::Graphics& g)
         ch.lineTo (cx - 2.0f * u, cy + 4.0f * u);
         g.setColour (ui::haze.withAlpha (0.6f));
         g.strokePath (ch, juce::PathStrokeType (std::max (1.0f, 1.5f * u), juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    }
+
+    // pastille GATE fixe : le noise gate est toujours le premier module (cadre en pointillés = non déplaçable)
+    {
+        const auto r = juce::Rectangle<float> (0.0f, 0.0f, w, h).reduced (0.5f, 1.0f);
+        juce::Path p;
+        p.addRoundedRectangle (r, r.getHeight() * 0.5f);
+        g.setColour (juce::Colours::black.withAlpha (0.4f));
+        g.fillPath (p);
+        g.setColour (ui::ember.withAlpha (0.10f + 0.14f * gateLit));
+        g.fillPath (p);
+        juce::Path dashed;
+        const float dash[] { 2.5f * u, 2.0f * u };
+        juce::PathStrokeType (std::max (1.0f, 1.0f * u)).createDashedStroke (dashed, p, dash, 2);
+        g.setColour (ui::line.interpolatedWith (ui::ember, 0.35f * gateLit));
+        g.fillPath (dashed);
+        g.setColour (ui::haze.interpolatedWith (ui::bone, 0.55f * gateLit));
+        g.setFont (ui::fitFont (ui::Face::mono, h * 0.56f, r.getWidth() - 6.0f * u, "GATE", true, 0.02f));
+        g.drawText ("GATE", r, juce::Justification::centred, false);
     }
 
     // pastilles (celle qu'on tire par-dessus)
@@ -3491,6 +3791,7 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
     struct PowerDef { PowerButton& b; std::unique_ptr<ButtonAttachment>& att; const char* id; const char* name; };
     for (auto& d : { PowerDef { eqPower, eqPowerAtt, ids::eqOn, "EQ ANALOG (colour)" },
                      PowerDef { peqPower, peqPowerAtt, ids::peqPower, "Parametric EQ" },
+                     PowerDef { gatePower, gatePowerAtt, ids::gateOn, "Noise gate" },
                      PowerDef { resoPower, resoPowerAtt, ids::resoOn, "Resonance" },
                      PowerDef { cardPower, cardPowerAtt, ids::compMaster, "whole COMPRESSION section (1176 / LA-2A and MULTIBAND)" },
                      PowerDef { compPower, compPowerAtt, ids::compOn, "1176 / LA-2A" },
@@ -3552,6 +3853,18 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
     animated.push_back (&fullButton);
     fullButton.setTooltip ("Open the parametric EQ full screen, for precise editing of all 8 bands.");
     fullButton.onClick = [this] { showEqFull (true); };
+
+    // NOISE GATE : écran (seuil à glisser, LEARN), 5 boutons, hystérésis
+    for (auto* k : { &gateThrKnob, &gateRangeKnob, &gateAtkKnob, &gateHoldKnob, &gateRelKnob })
+    {
+        addAndMakeVisible (k);
+        animated.push_back (k);
+    }
+    for (auto* c : std::initializer_list<juce::Component*> { &gateDisplay, &gateHystV })
+        addAndMakeVisible (c);
+    animated.push_back (&gateDisplay);
+    animated.push_back (&gateHystV);
+    gateHystV.setPrefix ("HYST ");
 
     // ASSISTANT IA (en-tête)
     addAndMakeVisible (aiButton);
@@ -3616,7 +3929,12 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
     // redimensionnable, proportions verrouillées : aucune déformation, aucun texte coupé.
     // La taille mémorisée est lue AVANT tout appel qui redimensionne : setResizeLimits() déclenche un
     // resized() à la taille minimale, qui écrasait la largeur sauvegardée (le plugin se rouvrait petit).
-    const int w = juce::jlimit (kMinW, kMaxW, (int) processor.apvts.state.getProperty ("uiWidth", 1480));
+    // largeur mémorisée ; avant la colonne NOISE GATE (base 1706), on l'élargit pour garder la même taille de modules
+    int savedW = (int) processor.apvts.state.getProperty ("uiWidth", 1760);
+    if (processor.apvts.state.hasProperty ("uiWidth") && (int) processor.apvts.state.getProperty ("uiBase", 0) != 2022)
+        savedW = juce::roundToInt ((float) savedW * 2022.0f / 1706.0f);
+    processor.apvts.state.setProperty ("uiBase", 2022, nullptr);
+    const int w = juce::jlimit (kMinW, kMaxW, savedW);
     setResizable (true, true);
     setResizeLimits (kMinW, juce::roundToInt (kMinW * kBaseH / kBaseW), kMaxW, juce::roundToInt (kMaxW * kBaseH / kBaseW));
     if (auto* c = getConstrainer()) c->setFixedAspectRatio ((double) (kBaseW / kBaseH));
@@ -3740,7 +4058,9 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
     const float topY = 96.0f * u, topH = 352.0f * u, resoY = topY + topH + gap, resoH = 264.0f * u;
     const float botY = resoY + resoH + gap, botH = 250.0f * u;                 // rangée du bas : EQ paramétrique agrandi
     // COMPRESSION (largeur fixe) puis colonne PARALLEL à sa droite
-    const float compX = m + leftW + gap, compW = 504.0f * u;
+    // colonne NOISE GATE à gauche (rangées du haut et du milieu), puis les modules ; COMPRESSION (largeur fixe), PARALLEL à droite
+    const float gateW = 300.0f * u, x0 = m + gateW + gap;
+    const float compX = x0 + leftW + gap, compW = 504.0f * u;
     const float parX = compX + compW + gap, parW = W - m - parX;
     const float availW = leftW;
     const float deExtra = 40.0f * u;
@@ -3752,9 +4072,9 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
     logoRect = { 22.0f * u, 10.0f * u, 64.0f * u * 985.0f / 895.0f, 64.0f * u };
     signalRect = { 0.0f, 80.0f * u, W, 12.0f * u };
     bypassButton.setBounds (juce::Rectangle<float> (136.0f * u, 40.0f * u).withRightX (W - m).withY (22.0f * u).toNearestInt());
-    presetBar.setBounds (juce::Rectangle<float> (384.0f * u, 40.0f * u).withRightX (W - m - 152.0f * u).withY (22.0f * u).toNearestInt());
+    presetBar.setBounds (juce::Rectangle<float> (336.0f * u, 40.0f * u).withRightX (W - m - 152.0f * u).withY (22.0f * u).toNearestInt());
     modeSel.setBounds (juce::Rectangle<float> (110.0f * u, 40.0f * u).withRightX ((float) presetBar.getX() - 12.0f * u).withY (22.0f * u).toNearestInt());
-    osSel.setBounds (juce::Rectangle<float> (156.0f * u, 40.0f * u).withRightX ((float) modeSel.getX() - 10.0f * u).withY (22.0f * u).toNearestInt());   // suréchantillonnage, à côté de MIX / LIVE
+    osSel.setBounds (juce::Rectangle<float> (204.0f * u, 40.0f * u).withRightX ((float) modeSel.getX() - 10.0f * u).withY (22.0f * u).toNearestInt());   // suréchantillonnage, à côté de MIX / LIVE
     // ordre de traitement, sous le titre, jusqu'au sélecteur de suréchantillonnage
     orderBar.setBounds (juce::Rectangle<float> (logoRect.getRight() + 16.0f * u, 55.0f * u, (float) osSel.getX() - 14.0f * u - (logoRect.getRight() + 16.0f * u), 19.0f * u).toNearestInt());
     // ligne du haut, entre le titre et le suréchantillonnage : bouton de l'ASSISTANT puis pastille de licence
@@ -3762,12 +4082,12 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
         const float titleRight = logoRect.getRight() + 14.0f * u
                                + ui::textWidth (ui::font (ui::Face::display, 30.0f * u, true, 0.10f), "ONIRIQUE") + 2.0f + 10.0f * u
                                + ui::textWidth (ui::font (ui::Face::display, 30.0f * u, false, 0.10f), "VOCALBOX") + 2.0f;
-        const float licW = 186.0f;   // pastille : unités de base (la licence se dessine à l'échelle de la fenêtre)
-        const float licX = (float) osSel.getX() / u - 12.0f - licW;
+        const float aiX = titleRight + 18.0f * u, aiW = 210.0f * u;
+        aiButton.setBounds (juce::Rectangle<float> (aiX, 17.0f * u, aiW, 32.0f * u).toNearestInt());
+        const float licW = 196.0f;   // pastille : unités de base (la licence se dessine à l'échelle de la fenêtre), juste après l'assistant
+        const float licX = std::min ((aiX + aiW) / u + 14.0f, (float) osSel.getX() / u - 12.0f - licW);
         if (licenseOverlay != nullptr)
             licenseOverlay->fit (getLocalBounds(), u, juce::Rectangle<float> (licX, 20.0f, licW, 26.0f).toNearestInt());
-        const float aiX = titleRight + 16.0f * u, aiR = (licX - 12.0f) * u;
-        aiButton.setBounds (juce::Rectangle<float> (aiX, 17.0f * u, std::max (120.0f * u, aiR - aiX), 32.0f * u).toNearestInt());
     }
 
     if (logo.isValid())
@@ -3804,10 +4124,10 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
     //      7 COMPRESSION, ses sous-panneaux 8 "1176" et 9 "LA-2A", puis 10 ANALYZER
     const std::vector<Section> old = sections;
     sections.clear();
-    sections.push_back ({ "EQ ANALOG",      { m, topY, 3.0f * cell, topH }, &eqPower });
-    sections.push_back ({ "DE-ESSER / PLOSIVES", { m + 3.0f * cell + gap, topY, 2.0f * cell + deExtra, topH }, &deessPower });
-    sections.push_back ({ "SATURATION LAB", { m + 5.0f * cell + deExtra + 2.0f * gap, topY, 1.5f * cell, topH }, &satPower });
-    sections.push_back ({ "RESONANCE",      { m, resoY, availW, resoH }, &resoPower });
+    sections.push_back ({ "EQ ANALOG",      { x0, topY, 3.0f * cell, topH }, &eqPower });
+    sections.push_back ({ "DE-ESSER / PLOSIVES", { x0 + 3.0f * cell + gap, topY, 2.0f * cell + deExtra, topH }, &deessPower });
+    sections.push_back ({ "SATURATION LAB", { x0 + 5.0f * cell + deExtra + 2.0f * gap, topY, 1.5f * cell, topH }, &satPower });
+    sections.push_back ({ "RESONANCE",      { x0, resoY, availW, resoH }, &resoPower });
     sections.push_back ({ "INPUT",          { m, botY, botW, botH } });
     sections.push_back ({ "AUTO GAIN",      { W - m - 2.0f * botW - gap, botY, botW, botH } });
     sections.push_back ({ "OUTPUT",         { W - m - botW, botY, botW, botH } });
@@ -3873,6 +4193,29 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
     sections.push_back ({ "MBAREA",   mbArea, nullptr, 0.0f, true, ! mbTab, true });   // zone voilée quand le MULTIBAND est coupé
     sections.push_back ({ "COMPAREA", mbArea, nullptr, 0.0f, true, mbTab, true });     // idem pour 1176 / LA-2A
     sections.push_back ({ "PARALLEL", { parX, topY, parW, resoY + resoH - topY }, &parPower });   // index 13
+    sections.push_back ({ "NOISE GATE", { m, topY, gateW, resoY + resoH - topY }, &gatePower });       // index 14
+    {
+        // NOISE GATE : écran en haut, THRESHOLD / RANGE, puis ATTACK / HOLD / RELEASE, HYST en bas
+        auto gc = inner (sections[14].bounds);
+        gateDisplay.setBounds (gc.removeFromTop (218.0f * u).toNearestInt());
+        gc.removeFromTop (10.0f * u);
+        gateHystV.setBounds (gc.removeFromBottom (26.0f * u).withSizeKeepingCentre (150.0f * u, 26.0f * u).toNearestInt());
+        gc.removeFromBottom (8.0f * u);
+        auto row1 = gc.removeFromTop (gc.getHeight() * 0.52f);
+        auto row2 = gc;
+        const float d1 = std::min (100.0f * u, (row1.getHeight() - 20.0f * u) / 1.47f), d2 = std::min (78.0f * u, (row2.getHeight() - 16.0f * u) / 1.47f);
+        for (auto [k, i] : { std::pair { &gateThrKnob, 0 }, std::pair { &gateRangeKnob, 1 } })
+        {
+            k->setMaxDiameter (d1);
+            k->setBounds (juce::Rectangle<float> (row1.getX() + row1.getWidth() * 0.5f * (float) i, row1.getY(), row1.getWidth() * 0.5f, row1.getHeight()).toNearestInt());
+        }
+        int i = 0;
+        for (auto* k : { &gateAtkKnob, &gateHoldKnob, &gateRelKnob })
+        {
+            k->setMaxDiameter (d2);
+            k->setBounds (juce::Rectangle<float> (row2.getX() + row2.getWidth() / 3.0f * (float) i++, row2.getY(), row2.getWidth() / 3.0f, row2.getHeight()).toNearestInt());
+        }
+    }
     {
         // PARALLEL : AMOUNT en haut ; dessous, AUTO à gauche et le mètre de réduction du bus écrasé à droite.
         // AUTO décoché : THRESHOLD, ATTACK et RELEASE apparaissent sous le bouton AUTO.

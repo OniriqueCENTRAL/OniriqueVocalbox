@@ -598,7 +598,8 @@ private:
     static constexpr int kN = onirique::kOrderModules;
     float chipW() const noexcept;
     float gapW() const noexcept { return (float) getHeight() * 0.75f; }
-    float slotX (int slot) const noexcept { return (float) slot * (chipW() + gapW()); }
+    // place 0 = pastille GATE fixe (le noise gate est toujours en premier), puis les 7 modules déplaçables
+    float slotX (int slot) const noexcept { return (float) (slot + 1) * (chipW() + gapW()); }
     int moduleAt (juce::Point<float>) const noexcept;
     std::array<int, kN> previewOrder() const noexcept;
     bool moduleOn (int module) const;
@@ -607,6 +608,7 @@ private:
     std::unique_ptr<juce::ParameterAttachment> attachment;
     std::array<int, kN> order { 0, 1, 2, 3, 4, 5, 6 };
     std::array<float, kN> chipX {}, lit {}, hoverGlow {};
+    float gateLit = 0.0f;
     bool placed = false;
     int dragModule = -1, hoverModule = -1;
     float dragOffset = 0.0f, dragX = 0.0f;
@@ -651,6 +653,45 @@ private:
     float gr = 0.0f, hold = 0.0f, range = 18.0f;   // échelle 0 .. -range dB
     int holdFrames = 0;
     bool active = true;
+};
+
+// Écran du NOISE GATE (repris d'ONIRIQUE BROADCAST) : historique défilant du niveau (5 s), état ouvert / fermé,
+// courbe de gain, seuil (glisser verticalement), hystérésis, bruit de fond mesuré et bouton LEARN.
+class GateDisplay : public juce::Component, public juce::TooltipClient, public Animated
+{
+public:
+    explicit GateDisplay (OniriqueVocalBoxAudioProcessor&);
+
+    void paint (juce::Graphics&) override;
+    void tick() override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseExit (const juce::MouseEvent&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
+    juce::String getTooltip() override;
+
+private:
+    static constexpr int kHist = 300;
+    static constexpr float kMinDb = -80.0f;
+    juce::Rectangle<float> plotArea() const noexcept;
+    juce::Rectangle<float> learnArea() const noexcept;
+    float yOf (float db) const noexcept;
+    float dbOf (float y) const noexcept;
+    float param (const char* id) const { return processor.apvts.getRawParameterValue (id)->load(); }
+
+    OniriqueVocalBoxAudioProcessor& processor;
+    juce::RangedAudioParameter* thrP = nullptr;
+    std::array<float, kHist> level {}, gainHist {};
+    int head = 0;
+    float thrShown = -48.0f, hystShown = 5.0f, floorShown = -90.0f, openLed = 0.0f, active = 0.0f;
+    float thrGlow = 0.0f, learnGlow = 0.0f;
+    bool dragging = false, hoverThr = false, hoverLearn = false;
+    int learnFrames = 0;             // > 0 : écoute du bruit de fond en cours
+    float learnMin = 0.0f;
+    juce::String learnMessage;
+    int messageFrames = 0;
 };
 
 // Bouton de l'en-tête qui ouvre l'ASSISTANT : pastille braise, étincelle, liseré qui tourne doucement.
@@ -736,8 +777,13 @@ private:
 
     std::map<juce::String, float> undoValues;
     juce::String undoName;
-    float appear = 0.0f, pulse = 0.0f;
+    float appear = 0.0f, pulse = 0.0f;       // appear : 0..1 (fondu + flou du fond), animé dans le temps
+    float cardScale = 1.0f, cardShift = 0.0f; // la fenêtre grandit avec un léger rebond et monte un peu à l'ouverture
     bool closing = false;
+    double animStart = 0.0;
+    juce::Image backdrop;                     // capture floutée du plugin derrière la fenêtre (verre dépoli)
+    bool animating() const noexcept { return appear < 0.999f || closing; }
+    void updateAnimation();
 };
 
 class OniriqueVocalBoxAudioProcessorEditor : public juce::AudioProcessorEditor,
@@ -767,7 +813,7 @@ private:
     };
 
     void timerCallback() override;
-    float scale() const noexcept { return (float) getWidth() / 1706.0f; }
+    float scale() const noexcept { return (float) getWidth() / 2022.0f; }
     void paintHeader (juce::Graphics&);
     void paintStar (juce::Graphics&, juce::Point<float> c, float r, float alpha);
     // fond et cartes ne bougent pas : dessinés une fois (à la résolution réelle de l'écran) dans deux images,
@@ -945,8 +991,23 @@ private:
     PillToggle bypassButton { "BYPASS", PillToggle::Style::small };
     std::unique_ptr<ButtonAttachment> autoAttachment, bypassAttachment;
 
-    PowerButton eqPower, resoPower, cardPower, compPower, mbPower, parPower, deessPower, satPower, peqPower;
-    std::unique_ptr<ButtonAttachment> eqPowerAtt, resoPowerAtt, cardPowerAtt, compPowerAtt, mbPowerAtt, parPowerAtt, deessPowerAtt, satPowerAtt, peqPowerAtt;
+    PowerButton eqPower, resoPower, cardPower, compPower, mbPower, parPower, deessPower, satPower, peqPower, gatePower;
+    std::unique_ptr<ButtonAttachment> eqPowerAtt, resoPowerAtt, cardPowerAtt, compPowerAtt, mbPowerAtt, parPowerAtt, deessPowerAtt, satPowerAtt, peqPowerAtt, gatePowerAtt;
+
+    // ---- NOISE GATE (premier module)
+    GateDisplay gateDisplay { processor };
+    KnobComponent gateThrKnob   { processor.apvts, onirique::ids::gateThr,     "THRESHOLD", "-80", "0",  Layout::textBelow,
+                                  "Level above which the gate opens. Drag the red line in the display or use LEARN. Double-click = reset.", lnf };
+    KnobComponent gateRangeKnob { processor.apvts, onirique::ids::gateRange,   "RANGE",     "0",   "80", Layout::textBelow,
+                                  "How much the gate turns the sound down when closed (80 = mute). 20-30 dB keeps the room natural.", lnf };
+    KnobComponent gateAtkKnob   { processor.apvts, onirique::ids::gateAttack,  "ATTACK",    "0.1", "50", Layout::textBelow,
+                                  "How fast the gate opens. With the 1.5 ms look-ahead (MIX), even fast attacks never eat the first consonant.", lnf };
+    KnobComponent gateHoldKnob  { processor.apvts, onirique::ids::gateHold,    "HOLD",      "0",   "500", Layout::textBelow,
+                                  "Time the gate stays open after the voice drops: keeps word endings and short pauses.", lnf };
+    KnobComponent gateRelKnob   { processor.apvts, onirique::ids::gateRelease, "RELEASE",   "10",  "2k", Layout::textBelow,
+                                  "How smoothly the gate closes after HOLD.", lnf };
+    DragValue gateHystV { processor.apvts, onirique::ids::gateHyst,
+                          "Hysteresis: the gate closes this many dB below the threshold (no chattering). Drag up/down." };
 
     // EQ paramétrique plein écran et ASSISTANT : par-dessus les modules (et leurs voiles), sous la licence
     EqFullView eqFull { processor };

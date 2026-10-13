@@ -61,6 +61,7 @@ public:
     float getDeEssReductionDb() const noexcept { return chain.getDeEssReductionDb(); }
     float getDeEss2ReductionDb() const noexcept { return chain.getDeEss2ReductionDb(); }
     float getPeqBandGainDb (int b) const noexcept { return chain.getPeqBandGainDb (b); }
+    const onirique::NoiseGate::Meter& getGateMeter() const noexcept { return chain.getGateMeter(); }
     float consumeInputLevel (int c) noexcept  { return chain.consumeInputLevel (c); }
 
     // ASSISTANT : pendant l'écoute, le signal d'entrée (avant tout traitement, mono) est copié dans cette prise
@@ -97,6 +98,7 @@ private:
     std::atomic<float>* pMbRelease = nullptr;
     std::atomic<float>* pPeq[8][8] {};   // on, type, freq, gain, q, pente, dynamique, seuil
     std::atomic<float>* pPeqPower = nullptr;
+    std::atomic<float>* pGate[7] {};     // on, seuil, range, attaque, hold, relâchement, hystérésis
     std::atomic<float>* pComp[11] {};   // compOn, mode, order, 1176 in/out/attack/release/ratio, LA-2A gain/peak/limit
     std::atomic<float>* pResoAmt = nullptr;
     std::atomic<float>* pResoLow = nullptr;

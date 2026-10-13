@@ -41,6 +41,10 @@ OniriqueVocalBoxAudioProcessor::OniriqueVocalBoxAudioProcessor()
         for (int k = 0; k < 8; ++k) pPeq[b][k] = apvts.getRawParameterValue (id[k]);
     }
     pPeqPower = apvts.getRawParameterValue (ids::peqPower);
+    {
+        const char* g[7] { ids::gateOn, ids::gateThr, ids::gateRange, ids::gateAttack, ids::gateHold, ids::gateRelease, ids::gateHyst };
+        for (int i = 0; i < 7; ++i) pGate[i] = apvts.getRawParameterValue (g[i]);
+    }
     for (int i = 0; i < 3; ++i) pMbX[i] = apvts.getRawParameterValue (ids::mbX[i]);
     for (int b = 0; b < 4; ++b)
     {
@@ -124,6 +128,9 @@ VocalChain::Params OniriqueVocalBoxAudioProcessor::readParams() const noexcept
         band.thrDb = pPeq[b][7]->load();
     }
     p.peqOn = pPeqPower->load() > 0.5f;
+    p.gateOn = pGate[0]->load() > 0.5f;
+    p.gateThr = pGate[1]->load(); p.gateRange = pGate[2]->load(); p.gateAttack = pGate[3]->load();
+    p.gateHold = pGate[4]->load(); p.gateRelease = pGate[5]->load(); p.gateHyst = pGate[6]->load();
     p.compOn    = pComp[0]->load() > 0.5f;
     p.compMode  = juce::roundToInt (pComp[1]->load());
     p.compOrder = juce::roundToInt (pComp[2]->load());

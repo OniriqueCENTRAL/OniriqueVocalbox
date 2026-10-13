@@ -115,13 +115,32 @@ public:
         const int style = styleChoice == styleAuto ? a.detected : styleChoice;
         pr.style = style;
         const auto spec = specFor (style);
-        const float iMul = intensity == subtle ? 0.7f : (intensity == bold ? 1.35f : 1.0f);
+        const float iMul = intensity == subtle ? 0.7f : (intensity == bold ? 1.25f : 1.0f);
         auto& v = pr.values;
 
         // ---- gain d'entrée : la voix arrive à -20 dB RMS dans la chaîne (les compresseurs travaillent toujours pareil)
         const float inDb = juce::jlimit (-18.0f, 18.0f, std::round ((-20.0f - a.rmsDb) * 2.0f) * 0.5f);
         v[ids::input] = inDb;
         pr.lines.add ("INPUT  " + signedDb (inDb) + "  (voice brought to -20 dB RMS)");
+
+        // ---- noise gate : seulement si le bruit de la pièce s'entend entre les phrases ; seuil posé au-dessus du bruit
+        //      mesuré (après le gain d'entrée), toujours bien sous la voix ; atténuation douce (le fond reste naturel)
+        {
+            const float noiseIn = a.noiseDb > -99.0f ? a.noiseDb + inDb + 3.0f : -120.0f;   // RMS -> échelle du détecteur
+            if (noiseIn > -72.0f && noiseIn < -30.0f)
+            {
+                v[ids::gateOn] = 1.0f;
+                v[ids::gateThr] = std::round (juce::jlimit (-70.0f, -32.0f, noiseIn + 9.0f) * 2.0f) * 0.5f;
+                v[ids::gateRange] = noiseIn > -55.0f ? 24.0f : 18.0f;
+                pr.lines.add ("NOISE GATE  threshold " + juce::String (v[ids::gateThr], 1) + " dB  (room noise " + juce::String (juce::roundToInt (noiseIn))
+                              + " dB)" + sep() + "-" + juce::String (juce::roundToInt (v[ids::gateRange])) + " dB between phrases");
+            }
+            else
+            {
+                v[ids::gateOn] = 0.0f;
+                pr.lines.add ("NOISE GATE  off (no room noise to remove)");
+            }
+        }
 
         // ---- EQ : paramétrique (nettoyage) + EQ ANALOG (couleur)
         progress (0.36f, "Designing the parametric EQ");
@@ -154,7 +173,7 @@ public:
         v[ids::deess2On] = 0.0f;
 
         // ---- compression : objectifs mesurés, adaptés à la plage dynamique de la voix
-        const float dynMul = juce::jlimit (0.6f, 1.3f, a.dynRangeDb / 14.0f);
+        const float dynMul = juce::jlimit (0.75f, 1.1f, a.dynRangeDb / 18.0f);
         const float grFet = juce::jlimit (1.5f, 10.0f, spec.gr1176 * iMul * dynMul);
         const float grOpto = juce::jlimit (1.0f, 7.0f, spec.grLA * iMul * dynMul);
         prepareMasks();
@@ -206,7 +225,7 @@ public:
                 // LOW : seulement si les graves bondissent (effet de proximité) ; HI-MID : dureté sur les notes fortes
                 float thr = p97 + 1.0f;
                 if (b == 0 && p90 - p50 > 7.0f) { thr = p90 - 2.0f; what.add (names[b]); }
-                if (b == 2)                    { thr = p90 - 1.5f * iMul; what.add (names[b]); }
+                if (b == 2)                    { thr = p97 - 1.0f * iMul; what.add (names[b]); }
                 if (b == 3 && a.zoneDev[6] > 1.0f) { thr = p90; what.add (names[b]); }
                 v[ids::mbThr[b]] = juce::jlimit (-60.0f, 0.0f, std::round (thr * 2.0f) * 0.5f);
             }
@@ -223,7 +242,7 @@ public:
         {
             v[ids::deessFreq] = juce::jlimit (3000.0f, 10000.0f, a.sibFreq / 1.12f);
             const float boost = eqGainAt (v, a.sibFreq);
-            const float grTarget = juce::jlimit (2.5f, 9.0f, (a.sibDb + boost + 9.0f + spec.deessExtra) * std::sqrt (iMul));
+            const float grTarget = juce::jlimit (2.5f, 9.0f, (a.sibDb + boost + 10.0f + spec.deessExtra) * std::sqrt (iMul));
             const float amt = solve (0.0f, 100.0f, grTarget, 8, cancel, [&] (float x)
             {
                 v[ids::deessAmt] = x;
@@ -282,11 +301,11 @@ private:
     {
         switch (style)
         {
-            case styleAutotune: return { 6.0f, 3.0f, 0, 6.0f, 6.0f, 0, 25.0f, 1, 2.0f,  1.5f, 0.5f, 0.0f, true,  1.5f, 2, 25.0f };
-            case stylePop:      return { 4.0f, 3.0f, 0, 3.0f, 5.0f, 0, 20.0f, 2, 1.5f,  1.0f, 0.5f, 0.0f, true,  0.5f, 2, 22.0f };
-            case styleRnb:      return { 3.0f, 4.0f, 0, 3.0f, 4.0f, 1, 15.0f, 2, 2.5f,  0.5f, 0.0f, 1.0f, false, 0.0f, 2, 18.0f };
-            case styleSinging:  return { 2.5f, 4.0f, 0, 3.0f, 4.0f, 1, 12.0f, 0, 1.5f,  0.5f, 0.0f, 0.5f, false, 0.0f, 2, 18.0f };
-            default:            return { 5.5f, 2.5f, 1, 5.0f, 6.0f, 0, 30.0f, 0, 2.5f, -1.0f, 1.0f, 0.5f, true,  0.5f, 1, 22.0f };   // RAP / KICKAGE
+            case styleAutotune: return { 4.5f, 2.0f, 0, 5.0f, 6.0f, 0, 18.0f, 1, 2.0f,  1.5f, 0.5f, 0.0f, true,  1.5f, 2, 25.0f };
+            case stylePop:      return { 3.0f, 2.5f, 0, 3.0f, 5.0f, 0, 14.0f, 2, 1.5f,  1.0f, 0.5f, 0.0f, true,  0.5f, 2, 22.0f };
+            case styleRnb:      return { 2.0f, 3.0f, 0, 3.0f, 4.0f, 1, 10.0f, 2, 2.5f,  0.5f, 0.0f, 1.0f, false, 0.0f, 2, 18.0f };
+            case styleSinging:  return { 2.0f, 3.0f, 0, 3.0f, 4.0f, 1, 10.0f, 0, 1.5f,  0.5f, 0.0f, 0.5f, false, 0.0f, 2, 18.0f };
+            default:            return { 4.0f, 2.0f, 0, 5.0f, 6.0f, 0, 20.0f, 0, 2.5f, -1.0f, 1.0f, 0.5f, true,  0.5f, 1, 22.0f };   // RAP / KICKAGE
         }
     }
 
@@ -354,6 +373,8 @@ private:
             bd.q = g (ids::peqQ[k]); bd.slope = i (ids::peqSlope[k]); bd.dyn = b (ids::peqDyn[k]); bd.thrDb = g (ids::peqThr[k]);
         }
         p.peqOn = b (ids::peqPower);
+        p.gateOn = b (ids::gateOn); p.gateThr = g (ids::gateThr); p.gateRange = g (ids::gateRange); p.gateAttack = g (ids::gateAttack);
+        p.gateHold = g (ids::gateHold); p.gateRelease = g (ids::gateRelease); p.gateHyst = g (ids::gateHyst);
         p.compOn = b (ids::compOn); p.compMode = i (ids::compMode); p.compOrder = i (ids::compOrder);
         p.fetIn = g (ids::fetIn); p.fetOut = g (ids::fetOut); p.fetAttack = g (ids::fetAttack); p.fetRelease = g (ids::fetRelease);
         p.fetRatio = i (ids::fetRatio); p.laGain = g (ids::laGain); p.laPeak = g (ids::laPeak); p.laLimit = b (ids::laLimit);
@@ -728,16 +749,17 @@ private:
         const bool haveF0 = a.f0Low > 40.0f;
         const float lowCut = juce::jlimit (55.0f, 150.0f, haveF0 ? 0.72f * a.f0Low * (style == styleRap ? 1.05f : 1.0f) : 80.0f);
 
-        // écart à la cible, aligné sur les médiums (400 Hz - 1.2 kHz)
+        // écart à la cible, aligné sur la MÉDIANE des écarts de 200 Hz à 5 kHz : une bosse "carton" ou nasale (500 Hz - 1.2 kHz)
+        // ressort comme un excès au lieu de servir de référence (l'ancien alignement sur 400 Hz - 1.2 kHz la masquait)
         std::vector<float> dev ((size_t) kGrid + 1), tgt ((size_t) kGrid + 1);
         for (int k = 0; k <= kGrid; ++k) tgt[(size_t) k] = targetDb (k == kGrid ? 16000.0f : gridHz (k), style, sp, a.f0Low);
-        double off = 0.0; int no = 0;
+        std::vector<float> diffs;
         for (int k = 0; k <= kGrid; ++k)
         {
             const float f = gridHz (k);
-            if (f >= 400.0f && f <= 1200.0f) { off += grid[(size_t) k] - tgt[(size_t) k]; ++no; }
+            if (f >= 200.0f && f <= 5000.0f && f > 0.85f * a.f0Low) diffs.push_back (grid[(size_t) k] - tgt[(size_t) k]);
         }
-        const float offset = no > 0 ? (float) (off / no) : 0.0f;
+        const float offset = percentile (diffs, 0.5f);
         for (int k = 0; k <= kGrid; ++k) dev[(size_t) k] = grid[(size_t) k] - tgt[(size_t) k] - offset;
         // lissage 1/3 d'octave
         auto smooth3 = [] (std::vector<float> x)
@@ -770,7 +792,7 @@ private:
         for (int k = 0; k <= kGrid; ++k)
         {
             const float c = -dev[(size_t) k];
-            C[(size_t) k] = c < 0.0f ? juce::jmax (-9.0f, 0.85f * c * eqMul) : juce::jmin (5.0f, 0.5f * c * eqMul);
+            C[(size_t) k] = c < 0.0f ? juce::jmax (-10.0f, c * eqMul) : juce::jmin (5.0f, 0.5f * c * eqMul);
         }
         auto fOf = [] (int k) { return k == kGrid ? 16000.0f : gridHz (k); };
         auto inRange = [&] (int k, float lo, float hi) { const float f = fOf (k); return f >= lo && f <= hi && f > lowCut * 1.25f; };
@@ -888,7 +910,7 @@ private:
                 const float bwOct = std::max (1.0f / 3.0f, (float) (e - k + 1) / 6.0f);
                 const float q = juce::jlimit (0.6f, 4.0f, 1.0f / (2.0f * std::sinh (0.5f * std::log (2.0f) * bwOct)));
                 const float f = fOf (pk), val = C[(size_t) pk];
-                if (cut) bells.push_back ({ f, juce::jlimit (-7.0f, -1.0f, 0.85f * val), q, f >= 1800.0f, std::abs (val) * bwOct });
+                if (cut) bells.push_back ({ f, juce::jlimit (-8.0f, -1.0f, 0.9f * val), q, f >= 1800.0f, std::abs (val) * bwOct });
                 else if (f >= 1000.0f && f <= 6000.0f && bwOct >= 0.5f)   // remontée : seulement la présence
                     bells.push_back ({ f, juce::jlimit (1.0f, 2.5f, 0.8f * val), q, false, 0.5f * val * bwOct });
                 k = e + 1;

@@ -55,6 +55,14 @@ namespace ids
     inline constexpr const char* mbGain[4] { "mbGain1", "mbGain2", "mbGain3", "mbGain4" };
     inline constexpr const char* mbAttack  = "mbAttack";
     inline constexpr const char* mbRelease = "mbRelease";
+    // NOISE GATE (premier module, comme celui d'ONIRIQUE BROADCAST)
+    inline constexpr const char* gateOn      = "gateOn";
+    inline constexpr const char* gateThr     = "gateThreshold";
+    inline constexpr const char* gateRange   = "gateRange";
+    inline constexpr const char* gateAttack  = "gateAttack";
+    inline constexpr const char* gateHold    = "gateHold";
+    inline constexpr const char* gateRelease = "gateRelease";
+    inline constexpr const char* gateHyst    = "gateHysteresis";
     // EQ paramétrique : 8 bandes (pente des coupe-bas / coupe-haut, mode dynamique par bande) + interrupteur du module
     inline constexpr const char* peqPower = "peqPower";
     inline constexpr const char* peqOn[8]    { "peq1On", "peq2On", "peq3On", "peq4On", "peq5On", "peq6On", "peq7On", "peq8On" };
@@ -366,6 +374,29 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::mbRelease, 1 }, "Multiband Release", rel, 200.0f,
                                                             Attr().withLabel ("ms").withStringFromValueFunction (ms)));
     }
+
+    // ---- NOISE GATE : coupé par défaut (les anciens projets ne changent pas) ; réglages d'usine du BROADCAST
+    p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::gateOn, 1 }, "Gate On", false));
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::gateThr, 1 }, "Gate Threshold",
+        NormalisableRange<float> (-80.0f, 0.0f, 0.1f), -48.0f, Attr().withLabel ("dB").withStringFromValueFunction (dbText)));
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::gateRange, 1 }, "Gate Range",
+        NormalisableRange<float> (0.0f, 80.0f, 0.1f), 24.0f,
+        Attr().withLabel ("dB").withStringFromValueFunction ([] (float v, int) { return v >= 79.5f ? String ("MUTE") : "-" + String (v, 1) + " dB"; })));
+    {
+        auto msText = [] (float v, int) { return v >= 1000.0f ? String (v / 1000.0f, 2) + " s" : String (v, v < 10.0f ? 1 : 0) + " ms"; };
+        NormalisableRange<float> atk (0.1f, 50.0f, 0.01f), hold (0.0f, 500.0f, 1.0f), rel (10.0f, 2000.0f, 1.0f);
+        atk.setSkewForCentre (3.0f);
+        hold.setSkewForCentre (100.0f);
+        rel.setSkewForCentre (200.0f);
+        p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::gateAttack, 1 }, "Gate Attack", atk, 1.5f,
+                                                            Attr().withLabel ("ms").withStringFromValueFunction (msText)));
+        p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::gateHold, 1 }, "Gate Hold", hold, 120.0f,
+                                                            Attr().withLabel ("ms").withStringFromValueFunction (msText)));
+        p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::gateRelease, 1 }, "Gate Release", rel, 220.0f,
+                                                            Attr().withLabel ("ms").withStringFromValueFunction (msText)));
+    }
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::gateHyst, 1 }, "Gate Hysteresis",
+        NormalisableRange<float> (0.0f, 12.0f, 0.1f), 5.0f, Attr().withLabel ("dB").withStringFromValueFunction ([] (float v, int) { return String (v, 1) + " dB"; })));
 
     // ---- EQ PARAMÉTRIQUE : 8 bandes, toutes coupées par défaut (positions de départ utiles pour la voix)
     p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::peqPower, 1 }, "Parametric EQ On", true));

@@ -13,6 +13,7 @@
 #include "MultibandOpto.h"
 #include "SaturationLab.h"
 #include "AutoGain.h"
+#include "NoiseGate.h"
 
 namespace onirique
 {
@@ -74,7 +75,7 @@ private:
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> mix;
 };
 
-/*  Chaîne complète : INPUT -> EQ PARAMÉTRIQUE -> RESONANCE -> COMPRESSION -> MULTIBAND -> EQ ANALOG -> DE-ESSER
+/*  Chaîne complète : INPUT -> NOISE GATE -> EQ PARAMÉTRIQUE -> RESONANCE -> COMPRESSION -> MULTIBAND -> EQ ANALOG -> DE-ESSER
     -> SATURATION LAB -> AUTO GAIN -> OUTPUT (ordre des 7 modules réglable)
     + interrupteur par module (EQ, RESONANCE, COMPRESSION, MULTIBAND, EQ ANALOG, DE-ESSER, SATURATION LAB)
     + BYPASS global (fondu 20 ms, signal sec retardé de la latence totale du plugin).
@@ -112,6 +113,8 @@ public:
         MultibandOpto::Params mb;
         std::array<ParametricEQ::Band, ParametricEQ::kBands> peq {};   // EQ paramétrique (premier module)
         bool peqOn = true;                              // interrupteur de l'EQ paramétrique (eqOn = EQ ANALOG)
+        bool gateOn = false;                            // NOISE GATE (premier module, cadence de l'hôte)
+        float gateThr = -48.0f, gateRange = 24.0f, gateAttack = 1.5f, gateHold = 120.0f, gateRelease = 220.0f, gateHyst = 5.0f;
         float resoAmt = 0.0f, resoLow = 40.0f, resoMid = 100.0f, resoHigh = 80.0f;   // en %
         float resoFreq[3] { 180.0f, 1200.0f, 6500.0f }, resoWidth[3] { 1.5f, 2.0f, 2.0f };   // Hz, octaves
         float deessFreq = 4000.0f, deessAmt = 0.0f;     // amt en %
@@ -150,6 +153,7 @@ public:
         multiband.prepare (fsOS);
         sat.prepare (fsOS, blockOS, 0);   // la saturation tourne déjà à la cadence suréchantillonnée de la chaîne
         autoGain.prepare (fs);
+        gate.prepare (fs, live);
 
         eqSw.prepare (fsOS, 0, blockOS);
         peqSw.prepare (fsOS, 0, blockOS);
@@ -163,7 +167,7 @@ public:
         // latence totale (à la cadence de l'hôte) : filtres de suréchantillonnage + modules (multiples du facteur)
         const int modulesOS = reso.getLatencySamples() + deessLatency() + sat.getLatencySamples();
         jassert (modulesOS % osFactor == 0);
-        latency = juce::roundToInt (os->getLatencyInSamples()) + modulesOS / osFactor;
+        latency = gate.getLatencySamples() + juce::roundToInt (os->getLatencyInSamples()) + modulesOS / osFactor;
         for (auto& d : dryDelay) d.prepare (latency);
         // écoute RESONANCE : ce qui est retiré est retardé comme le reste de la chaîne (DE-ESSER + SATURATION)
         for (auto& d : listenDelay) d.prepare (deessLatency() + sat.getLatencySamples());
@@ -230,6 +234,7 @@ public:
         deEsser2.setParams (p.deess2Freq, p.deessOn && p.deess2On ? p.deess2Amt * 0.01f : 0.0f, 0.0f, snap);
         sat.setDrive (p.drive, snap);
         sat.setMode (p.satType, snap);
+        gate.setParams (p.gateOn, p.gateThr, p.gateRange, p.gateAttack, p.gateHold, p.gateRelease, p.gateHyst);
 
         eqSw.set (p.eqOn, snap);
         peqSw.set (p.peqOn, snap);
@@ -260,6 +265,7 @@ public:
     float getPlosiveReductionDb() const noexcept { return plosive.getReductionDb(); }
     float getParallelReductionDb() const noexcept { return parallel.getGainReductionDb(); }
     float getPeqBandGainDb (int b) const noexcept { return peq.getBandGainDb (b); }
+    const NoiseGate::Meter& getGateMeter() const noexcept { return gate.getMeter(); }
 
     // mètres (crête linéaire par canal depuis la dernière lecture) : lus et remis à zéro par l'interface
     float consumeInputLevel (int c) noexcept  { return inLevel[c & 1].exchange (0.0f, std::memory_order_relaxed); }
@@ -291,6 +297,9 @@ private:
         }
 
         storePeaks (inLevel, ch, numCh, n);   // mètre INPUT : ce qui entre dans la chaîne (après le gain INPUT)
+
+        // NOISE GATE : premier module, à la cadence de l'hôte (anticipation de 1.5 ms en MIX, rien en LIVE)
+        gate.process (ch, numCh, n);
         autoGain.analyseReference (ch, numCh, n);
 
         // 3) montée en cadence : canaux audio + 2 canaux pour l'écoute RESONANCE (redescendus avec le reste)
@@ -371,6 +380,7 @@ private:
     int deessLatency() const noexcept { return deEsser.getLatencySamples() + deEsser2.getLatencySamples(); }
     SaturationLab sat;
     AutoGain autoGain;
+    NoiseGate gate;
     ModuleSwitch eqSw, peqSw, resoSw, compSw, parSw, mbSw, deessSw, satSw;
     DelayLine dryDelay[2];
     float dry[2][kChunk] {}, removed[2][kChunk] {}, monoSpare[kChunk] {};

@@ -1,6 +1,6 @@
 # ONIRIQUE VOCALBOX (JUCE 8 / VST3)
 
-Channel strip vocal : INPUT -> EQ PARAMÉTRIQUE (8 bandes, nettoyage) -> RESONANCE -> COMPRESSION (1176 / LA-2A / DUO) -> PARALLEL (1176 écrasé remis dans la voix, AMOUNT) -> MULTIBAND (opto 4 bandes) -> EQ ANALOG (LOW / MID / HIGH, couleur) -> DE-ESSER (x2) -> SATURATION LAB -> AUTO GAIN -> OUTPUT (+ BYPASS)
+Channel strip vocal : INPUT -> NOISE GATE (toujours en premier, repris du BROADCAST) -> EQ PARAMÉTRIQUE (8 bandes, nettoyage) -> RESONANCE -> COMPRESSION (1176 / LA-2A / DUO) -> PARALLEL (1176 écrasé remis dans la voix, AMOUNT) -> MULTIBAND (opto 4 bandes) -> EQ ANALOG (LOW / MID / HIGH, couleur) -> DE-ESSER (x2) -> SATURATION LAB -> AUTO GAIN -> OUTPUT (+ BYPASS)
 Chaque module (EQ, EQ ANALOG, RESONANCE, COMPRESSION, PARALLEL, MULTIBAND, DE-ESSER, SATURATION LAB) a son bouton power (coupure sans clic, latence conservée).
 Modes : MIX (qualité maximale, latence ~44 ms compensée par le DAW) / LIVE (latence nulle, pour s'enregistrer à travers le plugin).
 Ordre de traitement des 7 modules réglable à la souris dans l en-tête (glisser-déposer, fondu de 15 ms). Les projets enregistrés avec l'ancien ordre à 6 modules sont convertis au chargement (l'EQ ANALOG se place juste après le MULTIBAND).
@@ -51,6 +51,7 @@ Presets utilisateur sur Mac : ~/Library/Onirique/VocalBox/Presets.
 - Resources/logo.png         : sigil du site, intégré au plugin (BinaryData)
 - Source/DSP/VocalChain.h    : chaîne complète, interrupteurs de module, bypass avec fondu, sécurité NaN/Inf
 - Source/DSP/VocalEQ.h       : EQ ANALOG : LOW CUT 85 Hz, LOW (Pultec-like, 80 / 100 / 125 Hz) / MID / HIGH (air 8K / 10K / 20K), fin de course plus généreuse
+- Source/DSP/NoiseGate.h     : noise gate transparent d ONIRIQUE BROADCAST (chaîne latérale filtrée, anticipation 1.5 ms en MIX, hystérésis, HOLD, RANGE, LEARN), sans la garde d écho
 - Source/DSP/ParametricEQ.h  : EQ paramétrique 8 bandes ultra clean (filtres appariés à l'analogique, sans resserrement près de Nyquist), pentes jusqu'à 48 dB/oct, notch, mode dynamique par bande, édité dans l'analyseur
 - Source/DSP/Comp1176.h      : 1176 (FET, contre-réaction, attaque 20-800 us, ratios 4 / 8 / 12 / 20 / ALL)
 - Source/DSP/ParallelComp.h  : compression parallèle "New York" (copie de la voix -> 1176 INPUT +16 dB ratio ALL, bus ramené au RMS de la voix puis remélangé selon AMOUNT, 0 latence)
