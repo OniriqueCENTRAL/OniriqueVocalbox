@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "OniriqueKnob.h"
 #include <BinaryData.h>
 #include <array>
 #include <map>
@@ -145,54 +146,9 @@ void OniriqueLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int
     const float glow = (float) props.getWithDefault ("glow", 0.0f);
     const bool bipolar = (bool) props.getWithDefault ("bipolar", false);
 
-    // ---- arc de valeur : piste discrète + arc braise lumineux (depuis le centre si bipolaire)
-    const float arcR = R * 0.86f, arcW = std::max (2.5f, 7.0f * u);
-    juce::Path track;
-    track.addCentredArc (c.x, c.y, arcR, arcR, 0.0f, a0, a1, true);
-    g.setColour (juce::Colours::white.withAlpha (0.07f));
-    g.strokePath (track, juce::PathStrokeType (arcW, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-
-    const float aPos = a0 + shown * (a1 - a0);
-    const float aFrom = bipolar ? 0.5f * (a0 + a1) : a0;
-    if (std::abs (aPos - aFrom) > 0.005f)
-    {
-        juce::Path val;
-        val.addCentredArc (c.x, c.y, arcR, arcR, 0.0f, std::min (aFrom, aPos), std::max (aFrom, aPos), true);
-        ui::strokeGlow (g, val, ui::ember, arcW, 0.55f + 0.45f * glow);
-        g.setGradientFill (juce::ColourGradient (ui::bone, onCircle (c, arcR, aFrom), ui::ember, onCircle (c, arcR, aPos), false));
-        g.strokePath (val, juce::PathStrokeType (arcW, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-    }
-
-    // ---- corps : sphère sombre teintée sang, reflet en haut à gauche
-    const float bodyR = R * 0.66f;
-    const auto body = juce::Rectangle<float> (bodyR * 2.0f, bodyR * 2.0f).withCentre (c);
-    ui::drawCachedShadow (g, shadows, juce::DropShadow (juce::Colours::black.withAlpha (0.65f), juce::roundToInt (16.0f * u), { 0, juce::roundToInt (7.0f * u) }),
-                          body, -1.0f);
-
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff3d282b), c.x - bodyR * 0.45f, c.y - bodyR * 0.55f,
-                                             juce::Colour (0xff0e0708), c.x + bodyR * 0.75f, c.y + bodyR * 0.95f, true));
-    g.fillEllipse (body);
-    g.setColour (ui::night);
-    g.drawEllipse (body, std::max (1.0f, 1.6f * u));
-    g.setColour (juce::Colours::white.withAlpha (0.09f + 0.06f * glow));
-    g.drawEllipse (body.reduced (1.4f * u), std::max (0.8f, 1.1f * u));
-
-    const auto face = body.reduced (bodyR * 0.16f);
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff2a1a1d), face.getX(), face.getY(),
-                                             juce::Colour (0xff120a0b), face.getRight(), face.getBottom(), false));
-    g.fillEllipse (face);
-    g.setColour (juce::Colours::white.withAlpha (0.04f));
-    g.drawEllipse (face, std::max (0.8f, 1.0f * u));
-
-    // ---- repère + point lumineux en bout
-    juce::Path p;
-    p.startNewSubPath (onCircle (c, bodyR * 0.30f, aPos));
-    p.lineTo (onCircle (c, bodyR * 0.78f, aPos));
-    g.setColour (ui::mist);
-    g.strokePath (p, juce::PathStrokeType (std::max (2.0f, 4.0f * u), juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-    const auto tip = onCircle (c, bodyR * 0.78f, aPos);
-    g.setColour (ui::ember.withAlpha (0.35f * glow));
-    g.fillEllipse (juce::Rectangle<float> (14.0f * u, 14.0f * u).withCentre (tip));
+    // ---- le potard ONIRIQUE, le même dans tous les plugins de la marque (OniriqueKnob.h) : graduations allumées
+    //      jusqu'à la valeur (depuis le centre si bipolaire), corps biseauté, aiguille à l'étoile
+    onirique::ui::drawKnob (g, b, shown, a0, a1, ui::ember, bipolar, s.isMouseOverOrDragging() || glow > 0.5f);
 
     // ---- bornes de l'échelle
     const auto minL = props["minLabel"].toString(), maxL = props["maxLabel"].toString();
@@ -4072,22 +4028,23 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
     logoRect = { 22.0f * u, 10.0f * u, 64.0f * u * 985.0f / 895.0f, 64.0f * u };
     signalRect = { 0.0f, 80.0f * u, W, 12.0f * u };
     bypassButton.setBounds (juce::Rectangle<float> (136.0f * u, 40.0f * u).withRightX (W - m).withY (22.0f * u).toNearestInt());
-    presetBar.setBounds (juce::Rectangle<float> (336.0f * u, 40.0f * u).withRightX (W - m - 152.0f * u).withY (22.0f * u).toNearestInt());
+    // La pastille de licence : un bouton de l'en-tête, entre les presets et BYPASS, à leur hauteur ; sa place suit son texte.
+    const float badgeW = licenseOverlay != nullptr ? (float) licenseOverlay->pillWidth() : 0.0f;
+    const float badgeRight = (float) bypassButton.getX() / u - 10.0f;
+    if (licenseOverlay != nullptr)
+        licenseOverlay->fit (getLocalBounds(), u, juce::Rectangle<float> (badgeRight - badgeW, 22.0f, badgeW, 40.0f).toNearestInt());
+    presetBar.setBounds (juce::Rectangle<float> (336.0f * u, 40.0f * u).withRightX ((badgeRight - badgeW - 12.0f) * u).withY (22.0f * u).toNearestInt());
     modeSel.setBounds (juce::Rectangle<float> (110.0f * u, 40.0f * u).withRightX ((float) presetBar.getX() - 12.0f * u).withY (22.0f * u).toNearestInt());
     osSel.setBounds (juce::Rectangle<float> (204.0f * u, 40.0f * u).withRightX ((float) modeSel.getX() - 10.0f * u).withY (22.0f * u).toNearestInt());   // suréchantillonnage, à côté de MIX / LIVE
     // ordre de traitement, sous le titre, jusqu'au sélecteur de suréchantillonnage
     orderBar.setBounds (juce::Rectangle<float> (logoRect.getRight() + 16.0f * u, 55.0f * u, (float) osSel.getX() - 14.0f * u - (logoRect.getRight() + 16.0f * u), 19.0f * u).toNearestInt());
-    // ligne du haut, entre le titre et le suréchantillonnage : bouton de l'ASSISTANT puis pastille de licence
+    // ligne du haut, entre le titre et le suréchantillonnage : le bouton de l'ASSISTANT
     {
         const float titleRight = logoRect.getRight() + 14.0f * u
                                + ui::textWidth (ui::font (ui::Face::display, 30.0f * u, true, 0.10f), "ONIRIQUE") + 2.0f + 10.0f * u
                                + ui::textWidth (ui::font (ui::Face::display, 30.0f * u, false, 0.10f), "VOCALBOX") + 2.0f;
         const float aiX = titleRight + 18.0f * u, aiW = 210.0f * u;
         aiButton.setBounds (juce::Rectangle<float> (aiX, 17.0f * u, aiW, 32.0f * u).toNearestInt());
-        const float licW = 196.0f;   // pastille : unités de base (la licence se dessine à l'échelle de la fenêtre), juste après l'assistant
-        const float licX = std::min ((aiX + aiW) / u + 14.0f, (float) osSel.getX() / u - 12.0f - licW);
-        if (licenseOverlay != nullptr)
-            licenseOverlay->fit (getLocalBounds(), u, juce::Rectangle<float> (licX, 20.0f, licW, 26.0f).toNearestInt());
     }
 
     if (logo.isValid())
