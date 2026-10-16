@@ -241,8 +241,9 @@ FxView::FxView (OniriqueVocalBoxAudioProcessor& p, juce::LookAndFeel& lnf)
                     "Plate 2: a darker, wider plate with more movement: lush ballads, R&B.",
                     "Hall: big, open space with early reflections and a long, soft tail.",
                     "Shimmer: an octave above, fed back into the tail: airy, ethereal pads behind the voice." }),
-      reverbMix (p.apvts, ids::reverbMix, "MIX", "0", "100", KnobComponent::Layout::textBelow,
-                 "Reverb amount (dry / wet, equal power). Vocals usually sit between 10 and 30 %. Double-click to reset.", lnf)
+      reverbMix (p.apvts, ids::reverbMix, "SEND", "0", "100", KnobComponent::Layout::textBelow,
+                 "Level of the reverb return. The reverb is an aux track: the voice always stays at 100 %, the reverb is added on top "
+                 "(raise it as much as you like, the voice never drowns; DUCKING clears it under the words). Double-click to reset.", lnf)
 {
     setWantsKeyboardFocus (true);
     setOpaque (true);
@@ -264,8 +265,8 @@ FxView::FxView (OniriqueVocalBoxAudioProcessor& p, juce::LookAndFeel& lnf)
     }
     chorusCard  = { "CHORUS", "3 voices  |  auto gain match", {}, &chorusPower };
     flangerCard = { "FLANGER", "jet sweep  |  auto gain match", {}, &flangerPower };
-    delayCard   = { "DELAY", "tempo sync  |  ping-pong  |  ducking", {}, &delayPower };
-    reverbCard  = { "REVERB", "16-line network  |  5 modes  |  ducking", {}, &reverbPower };
+    delayCard   = { "DELAY", "aux track  |  tempo sync  |  ping-pong  |  ducking", {}, &delayPower };
+    reverbCard  = { "REVERB", "aux track  |  16-line network  |  5 modes  |  ducking", {}, &reverbPower };
 
     for (auto* v : { &chorusVis, &flangerVis, &delayVis, &reverbVis })
     {
@@ -293,7 +294,7 @@ FxView::FxView (OniriqueVocalBoxAudioProcessor& p, juce::LookAndFeel& lnf)
     delayNote.setPrefix ("NOTE ");
     delayTime = &slider (ids::delayTime, "TIME", "Delay time in ms (when SYNC is off).");
     delayFb   = &slider (ids::delayFeedback, "FEEDBACK", "How many repeats. They soften a little each time, like tape.");
-    delayMix  = &slider (ids::delayMix, "MIX", "Delay amount (dry / wet, equal power).");
+    delayMix  = &slider (ids::delayMix, "SEND", "Level of the delay return. The delay is an aux track: the voice always stays at 100 %, the echoes are added on top.");
     delayLow  = &slider (ids::delayLowCut, "LOW CUT", "Removes the low end of the repeats: clean echoes that don't muddy the voice.");
     delayHigh = &slider (ids::delayHighCut, "HIGH CUT", "Darkens the repeats so they sit behind the voice.");
     delayDuck = &slider (ids::delayDucking, "DUCKING", "The echoes step back while you sing and come back in the gaps.");
@@ -332,8 +333,7 @@ void FxView::setShown (bool shown)
 
 void FxView::tick()
 {
-    if (! isVisible()) return;
-    motion.tick (*this);
+    if (motion.tick (*this) || ! isVisible()) return;   // en transition : le calque seul s'anime
     for (auto* a : children) a->tick();
     // SYNC : la note remplace le temps en ms
     const bool sync = processor.apvts.getRawParameterValue (ids::delaySync)->load() > 0.5f;
@@ -485,7 +485,7 @@ void FxView::paint (juce::Graphics& g)
         g.setColour (ui::mist);
         g.drawText ("FX", titleArea.withX (titleArea.getX() + 8.0f * u).withWidth (tw), juce::Justification::centredLeft, false);
         g.setColour (ui::haze);
-        const juce::String h = "Vocal effects at the end of the chain (after AUTO GAIN, before OUTPUT): chorus > flanger > delay > reverb.  Esc = back";
+        const juce::String h = "Vocal effects at the end of the chain: chorus > flanger on the voice, then DELAY and REVERB as aux tracks (the voice stays at 100 %).  Esc = back";
         const float hx = titleArea.getX() + 8.0f * u + tw + 10.0f * u;
         g.setFont (ui::fitFont (ui::Face::body, 13.0f * u, (float) exitButton.getX() - 16.0f * u - hx, h, false, 0.03f));
         g.drawText (h, juce::Rectangle<float> (hx, titleArea.getY(), (float) exitButton.getX() - 16.0f * u - hx, titleArea.getHeight()),

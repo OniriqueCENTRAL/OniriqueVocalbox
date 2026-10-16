@@ -118,6 +118,8 @@ public:
         bool gateOn = false;                            // NOISE GATE (premier module, cadence de l'hôte)
         float gateThr = -48.0f, gateRange = 24.0f, gateAttack = 1.5f, gateHold = 120.0f, gateRelease = 220.0f, gateHyst = 5.0f;
         float nsAmount = 0.0f;                          // NOISE SUPPRESSOR (%), avant le gate
+        float mbOutDb = 0.0f;                           // sortie du MULTIBAND
+        float parDeessAmt = 0.0f, parDeessFreq = 6000.0f; // de-esser du bus de compression parallèle (%, Hz)
         bool peqListen = false; int peqListenBand = 2;  // écoute (casque) d'une bande de l'EQ paramétrique
         fx::FxRack::Params fx;                          // page FX (fin de chaîne)
         float resoAmt = 0.0f, resoLow = 40.0f, resoMid = 100.0f, resoHigh = 80.0f;   // en %
@@ -160,6 +162,7 @@ public:
         autoGain.prepare (fs);
         gate.prepare (fs, live);
         suppressor.prepare (fs, live);
+        mbOutGain.reset (fsOS, 0.03);
         fxRack.prepare (fs);
         peqListenMix.reset (fs, 0.03);
         listenF = -1.0f;
@@ -256,6 +259,8 @@ public:
         parSw.set (p.parOn, snap);
         parallel.setAmount (p.parAmount * 0.01f, snap);
         parallel.setControl (p.parAuto, p.parThresh, p.parAttack, p.parRelease, snap);
+        parallel.setDeEsser (p.parDeessFreq, p.parDeessAmt * 0.01f, snap);
+        if (snap) mbOutGain.setCurrentAndTargetValue (dbToGain (p.mbOutDb)); else mbOutGain.setTargetValue (dbToGain (p.mbOutDb));
         mbSw.set (p.mbOn && p.compMaster, snap);
         deessSw.set (p.deessOn || smartOn, snap);   // les plosives suivent l'interrupteur DE-ESSER / PLOSIVES
         satSw.set (p.satOn, snap);
@@ -282,6 +287,7 @@ public:
     float getSuppressorReductionDb() const noexcept { return suppressor.getReductionDb(); }
     float getSuppressorFloorDb() const noexcept { return suppressor.getNoiseFloorDb(); }
     float getReverbTail() const noexcept { return fxRack.getReverbTail(); }
+    float getParallelDeEssDb() const noexcept { return parallel.getDeEssReductionDb(); }
 
     // mètres (crête linéaire par canal depuis la dernière lecture) : lus et remis à zéro par l'interface
     float consumeInputLevel (int c) noexcept  { return inLevel[c & 1].exchange (0.0f, std::memory_order_relaxed); }
@@ -349,7 +355,13 @@ private:
                     compSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { comp.process (s, nc, q); });
                     parSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { parallel.process (s, nc, q); });
                     break;
-                case 3: mbSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { multiband.process (s, nc, q); }); break;
+                case 3:   // MULTIBAND puis son OUTPUT
+                    mbSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q)
+                    {
+                        multiband.process (s, nc, q);
+                        for (int i = 0; i < q; ++i) { const float g = mbOutGain.getNextValue(); for (int c = 0; c < nc; ++c) s[c][i] *= g; }
+                    });
+                    break;
                 case 4: eqSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { eq.process (s, nc, q); }); break;   // EQ ANALOG
                 case 5: deessSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { plosive.process (s, nc, q); deEsser.process (s, nc, q); deEsser2.process (s, nc, q); }); break;
                 default: satSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { sat.process (s, nc, q); }); break;
@@ -415,6 +427,7 @@ private:
     AutoGain autoGain;
     NoiseGate gate;
     NoiseSuppressor suppressor;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> mbOutGain { 1.0f };
     fx::FxRack fxRack;
     // écoute d'une bande de l'EQ paramétrique : le signal d'entrée (aligné) passé dans le filtre de la bande
     Biquad listenA, listenB;

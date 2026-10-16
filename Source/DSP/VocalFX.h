@@ -17,6 +17,7 @@ namespace onirique::fx
     - FLANGER : retard très court (0.3 à 6 ms) modulé, réinjection réglable (+/-), côtés décalés de 90°.
       CHORUS et FLANGER : GAIN MATCH automatique, le niveau de sortie (RMS lent) est ramené à celui d'entrée : on
       entend l'effet, pas une différence de volume.
+    - DELAY et REVERB sont des PISTES AUXILIAIRES : la voix reste à 100 %, leur retour (SEND) s'ajoute par-dessus.
     - DELAY : temps libre ou calé sur le tempo de l'hôte, ping-pong, filtres coupe-bas / coupe-haut dans la boucle,
       légère saturation dans la réinjection (les répétitions s'arrondissent comme sur bande), changement de temps
       glissé (aucun clic), DUCKING.
@@ -278,11 +279,12 @@ public:
         if (lowCutHz != lowCut || highCutHz != highCut) { lowCut = lowCutHz; highCut = highCutHz; updateFilters(); }
         sw.set (on);
     }
-    void process (float* const* ch, int numCh, int n) noexcept
+    // piste auxiliaire : la voix (ch) entre dans le delay, son retour (au niveau SEND, avec le ducking) s'ajoute dans wet
+    void processSend (const float* const* ch, float* const* wet, int numCh, int n) noexcept
     {
         if (sw.idle()) { sw.wasIdle = true; return; }
         if (sw.wasIdle) { for (auto& d : line) d.reset(); for (int c = 0; c < 2; ++c) { hp[c].reset(); lp[c].reset(); } sw.wasIdle = false; }
-        const float dryG = std::cos (mix * 1.5707963f), wetG = std::sin (mix * 1.5707963f);
+        const float sendG = mix;   // niveau du retour : la voix, elle, reste à 100 %
         for (int i = 0; i < n; ++i)
         {
             const float xl = ch[0][i], xr = numCh > 1 ? ch[1][i] : xl;
@@ -300,11 +302,9 @@ public:
                 line[0].push (xl + fb * sat (r[0]));
                 line[1].push (xr + fb * sat (r[1]));
             }
-            const float dg = duck.next (0.5f * (xl + xr), duckDepth) * wetG;
-            const float s = sw.on.getNextValue();
-            const float yl = xl * dryG + r[0] * dg, yr = xr * dryG + r[1] * dg;
-            ch[0][i] = xl + s * ((numCh > 1 ? yl : 0.5f * (yl + yr)) - xl);
-            if (numCh > 1) ch[1][i] = xr + s * (yr - xr);
+            const float g = duck.next (0.5f * (xl + xr), duckDepth) * sendG * sw.on.getNextValue();
+            if (numCh > 1) { wet[0][i] += r[0] * g; wet[1][i] += r[1] * g; }
+            else wet[0][i] += 0.5f * (r[0] + r[1]) * g;
         }
     }
 
@@ -379,11 +379,12 @@ public:
     // niveau de la queue (pour l'interface)
     float getTailLevel() const noexcept { return tailMeter.load (std::memory_order_relaxed); }
 
-    void process (float* const* ch, int numCh, int n) noexcept
+    // piste auxiliaire : la voix (ch) entre dans la reverb, son retour (au niveau SEND, avec le ducking) s'ajoute dans wet
+    void processSend (const float* const* ch, float* const* wet, int numCh, int n) noexcept
     {
         if (sw.idle()) { sw.wasIdle = true; tailMeter.store (0.0f, std::memory_order_relaxed); return; }
         if (sw.wasIdle) { clearState(); sw.wasIdle = false; }
-        const float dryG = std::cos (prm.mix * 1.5707963f), wetG = std::sin (prm.mix * 1.5707963f);
+        const float sendG = prm.mix;   // niveau du retour : la voix, elle, reste à 100 %
         const float pre = std::max (2.0f, prm.preDelayMs * 0.001f * (float) fs);
         const float apG[4] { 0.75f * diffAmt, 0.75f * diffAmt, 0.625f * diffAmt, 0.625f * diffAmt };
         const double lfoInc = 2.0 * juce::MathConstants<double>::pi * prm.modRate / fs;
@@ -465,15 +466,9 @@ public:
             wr = hc[1].process (lc[1].process (wr + erR, 0), 0);
             peak = std::max (peak, std::abs (wl) + std::abs (wr));
 
-            const float dg = duck.next (in, prm.ducking) * wetG;
-            const float s = sw.on.getNextValue();
-            const float yl = xl * dryG + wl * dg, yr = xr * dryG + wr * dg;
-            if (numCh > 1)
-            {
-                ch[0][i] = xl + s * (yl - xl);
-                ch[1][i] = xr + s * (yr - xr);
-            }
-            else ch[0][i] = xl + s * (0.5f * (yl + yr) - xl);
+            const float g = duck.next (in, prm.ducking) * sendG * sw.on.getNextValue();
+            if (numCh > 1) { wet[0][i] += wl * g; wet[1][i] += wr * g; }
+            else wet[0][i] += 0.5f * (wl + wr) * g;
         }
         tailMeter.store (peak, std::memory_order_relaxed);
         for (auto& l : lfo) l = std::fmod (l, 2.0 * juce::MathConstants<double>::pi);
@@ -585,6 +580,7 @@ public:
     void prepare (double fs)
     {
         chorus.prepare (fs); flanger.prepare (fs); delay.prepare (fs); reverb.prepare (fs);
+        for (auto& w : wetBuf) w.assign (4096, 0.0f);
     }
     void set (const Params& p) noexcept
     {
@@ -597,8 +593,21 @@ public:
     {
         chorus.process (ch, numCh, n);
         flanger.process (ch, numCh, n);
-        delay.process (ch, numCh, n);
-        reverb.process (ch, numCh, n);
+        // DELAY et REVERB : deux pistes auxiliaires en parallèle, nourries par la voix (après chorus / flanger) ; leurs
+        // retours s'ajoutent à la voix, qui reste à 100 % : monter la reverb ne noie jamais la voix, et le DUCKING
+        // creuse le retour sous la voix
+        for (int pos = 0; pos < n; pos += 4096)
+        {
+            const int m = std::min (4096, n - pos);
+            float* in[2] { ch[0] + pos, numCh > 1 ? ch[1] + pos : ch[0] + pos };
+            float* wet[2] { wetBuf[0].data(), wetBuf[1].data() };
+            std::fill (wet[0], wet[0] + m, 0.0f);
+            std::fill (wet[1], wet[1] + m, 0.0f);
+            delay.processSend (in, wet, numCh, m);
+            reverb.processSend (in, wet, numCh, m);
+            for (int c = 0; c < numCh; ++c)
+                for (int i = 0; i < m; ++i) in[c][i] += wet[c][i];
+        }
     }
     float getReverbTail() const noexcept { return reverb.getTailLevel(); }
 
@@ -607,5 +616,6 @@ private:
     Flanger flanger;
     StereoDelay delay;
     VocalReverb reverb;
+    std::vector<float> wetBuf[2];   // retours des deux pistes auxiliaires
 };
 } // namespace onirique::fx

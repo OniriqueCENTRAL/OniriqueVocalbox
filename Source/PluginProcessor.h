@@ -65,6 +65,7 @@ public:
     float getSuppressorReductionDb() const noexcept { return chain.getSuppressorReductionDb(); }
     float getSuppressorFloorDb() const noexcept { return chain.getSuppressorFloorDb(); }
     float getReverbTail() const noexcept { return chain.getReverbTail(); }
+    float getParallelDeEssDb() const noexcept { return chain.getParallelDeEssDb(); }
     float consumeInputLevel (int c) noexcept  { return chain.consumeInputLevel (c); }
 
     float consumeOutputLevel (int c) noexcept { return chain.consumeOutputLevel (c); }
@@ -101,12 +102,16 @@ private:
     std::atomic<float>* pPeqPower = nullptr;
     std::atomic<float>* pGate[7] {};     // on, seuil, range, attaque, hold, relâchement, hystérésis
     // NOISE SUPPRESSOR, écoute d'une bande de l'EQ, FX (voir kFxIds dans le .cpp)
-    static constexpr int kNumFx = 34;
+    static constexpr int kNumFx = 37;
 public:
     static constexpr int kNumFxParams = kNumFx;
 private:
     std::atomic<float>* pFx[kNumFx] {};
     std::atomic<double> hostBpm { 120.0 };
+public:
+    // écoute d'une bande : vraie seulement pendant qu'on tient une bande (casque armé ou non : voir readExtras)
+    std::atomic<bool> peqListenHold { false };
+private:
     std::atomic<float>* pComp[11] {};   // compOn, mode, order, 1176 in/out/attack/release/ratio, LA-2A gain/peak/limit
     std::atomic<float>* pResoAmt = nullptr;
     std::atomic<float>* pResoLow = nullptr;

@@ -375,6 +375,7 @@ KnobComponent::KnobComponent (juce::AudioProcessorValueTreeState& apvts, const c
 
     addAndMakeVisible (slider);
     attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (apvts, paramId, slider);
+    setBufferedToImage (true);   // repos : une image prête (les photos des pages plein écran et les fondus ne le redessinent pas)
 }
 
 KnobComponent::~KnobComponent()
@@ -471,12 +472,13 @@ void KnobComponent::paint (juce::Graphics& g)
     {
         // LED d'activité devant le nom (s'allume quand le module agit, ex. plosive détectée)
         const float d = nameR.getHeight() * 0.36f;
-        const auto led = juce::Rectangle<float> (d, d).withCentre ({ nameR.getX() + d, nameR.getCentreY() });
+        // LED (et son halo) entièrement dans le composant : le halo n'est plus coupé par le bord gauche
+        const auto led = juce::Rectangle<float> (d, d).withCentre ({ nameR.getX() + d * 1.6f, nameR.getCentreY() });
         g.setColour (ui::ember.withAlpha (0.45f * act));
         g.fillEllipse (led.expanded (d * 0.8f));
         g.setColour (ui::haze.withAlpha (0.35f).interpolatedWith (ui::ember, act));
         g.fillEllipse (led);
-        nameR.removeFromLeft (d * 2.4f);
+        nameR.removeFromLeft (d * 3.0f);
     }
     g.setColour (ui::haze.interpolatedWith (ui::mist, glow));
     g.setFont (ui::fitFont (ui::Face::body, layout == Layout::horizontal ? nameArea.getHeight() * 0.48f
@@ -1738,6 +1740,7 @@ void SpectrumAnalyzer::mouseDown (const juce::MouseEvent& e)
     select (n);
     if (e.mods.isPopupMenu()) { showBandMenu (*this, processor.apvts, n, e.getScreenPosition()); return; }
     dragNode = n;
+    processor.peqListenHold.store (true);    // casque armé : on entend cette bande tant qu'on la tient
     dragStart = e.position;
     dragF0 = band (n).freq;
     dragG0 = band (n).gainDb;
@@ -1777,6 +1780,7 @@ void SpectrumAnalyzer::mouseUp (const juce::MouseEvent&)
     for (auto* id : { ids::peqFreq[dragNode], ids::peqGain[dragNode] })
         if (auto* p = processor.apvts.getParameter (id)) p->endChangeGesture();
     dragNode = -1;
+    processor.peqListenHold.store (false);   // bande relâchée : on réentend toute la voix
 }
 
 void SpectrumAnalyzer::mouseDoubleClick (const juce::MouseEvent& e)
@@ -2654,7 +2658,7 @@ EqFullView::EqFullView (OniriqueVocalBoxAudioProcessor& p) : analyzer (p, true),
     powerAtt = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (processor.apvts, ids::peqPower, power);
     addAndMakeVisible (listenButton);
     listenButton.setText ("LISTEN");
-    listenButton.setTooltip ("Listen to the selected band only (the frequencies it acts on), to find what to cut. Click again to hear the whole voice.");
+    listenButton.setTooltip ("Band listen: when lit, click and hold a band's dot to hear only that band (the frequencies it acts on); release it to hear the whole voice again.");
     listenAtt = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (processor.apvts, ids::peqListen, listenButton);
     children.push_back (&listenButton);
     children.push_back (&power);
@@ -2678,9 +2682,11 @@ EqFullView::EqFullView (OniriqueVocalBoxAudioProcessor& p) : analyzer (p, true),
         dynB[i] = std::make_unique<PillToggle> ("DYN", PillToggle::Style::mini);
         dynB[i]->setTooltip (n + " dynamic mode: the bell / shelf only acts when its zone goes above the threshold.");
         dynAtt[i] = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (processor.apvts, ids::peqDyn[b], *dynB[i]);
+        slopeV[i] = std::make_unique<DragValue> (processor.apvts, ids::peqSlope[b], n + " slope (low cut / high cut): 12, 24, 36 or 48 dB per octave. Drag up/down.");
         for (juce::Component* c : std::initializer_list<juce::Component*> { chips[i].get(), freqV[i].get(), gainV[i].get(), qV[i].get(), thrV[i].get(), dynB[i].get() })
             addAndMakeVisible (c);
-        for (Animated* a : std::initializer_list<Animated*> { chips[i].get(), freqV[i].get(), gainV[i].get(), qV[i].get(), thrV[i].get(), dynB[i].get() })
+        addChildComponent (slopeV[i].get());
+        for (Animated* a : std::initializer_list<Animated*> { chips[i].get(), freqV[i].get(), gainV[i].get(), qV[i].get(), thrV[i].get(), dynB[i].get(), slopeV[i].get() })
             children.push_back (a);
     }
     analyzer.onSelect = [this] (int b) { selectBand (b); if (onSelect) onSelect (b); };
@@ -2705,8 +2711,7 @@ void EqFullView::selectBand (int b)
 
 void EqFullView::tick()
 {
-    if (! isVisible()) return;
-    motion.tick (*this);
+    if (motion.tick (*this) || ! isVisible()) return;   // en transition : le calque seul s'anime
     for (auto* a : children) a->tick();
     // DYN / THR : seulement pour les cloches et les shelfs ; le seuil s'estompe quand la bande n'est pas dynamique
     for (int b = 0; b < 8; ++b)
@@ -2718,6 +2723,8 @@ void EqFullView::tick()
         dynB[i]->setEnabled (can);
         dynB[i]->setAlpha (can ? 1.0f : 0.35f);
         thrV[i]->setAlpha (dyn ? 1.0f : 0.35f);
+        gainV[i]->setVisible (! onirique::ParametricEQ::isCut (type));
+        slopeV[i]->setVisible (onirique::ParametricEQ::isCut (type));
         gainV[i]->setAlpha (onirique::ParametricEQ::hasGain (type) ? 1.0f : 0.35f);
     }
 }
@@ -2747,6 +2754,7 @@ void EqFullView::resized()
             v->setBounds (col.removeFromTop (24.0f * u).toNearestInt());
             col.removeFromTop (5.0f * u);
         }
+        slopeV[i]->setBounds (gainV[i]->getBounds());   // coupe-bas / coupe-haut : la pente à la place du gain
         auto row = col.removeFromTop (24.0f * u);
         dynB[i]->setBounds (row.removeFromLeft (row.getWidth() * 0.36f).toNearestInt());
         row.removeFromLeft (4.0f * u);
@@ -3831,7 +3839,7 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
     for (auto* k : { &lowKnob, &midKnob, &highKnob, &freqKnob, &amtKnob, &driveKnob, &inKnob, &outKnob,
                      &resoAmtKnob, &resoLowFader, &resoMidFader, &resoHighFader,
                      &fetInKnob, &fetOutKnob, &fetAtkKnob, &fetRelKnob, &laGainKnob, &laPeakKnob,
-                     &mbThr1, &mbThr2, &mbThr3, &mbThr4, &mbAttackKnob, &mbReleaseKnob })
+                     &mbThr1, &mbThr2, &mbThr3, &mbThr4, &mbAttackKnob, &mbReleaseKnob, &mbOutKnob })
     {
         addAndMakeVisible (k);
         animated.push_back (k);
@@ -3907,7 +3915,9 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
         peqGainV[(size_t) b]->setPrefix ("GAIN ");
         peqQV[(size_t) b]->setPrefix ("Q ");
         peqThrV[(size_t) b]->setPrefix ("THR ");
-        for (auto* v : { peqFreqV[(size_t) b].get(), peqGainV[(size_t) b].get(), peqQV[(size_t) b].get(), peqThrV[(size_t) b].get() })
+        peqSlopeV[(size_t) b] = std::make_unique<DragValue> (processor.apvts, ids::peqSlope[b],
+                                                             n + " slope (low cut / high cut): 12, 24, 36 or 48 dB per octave. Drag up/down.");
+        for (auto* v : { peqFreqV[(size_t) b].get(), peqGainV[(size_t) b].get(), peqQV[(size_t) b].get(), peqThrV[(size_t) b].get(), peqSlopeV[(size_t) b].get() })
         {
             addChildComponent (v);
             animated.push_back (v);
@@ -3948,7 +3958,7 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
     fxButton.onClick = [this] { showFx (! fxView.isShown()); };
     addAndMakeVisible (peqListenButton);
     animated.push_back (&peqListenButton);
-    peqListenButton.setTooltip ("Listen to the selected band only (the frequencies it acts on), to find what to cut. Click again to hear the whole voice.");
+    peqListenButton.setTooltip ("Band listen: when lit, click and hold a band's dot to hear only that band (the frequencies it acts on); release it to hear the whole voice again.");
     peqListenAtt = std::make_unique<ButtonAttachment> (processor.apvts, ids::peqListen, peqListenButton);
 
     // MIX / LIVE, suréchantillonnage, plosives, écoute RESONANCE
@@ -3965,6 +3975,12 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
     addAndMakeVisible (orderBar);
     addAndMakeVisible (deessGr);
     addAndMakeVisible (parAmountKnob);
+    addAndMakeVisible (parDeessKnob);
+    addAndMakeVisible (parDeessFreqV);
+    animated.push_back (&parDeessKnob);
+    animated.push_back (&parDeessFreqV);
+    parDeessFreqV.setPrefix ("FREQ ");
+    parDeessKnob.activity = [this] { return processor.getParallelDeEssDb(); };
     addAndMakeVisible (parGr);
     animated.push_back (&parAmountKnob);
     animated.push_back (&parGr);
@@ -4059,6 +4075,14 @@ void OniriqueVocalBoxAudioProcessorEditor::timerCallback()
 {
     clock += 1.0 / 60.0;
     ++frame;
+   #if ONIRIQUE_UI_TEST
+    // essai local : ONIRIQUE_UI_TEST=cycle ouvre et ferme l'EQ plein écran puis la page FX en boucle (mesure de fluidité)
+    if (frame % 45 == 0 && juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_TEST", {}) == "cycle")
+    {
+        const int step = (frame / 45) % 4;
+        if (step == 0) showEqFull (true); else if (step == 1) showEqFull (false); else if (step == 2) showFx (true); else showFx (false);
+    }
+   #endif
     {
         bool anyFx = false;
         for (auto* id : { ids::chorusOn, ids::flangerOn, ids::delayOn, ids::reverbOn }) anyFx |= processor.apvts.getRawParameterValue (id)->load() > 0.5f;
@@ -4067,13 +4091,14 @@ void OniriqueVocalBoxAudioProcessorEditor::timerCallback()
 
     // page plein écran ouverte (EQ, FX) : elle couvre les modules, elle seule s'anime (chaque image des modules,
     // dessous, la forçait à se redessiner). Le bouton FX de l'en-tête reste vivant. Pendant la transition d'ouverture
-    // ou de fermeture, les modules sont en partie visibles : ils continuent de s'animer.
-    if (eqFull.isVisible() || fxView.isVisible())
+    // ou de fermeture, un calque opaque montre des photos figées des modules : eux non plus ne s'animent pas.
+    if (eqFull.isVisible() || fxView.isVisible() || eqFull.isAnimating() || fxView.isAnimating())
     {
-        bool moving = false;
-        if (eqFull.isVisible()) { eqFull.tick(); moving |= eqFull.isAnimating(); }
-        if (fxView.isVisible()) { fxView.tick(); moving |= fxView.isAnimating(); }
-        if (! moving) { fxButton.tick(); orderBar.tick(); return; }   // l'en-tête reste vivant
+        eqFull.tick();
+        fxView.tick();
+        fxButton.tick();
+        orderBar.tick();   // l'en-tête reste vivant
+        return;
     }
     for (auto* a : animated) a->tick();
 
@@ -4106,7 +4131,7 @@ void OniriqueVocalBoxAudioProcessorEditor::timerCallback()
         const int b = analyzer.getSelected();
         const int type = juce::roundToInt (processor.apvts.getRawParameterValue (ids::peqType[b])->load());
         const bool dyn = processor.apvts.getRawParameterValue (ids::peqDyn[b])->load() > 0.5f && ParametricEQ::canBeDynamic (type);
-        if (dyn != peqDynShown) selectPeqBand (b);
+        if (dyn != peqDynShown || ParametricEQ::isCut (type) != peqCutShown) selectPeqBand (b);
     }
     // suréchantillonnage : verrouillé (grisé) en mode LIVE
     osSel.setLocked (processor.apvts.getRawParameterValue (ids::liveMode)->load() > 0.5f, "MIX MODE ONLY",
@@ -4273,12 +4298,12 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
             gv[b]->setBounds (juce::Rectangle<float> (cw - 10.0f * u, gains.getHeight()).withCentre ({ cx, gains.getCentreY() }).toNearestInt());
             lb[b]->setBounds (juce::Rectangle<float> (std::min (cw - 10.0f * u, 96.0f * u), solos.getHeight()).withCentre ({ cx, solos.getCentreY() }).toNearestInt());
         }
-        // ATTACK / RELEASE centrés sous les 4 bandes
-        for (auto [k, side] : { std::pair { &mbAttackKnob, -1.0f }, std::pair { &mbReleaseKnob, 1.0f } })
+        // ATTACK / RELEASE / OUTPUT centrés sous les 4 bandes
+        for (auto [k, side] : { std::pair { &mbAttackKnob, -1.0f }, std::pair { &mbReleaseKnob, 0.0f }, std::pair { &mbOutKnob, 1.0f } })
         {
             k->setMaxDiameter (D);
             k->setBounds (juce::Rectangle<float> (cw, global.getHeight())
-                              .withCentre ({ global.getCentreX() + side * cw * 0.62f, global.getCentreY() }).toNearestInt());
+                              .withCentre ({ global.getCentreX() + side * cw * 1.05f, global.getCentreY() }).toNearestInt());
         }
     }
     sections.push_back ({ "1176",  fetPanel, nullptr, 0.0f, true, mbTab });
@@ -4332,6 +4357,15 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
         parAmountKnob.setMaxDiameter (D);
         parAmountKnob.setBounds (pc.removeFromTop (1.47f * D + 24.0f * u).toNearestInt());
         pc.removeFromTop (parManualShown ? 10.0f * u : 18.0f * u);
+        // DE-ESS du bus (en bas de la colonne) : intensité + fréquence
+        {
+            auto da = pc.removeFromBottom (parManualShown ? 112.0f * u : 128.0f * u);
+            parDeessFreqV.setBounds (da.removeFromBottom (24.0f * u).reduced (2.0f * u, 0.0f).toNearestInt());
+            da.removeFromBottom (4.0f * u);
+            parDeessKnob.setMaxDiameter (std::min (da.getWidth() - 10.0f * u, (da.getHeight() - 30.0f * u) / 1.47f));
+            parDeessKnob.setBounds (da.toNearestInt());
+            pc.removeFromBottom (8.0f * u);
+        }
         const float meterW = parManualShown ? 48.0f * u : 58.0f * u;
         const auto meterCol = pc.removeFromRight (meterW);
         parGr.setBounds (meterCol.withSizeKeepingCentre (meterW, std::min (meterCol.getHeight() - 8.0f * u, 290.0f * u)).toNearestInt());
@@ -4530,6 +4564,7 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
             peqGainV[(size_t) i]->setBounds (gR.toNearestInt());
             peqQV[(size_t) i]->setBounds (qR.toNearestInt());
             peqThrV[(size_t) i]->setBounds (tR.toNearestInt());
+            peqSlopeV[(size_t) i]->setBounds (gR.toNearestInt());   // coupe-bas / coupe-haut : la pente prend la place du gain
         }
     }
     // EQ plein écran : toute la surface des modules (l'en-tête reste visible) ; ASSISTANT : toute la fenêtre
@@ -4553,11 +4588,15 @@ void OniriqueVocalBoxAudioProcessorEditor::selectPeqBand (int b)
         lb->setValueNotifyingHost (lb->convertTo0to1 ((float) b));
     const int type = juce::roundToInt (processor.apvts.getRawParameterValue (ids::peqType[b])->load());
     peqDynShown = processor.apvts.getRawParameterValue (ids::peqDyn[b])->load() > 0.5f && ParametricEQ::canBeDynamic (type);
+    peqCutShown = ParametricEQ::isCut (type);
     for (int i = 0; i < 8; ++i)
     {
-        for (auto* v : { peqFreqV[(size_t) i].get(), peqGainV[(size_t) i].get(), peqQV[(size_t) i].get() })
-            if (v != nullptr) v->setVisible (i == b);
-        if (peqThrV[(size_t) i] != nullptr) peqThrV[(size_t) i]->setVisible (i == b && peqDynShown);
+        if (peqFreqV[(size_t) i] == nullptr) continue;
+        peqFreqV[(size_t) i]->setVisible (i == b);
+        peqQV[(size_t) i]->setVisible (i == b);
+        peqGainV[(size_t) i]->setVisible (i == b && ! peqCutShown);
+        peqSlopeV[(size_t) i]->setVisible (i == b && peqCutShown);
+        peqThrV[(size_t) i]->setVisible (i == b && peqDynShown);
     }
     if (eqFull.isVisible()) eqFull.selectBand (b);
 }
@@ -4589,7 +4628,7 @@ void OniriqueVocalBoxAudioProcessorEditor::showCompTab (int tab)
                                                              &fetInKnob, &fetOutKnob, &fetAtkKnob, &fetRelKnob, &laGainKnob, &laPeakKnob })
         c->setVisible (single);
     for (auto* c : std::initializer_list<juce::Component*> { &mbDisplay, &mbPresets, &mbThr1, &mbThr2, &mbThr3, &mbThr4,
-                                                             &mbGain1, &mbGain2, &mbGain3, &mbGain4, &mbAttackKnob, &mbReleaseKnob,
+                                                             &mbGain1, &mbGain2, &mbGain3, &mbGain4, &mbAttackKnob, &mbReleaseKnob, &mbOutKnob,
                                                              &mbListen1, &mbListen2, &mbListen3, &mbListen4 })
         c->setVisible (! single);
     resized();

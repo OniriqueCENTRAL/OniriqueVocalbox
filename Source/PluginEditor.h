@@ -74,33 +74,61 @@ struct Animated
 
 // Pages plein écran (EQ, FX) : fondu + léger zoom depuis le centre, dans le temps (et non image par image) : ouverture
 // en ease-out (260 ms), fermeture en ease-in (180 ms). Rouvrir pendant une fermeture repart de là où elle en est.
+// La transition ne redessine rien de vivant : au départ, on photographie une fois le plugin dessous et la page, puis
+// un calque opaque mêle ces deux images à chaque image (deux copies d'image : 60 images/s même en très grand, sur
+// Windows comme sur Mac). La vraie page reste cachée pendant la transition et prend le relais à la fin.
 class OverlayMotion
 {
 public:
     void show (juce::Component& c, bool shouldShow)
     {
         if (shouldShow == target && c.isVisible() == shouldShow && ! running) return;
+        auto* parent = c.getParentComponent();
+        if (parent == nullptr || c.getWidth() <= 0 || c.getHeight() <= 0)   // pas encore en place : sans transition
+        {
+            target = shouldShow; value = shouldShow ? 1.0f : 0.0f; running = false;
+            c.setVisible (shouldShow);
+            if (shouldShow) c.toFront (false);
+            return;
+        }
         target = shouldShow;
         from = value;
-        start = juce::Time::getMillisecondCounterHiRes();
+        if (! running)   // nouvelle transition : les deux photos (une reprise en cours garde les siennes)
+        {
+            float sc = juce::Component::getApproximateScaleFactorForComponent (&c);   // pixels de l'écran (Retina, 150 %...)
+            if (auto* d = juce::Desktop::getInstance().getDisplays().getDisplayForRect (c.getScreenBounds())) sc *= (float) d->scale;
+            sc = juce::jlimit (1.0f, 4.0f, sc);
+            c.setVisible (false);
+            ghost.setVisible (false);
+            ghost.back  = snapshot (*parent, c.getBounds(), sc);
+            ghost.front = snapshot (c, c.getLocalBounds(), sc);
+        }
+        start = juce::Time::getMillisecondCounterHiRes();   // après les photos : la première image du mouvement est bien montrée
         running = true;
-        if (shouldShow) { c.setVisible (true); c.toFront (false); }
-        apply (c);
+        c.setVisible (false);
+        if (ghost.getParentComponent() != parent) parent->addChildComponent (ghost);
+        ghost.setBounds (c.getBounds());
+        ghost.value = value;
+        ghost.setVisible (true);
+        ghost.toFront (false);
+        ghost.repaint();
     }
-    // renvoie true tant que la transition tourne (le plugin dessous est alors en partie visible)
+    // renvoie true tant que la transition tourne (la vraie page est alors cachée derrière le calque)
     bool tick (juce::Component& c)
     {
         if (! running) return false;
         const float t = (float) juce::jlimit (0.0, 1.0, (juce::Time::getMillisecondCounterHiRes() - start) / (target ? 260.0 : 180.0));
         const float e = target ? 1.0f - std::pow (1.0f - t, 3.0f) : t * t * t;
         value = target ? from + (1.0f - from) * e : from * (1.0f - e);
-        apply (c);
+        ghost.value = value;
+        ghost.repaint();
         if (t >= 1.0f)
         {
             running = false;
-            c.setAlpha (1.0f);
-            c.setTransform ({});
-            if (! target) c.setVisible (false);
+            if (target) { c.setVisible (true); c.toFront (false); if (c.getWantsKeyboardFocus()) c.grabKeyboardFocus(); }
+            ghost.setVisible (false);
+            ghost.back = {};
+            ghost.front = {};
         }
         return true;
     }
@@ -108,13 +136,35 @@ public:
     bool isShown() const noexcept { return target; }
 
 private:
-    void apply (juce::Component& c)
+    // photo d'une zone d'un composant, en ARGB (createComponentSnapshot prend du RGB pour un composant opaque, où
+    // recopier les calques ARGB de l'interface est bien plus lent)
+    static juce::Image snapshot (juce::Component& comp, juce::Rectangle<int> area, float sc)
     {
-        c.setAlpha (juce::jlimit (0.0f, 1.0f, value));
-        const float s = 0.965f + 0.035f * value;
-        const auto b = c.getBounds().toFloat();
-        c.setTransform (juce::AffineTransform::scale (s, s, b.getCentreX(), b.getCentreY()));
+        juce::Image im (juce::Image::ARGB, juce::roundToInt (sc * (float) area.getWidth()), juce::roundToInt (sc * (float) area.getHeight()), true);
+        juce::Graphics g (im);
+        g.addTransform (juce::AffineTransform::scale (sc));
+        g.setOrigin (-area.getPosition());
+        comp.paintEntireComponent (g, true);
+        return im;
     }
+    struct Ghost : juce::Component
+    {
+        Ghost() { setOpaque (true); }
+        void paint (juce::Graphics& g) override
+        {
+            const auto r = getLocalBounds().toFloat();
+            if (back.isValid()) g.drawImage (back, r);
+            if (! front.isValid() || value <= 0.0f) return;
+            const float s = 0.965f + 0.035f * value;
+            g.setImageResamplingQuality (juce::Graphics::lowResamplingQuality);
+            g.setOpacity (juce::jlimit (0.0f, 1.0f, value));
+            g.drawImageTransformed (front, juce::AffineTransform::scale (r.getWidth() / (float) front.getWidth(), r.getHeight() / (float) front.getHeight())
+                                              .scaled (s, s, r.getCentreX(), r.getCentreY()));
+        }
+        juce::Image back, front;
+        float value = 0.0f;
+    };
+    Ghost ghost;
     double start = 0.0;
     float from = 0.0f, value = 0.0f;
     bool target = false, running = false;
@@ -526,7 +576,7 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> listenAtt;
     OverlayMotion motion;
     std::array<std::unique_ptr<PeqBandChip>, 8> chips;
-    std::array<std::unique_ptr<DragValue>, 8> freqV, gainV, qV, thrV;
+    std::array<std::unique_ptr<DragValue>, 8> freqV, gainV, qV, thrV, slopeV;
     std::array<std::unique_ptr<PillToggle>, 8> dynB;
     std::array<std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>, 8> dynAtt;
     std::vector<Animated*> children;
@@ -1020,10 +1070,13 @@ private:
                                   "Attack of all bands (lows a bit slower, highs a bit faster, automatically). Double-click to reset.", lnf };
     KnobComponent mbReleaseKnob { processor.apvts, onirique::ids::mbRelease, "RELEASE", "20", "2k", Layout::textBelow,
                                   "Release of all bands, optical: slows down after long compressed phrases. Double-click to reset.", lnf };
+    KnobComponent mbOutKnob { processor.apvts, onirique::ids::mbOutput, "OUTPUT", "-12", "+12", Layout::textBelow,
+                              "Multiband output level, after the four bands (make-up gain). Double-click to reset.", lnf, true };
 
     SpectrumAnalyzer analyzer { processor };
     PeqBandChip peqChip { processor.apvts };
-    std::array<std::unique_ptr<DragValue>, 8> peqFreqV, peqGainV, peqQV, peqThrV;   // réglages précis de la bande sélectionnée
+    std::array<std::unique_ptr<DragValue>, 8> peqFreqV, peqGainV, peqQV, peqThrV, peqSlopeV;   // réglages précis de la bande sélectionnée
+    bool peqCutShown = false;   // coupe-bas / coupe-haut : la pente (dB/oct) remplace le gain dans la barre
     IconButton fullButton { IconButton::Icon::expand };
     IconButton peqListenButton { IconButton::Icon::headphones };   // écoute de la bande sélectionnée
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> peqListenAtt;
@@ -1062,6 +1115,11 @@ private:
     KnobComponent parReleaseKnob { processor.apvts, onirique::ids::parRelease, "RELEASE", "", "", Layout::textBelow,
                                    "Release of the parallel 1176 (50 ms to 1.1 s). Double-click to reset.", lnf };
     bool parManualShown = false;
+    // ---- PARALLEL : de-esser du bus écrasé (même algorithme que la carte DE-ESSER)
+    KnobComponent parDeessKnob { processor.apvts, onirique::ids::parDeessAmt, "DE-ESS", "0", "100", Layout::textBelow,
+                                 "De-esser on the crushed parallel bus only (same de-esser as the DE-ESSER card): crushing a voice brings its S forward, "
+                                 "this tames them on the bus while the original voice stays untouched. Double-click to reset.", lnf };
+    DragValue parDeessFreqV { processor.apvts, onirique::ids::parDeessFreq, "Frequency of the parallel bus de-esser (3 to 10 kHz). Drag up/down." };
     LevelMeter inMeter  { [this] (int c) { return processor.consumeInputLevel (c); } };
     LevelMeter outMeter { [this] (int c) { return processor.consumeOutputLevel (c); } };
     PillToggle mbListen1 { "LISTEN", PillToggle::Style::mini }, mbListen2 { "LISTEN", PillToggle::Style::mini },

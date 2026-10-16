@@ -57,6 +57,10 @@ namespace ids
     inline constexpr const char* mbRelease = "mbRelease";
     // NOISE SUPPRESSOR (un seul curseur, avant le NOISE GATE)
     inline constexpr const char* nsAmount    = "nsAmount";
+    // sortie du MULTIBAND, de-esser du bus de compression parallèle
+    inline constexpr const char* mbOutput     = "mbOutput";
+    inline constexpr const char* parDeessAmt  = "parallelDeEssAmount";
+    inline constexpr const char* parDeessFreq = "parallelDeEssFreq";
     // écoute d'une bande de l'EQ paramétrique (casque) : réglages de session, hors presets
     inline constexpr const char* peqListen     = "peqListen";
     inline constexpr const char* peqListenBand = "peqListenBand";
@@ -409,6 +413,19 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::nsAmount, 1 }, "Noise Suppressor",
             NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f, Attr().withLabel ("%").withStringFromValueFunction (pct)));
 
+        // sortie du MULTIBAND ; de-esser du bus de compression parallèle (même algorithme que la carte DE-ESSER)
+        auto dbT = [] (float v, int) { v = std::round (v * 10.0f) / 10.0f + 0.0f; return String (v > 0.0f ? "+" : "") + String (v, 1) + " dB"; };
+        p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::mbOutput, 1 }, "Multiband Output",
+            NormalisableRange<float> (-12.0f, 12.0f, 0.1f), 0.0f, Attr().withLabel ("dB").withStringFromValueFunction (dbT)));
+        p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::parDeessAmt, 1 }, "Parallel De-Ess Amount",
+            NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f, Attr().withLabel ("%").withStringFromValueFunction (pct)));
+        {
+            NormalisableRange<float> fr (3000.0f, 10000.0f, 1.0f);
+            fr.setSkewForCentre (5500.0f);
+            p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::parDeessFreq, 1 }, "Parallel De-Ess Freq", fr, 6000.0f,
+                Attr().withLabel ("Hz").withStringFromValueFunction ([] (float v, int) { return String (juce::roundToInt (v)) + " Hz"; })));
+        }
+
         // écoute d'une bande de l'EQ paramétrique (session : ni presets, ni automation)
         p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::peqListen, 1 }, "Param EQ Listen", false,
                                                            AudioParameterBoolAttributes().withAutomatable (false)));
@@ -444,7 +461,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         addF (ids::delayTime, "Delay Time", skewed (10.0f, 2000.0f, 1.0f, 300.0f), 375.0f, "ms", msT);
         p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { ids::delayNote, 1 }, "Delay Note", delayNoteNames(), 4));
         addF (ids::delayFeedback, "Delay Feedback", { 0.0f, 95.0f, 0.1f }, 35.0f, "%", pct);
-        addF (ids::delayMix, "Delay Mix", { 0.0f, 100.0f, 0.1f }, 25.0f, "%", pct);
+        addF (ids::delayMix, "Delay Send", { 0.0f, 100.0f, 0.1f }, 25.0f, "%", pct);   // niveau du retour (piste auxiliaire)
         addB (ids::delayPingPong, "Delay Ping-Pong", true);
         addF (ids::delayLowCut, "Delay Low Cut", skewed (20.0f, 2000.0f, 1.0f, 250.0f), 250.0f, "Hz", hzT);
         addF (ids::delayHighCut, "Delay High Cut", skewed (1000.0f, 20000.0f, 1.0f, 6000.0f), 6000.0f, "Hz", hzT);
@@ -460,7 +477,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         addF (ids::reverbDiffusion, "Reverb Diffusion", { 0.0f, 100.0f, 0.1f }, 75.0f, "%", pct);
         addF (ids::reverbModRate, "Reverb Mod Rate", skewed (0.05f, 5.0f, 0.01f, 0.8f), 0.8f, "Hz", rateT);
         addF (ids::reverbModDepth, "Reverb Mod Depth", { 0.0f, 100.0f, 0.1f }, 35.0f, "%", pct);
-        addF (ids::reverbMix, "Reverb Mix", { 0.0f, 100.0f, 0.1f }, 20.0f, "%", pct);
+        addF (ids::reverbMix, "Reverb Send", { 0.0f, 100.0f, 0.1f }, 20.0f, "%", pct);  // niveau du retour (piste auxiliaire)
         addF (ids::reverbLowCut, "Reverb Low Cut", skewed (20.0f, 1000.0f, 1.0f, 200.0f), 180.0f, "Hz", hzT);
         addF (ids::reverbHighCut, "Reverb High Cut", skewed (1000.0f, 20000.0f, 1.0f, 7000.0f), 9000.0f, "Hz", hzT);
         addF (ids::reverbDucking, "Reverb Ducking", { 0.0f, 100.0f, 0.1f }, 0.0f, "%", pct);

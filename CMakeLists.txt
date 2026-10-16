@@ -18,7 +18,12 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(JUCE)
 
 # AU (Logic, GarageBand) uniquement sur Mac
-set(ONIRIQUE_FORMATS VST3 AAX Standalone)
+# AAX (Pro Tools) mis de côté pour l'instant : seulement si on le demande (cmake -DONIRIQUE_AAX=ON)
+option(ONIRIQUE_AAX "Compiler aussi le format AAX" OFF)
+set(ONIRIQUE_FORMATS VST3 Standalone)
+if(ONIRIQUE_AAX)
+    list(APPEND ONIRIQUE_FORMATS AAX)
+endif()
 if(APPLE)
     list(APPEND ONIRIQUE_FORMATS AU)
 endif()

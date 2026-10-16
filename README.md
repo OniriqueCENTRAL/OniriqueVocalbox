@@ -7,8 +7,10 @@ Ordre de traitement des 7 modules réglable à la souris dans l en-tête (glisse
 Suréchantillonnage de TOUTE la chaîne de modules (EQ -> SATURATION) OFF / 2X / 4X / 8X, 2X par défaut (MIX uniquement).
 EQ paramétrique : bell / low shelf / high shelf / notch / low cut et high cut 12-24-36-48 dB/oct, mode DYNAMIQUE par bande (clic droit sur un point), plein écran dans la fenêtre du plugin.
 NOISE SUPPRESSOR : un seul curseur, débruitage spectral (MIX, une trame de latence compensée) ou à latence nulle (LIVE, 24 cloches pilotées par l'analyse).
-FX (bouton en haut, page plein écran) : CHORUS et FLANGER avec gain match automatique, DELAY (tempo, ping-pong, filtres, ducking), REVERB 16 lignes (ROOM, PLATE 1, PLATE 2, HALL, SHIMMER, ducking).
-EQ paramétrique : écoute de la bande sélectionnée (casque), menu de bande ouvert à l'endroit du clic droit.
+FX (bouton en haut, page plein écran) : CHORUS et FLANGER avec gain match automatique, DELAY (tempo, ping-pong, filtres, ducking) et REVERB 16 lignes (ROOM, PLATE 1, PLATE 2, HALL, SHIMMER, ducking) en pistes auxiliaires internes : la voix reste à 100 %, SEND règle le retour.
+EQ paramétrique : pente des coupe-bas / coupe-haut au choix (12 à 48 dB/oct), écoute (casque) de la bande tenue au clic, menu de bande ouvert à l'endroit du clic droit.
+MULTIBAND : réglage OUTPUT (-12 à +12 dB). PARALLEL : DE-ESS sur le bus écrasé (même algorithme que le DE-ESSER, AMOUNT + FREQ).
+Pages plein écran (EQ, FX) : ouverture et fermeture à 60 i/s (photos du plugin et de la page mêlées par un calque, boutons gardés en image).
 
 ## Générer le .vst3 (Windows)
 Prérequis : Visual Studio Build Tools 2022 (charge C++), CMake, Git.
@@ -19,6 +21,8 @@ ou à la main :
 
     cmake -B build
     cmake --build build --config Release
+
+AAX (Pro Tools, mis de côté pour l'instant) : `cmake -B build -DONIRIQUE_AAX=ON` avec le SDK Avid.
 
 Résultat : build\OniriqueVocalBox_artefacts\Release\VST3\ONIRIQUE VOCALBOX.vst3
 Copier ce dossier dans C:\Program Files\Common Files\VST3 puis rescanner les plugins dans le DAW.

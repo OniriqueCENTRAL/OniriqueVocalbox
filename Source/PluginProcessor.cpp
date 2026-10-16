@@ -7,7 +7,7 @@ namespace
 {
 // NOISE SUPPRESSOR, écoute d'une bande de l'EQ, puis la page FX (même ordre que readExtras)
 const char* const kFxIds[] {
-    ids::nsAmount, ids::peqListen, ids::peqListenBand,
+    ids::nsAmount, ids::peqListen, ids::peqListenBand, ids::mbOutput, ids::parDeessAmt, ids::parDeessFreq,
     ids::chorusOn, ids::chorusRate, ids::chorusDepth, ids::chorusMix,
     ids::flangerOn, ids::flangerRate, ids::flangerDepth, ids::flangerFeedback, ids::flangerMix,
     ids::delayOn, ids::delaySync, ids::delayTime, ids::delayNote, ids::delayFeedback, ids::delayMix, ids::delayPingPong,
@@ -24,8 +24,10 @@ void OniriqueVocalBoxAudioProcessor::readExtras (VocalChain::Params& p) const no
     auto b = [&] { return pFx[k++]->load() > 0.5f; };
     auto i = [&] { return juce::roundToInt (pFx[k++]->load()); };
     p.nsAmount = f();
-    p.peqListen = b();
+    // casque armé : on n'entend la bande que pendant qu'on la tient (clic sur son point, dans l'analyseur)
+    p.peqListen = b() && peqListenHold.load (std::memory_order_relaxed);
     p.peqListenBand = i();
+    p.mbOutDb = f(); p.parDeessAmt = f(); p.parDeessFreq = f();
     auto& x = p.fx;
     x.chorusOn = b(); x.chorusRate = f(); x.chorusDepth = f() * 0.01f; x.chorusMix = f() * 0.01f;
     x.flangerOn = b(); x.flangerRate = f(); x.flangerDepth = f() * 0.01f; x.flangerFeedback = f() * 0.01f; x.flangerMix = f() * 0.01f;

@@ -3,6 +3,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <vector>
 #include "Comp1176.h"
+#include "DeEsser.h"
 
 namespace onirique
 {
@@ -16,6 +17,9 @@ namespace onirique
     Les détails, la fin des mots et le souffle remontent, les crêtes restent celles de la voix d'origine :
     on gagne en densité sans perdre les attaques. Aucune latence (même phase des deux côtés : pas de filtrage
     en peigne). Le volume monte un peu avec AMOUNT, comme sur une vraie console : l'AUTO GAIN peut compenser.
+    DE-ESSER du bus : le même de-esser que la carte DE-ESSER (fréquence + intensité), sur le bus écrasé seulement.
+    Écraser une voix fait ressortir ses S : on les calme sur le bus, la voix d'origine reste intacte. Sans
+    anticipation (aucune latence, le bus reste en phase avec la voix).
 */
 class ParallelComp
 {
@@ -24,6 +28,7 @@ public:
     {
         fs = sampleRate;
         crush.prepare (fs);
+        deess.prepare (fs, true);   // sans anticipation : le bus reste aligné sur la voix
         crush.setParams (16.0f, 0.0f, 6.0f, 6.5f, 4, true);   // INPUT +16 dB, attaque ~40 us, release ~65 ms, ratio ALL
         for (auto& b : bus) b.assign ((size_t) maxBlock, 0.0f);
         amountS.reset (fs, 0.05);
@@ -58,6 +63,7 @@ public:
         float* b[2] { bus[0].data(), bus[1].data() };
         for (int c = 0; c < numCh; ++c) std::copy (ch[c], ch[c] + n, b[c]);
         crush.process (b, numCh, n);
+        deess.process (b, numCh, n);   // les S que l'écrasement fait ressortir (à 0 %, le bus passe intact)
 
         for (int i = 0; i < n; ++i)
         {
@@ -77,11 +83,17 @@ public:
         }
     }
 
+    // de-esser du bus : fréquence 3..10 kHz, intensité 0..1
+    void setDeEsser (float freqHz, float amount01, bool snap) noexcept { deess.setParams (freqHz, amount01, 0.0f, snap); deessOn = amount01 > 0.0005f; }
+    float getDeEssReductionDb() const noexcept { return deessOn ? deess.getReductionDb() : 0.0f; }
+
     float getGainReductionDb() const noexcept { return crush.getGainReductionDb(); }
 
 private:
     double fs = 44100.0;
     FetCompressor crush;
+    DeEsser deess;
+    bool deessOn = false;
     std::vector<float> bus[2];
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> amountS;
     float envC = 0.0f, matchC = 0.0f, dryPow = 0.0f, busPow = 0.0f, match = 1.0f;
