@@ -5,6 +5,7 @@ cmake -B build || goto :err
 cmake --build build --config Release || goto :err
 echo.
 echo OK : build\OniriqueVocalBox_artefacts\Release\VST3\ONIRIQUE VOCALBOX.vst3
+echo OK : build\OniriqueVocalBox_artefacts\Release\AAX\ONIRIQUE VOCALBOX.aaxplugin
 goto :eof
 :err
 echo.

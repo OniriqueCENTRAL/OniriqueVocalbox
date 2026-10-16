@@ -18,9 +18,15 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(JUCE)
 
 # AU (Logic, GarageBand) uniquement sur Mac
-set(ONIRIQUE_FORMATS VST3 Standalone)
+set(ONIRIQUE_FORMATS VST3 AAX Standalone)
 if(APPLE)
     list(APPEND ONIRIQUE_FORMATS AU)
+endif()
+
+# AAX (Pro Tools) : SDK Avid téléchargé sur developer.avid.com. Sans lui, JUCE prend le SDK AAX qu'il embarque.
+set(ONIRIQUE_AAX_SDK "E:/DEV/aax-sdk-2-8-0" CACHE PATH "Dossier du SDK AAX d'Avid")
+if(EXISTS "${ONIRIQUE_AAX_SDK}/Interfaces")
+    juce_set_aax_sdk_path("${ONIRIQUE_AAX_SDK}")
 endif()
 
 juce_add_plugin(OniriqueVocalBox
@@ -35,6 +41,8 @@ juce_add_plugin(OniriqueVocalBox
     NEEDS_MIDI_OUTPUT           FALSE
     IS_MIDI_EFFECT              FALSE
     VST3_CATEGORIES             Fx
+    AAX_IDENTIFIER              store.onirique.vocalbox
+    AAX_CATEGORY                AAX_ePlugInCategory_Dynamics
     COPY_PLUGIN_AFTER_BUILD     FALSE)
 
 target_sources(OniriqueVocalBox PRIVATE
