@@ -1,5 +1,6 @@
 #include "PluginEditor.h"
 #include "OniriqueKnob.h"
+#include "OniriqueWindowSize.h"
 #include <BinaryData.h>
 #include <array>
 #include <map>
@@ -1427,6 +1428,7 @@ SpectrumAnalyzer::SpectrumAnalyzer (OniriqueVocalBoxAudioProcessor& p, bool full
     specOut.fill (-140.0f);
     for (auto* c : { &curve, &maxCurve, &selCurve, &analogCurve }) c->fill (0.0f);
     setMouseCursor (juce::MouseCursor::CrosshairCursor);
+    setOpaque (full);
 }
 
 // chaque point de l'écran couvre 1/6 d'octave : somme des bins de la bande (aigus), ou interpolation entre les deux
@@ -1958,6 +1960,13 @@ void SpectrumAnalyzer::paintGrid (juce::Graphics& g)
     using namespace onirique;
     const auto area = getLocalBounds().toFloat();
     const float u = unit(), es = ui::editorScale (*this);
+    if (full)
+    {
+        // opaque : le dégradé de la vue plein écran (EqFullView::paint), recalé sur la position de l'analyseur
+        const float parentH = getParentComponent() != nullptr ? (float) getParentHeight() : area.getHeight();
+        g.setGradientFill (juce::ColourGradient (ui::deep2, 0.0f, (float) -getY(), ui::night, 0.0f, parentH - (float) getY(), false));
+        g.fillAll();
+    }
     g.setGradientFill (juce::ColourGradient (juce::Colours::black.withAlpha (0.55f), 0.0f, area.getY(),
                                              ui::night.withAlpha (0.88f), 0.0f, area.getBottom(), false));
     g.fillRoundedRectangle (area, 12.0f * u);
@@ -2179,7 +2188,7 @@ void SpectrumAnalyzer::paint (juce::Graphics& g)
     {
         // même taille : le calque est vidé et réutilisé (en réallouer un de plusieurs Mo à chaque image faisait ramer le glisser)
         if (img.isValid() && img.getWidth() == w && img.getHeight() == hh) img.clear (img.getBounds());
-        else img = juce::Image (juce::Image::ARGB, w, hh, true);
+        else img = juce::Image (full && fn == &SpectrumAnalyzer::paintGrid ? juce::Image::RGB : juce::Image::ARGB, w, hh, true);   // plein écran : la grille est opaque, plus rapide à recopier
         juce::Graphics lg (img);
         lg.addTransform (juce::AffineTransform::scale (ps));
         (this->*fn) (lg);
@@ -2189,7 +2198,14 @@ void SpectrumAnalyzer::paint (juce::Graphics& g)
         render (gridLayer, &SpectrumAnalyzer::paintGrid);
         eqDirty = true;
     }
-    if (eqDirty || ! eqLayer.isValid())
+   #if JUCE_WINDOWS
+    // Windows : JUCE dessine par la carte graphique (Direct2D) ; dessiner dans une image puis la relire force une
+    // synchronisation qui coûtait plus de 15 ms par image en grand. Les courbes sont donc dessinées directement.
+    constexpr bool eqInLayer = false;
+   #else
+    constexpr bool eqInLayer = true;    // Mac : rendu par le processeur, le calque évite de tout redessiner à chaque image
+   #endif
+    if (eqInLayer && (eqDirty || ! eqLayer.isValid()))
     {
         render (eqLayer, &SpectrumAnalyzer::paintEq);
         eqDirty = false;
@@ -2220,7 +2236,8 @@ void SpectrumAnalyzer::paint (juce::Graphics& g)
     }
 
     g.setOpacity (1.0f);
-    g.drawImageTransformed (eqLayer, toLogical);
+    if (eqInLayer) g.drawImageTransformed (eqLayer, toLogical);
+    else { paintEq (g); eqDirty = false; }
 }
 
 //==============================================================================
@@ -2561,6 +2578,7 @@ void IconButton::paintButton (juce::Graphics& g, bool, bool)
 EqFullView::EqFullView (OniriqueVocalBoxAudioProcessor& p) : analyzer (p, true), processor (p)
 {
     setWantsKeyboardFocus (true);
+    setOpaque (true);
     analyzer.setActive (false);
     addAndMakeVisible (analyzer);
     children.push_back (&analyzer);
@@ -2676,6 +2694,7 @@ void EqFullView::paint (juce::Graphics& g)
     const float u = ui::editorScale (*this);
     const auto r = getLocalBounds().toFloat();
     const float rad = 16.0f * u;
+    g.fillAll (ui::night);   // opaque (coins compris) : rien du plugin n'est redessiné derrière la vue
     g.setGradientFill (juce::ColourGradient (ui::deep2, 0.0f, r.getY(), ui::night, 0.0f, r.getBottom(), false));
     g.fillRoundedRectangle (r, rad);
     g.setColour (ui::line.interpolatedWith (ui::ember, 0.25f));
@@ -3900,12 +3919,11 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
     // redimensionnable, proportions verrouillées : aucune déformation, aucun texte coupé.
     // La taille mémorisée est lue AVANT tout appel qui redimensionne : setResizeLimits() déclenche un
     // resized() à la taille minimale, qui écrasait la largeur sauvegardée (le plugin se rouvrait petit).
-    // largeur mémorisée ; avant la colonne NOISE GATE (base 1706), on l'élargit pour garder la même taille de modules
-    int savedW = (int) processor.apvts.state.getProperty ("uiWidth", 1760);
-    if (processor.apvts.state.hasProperty ("uiWidth") && (int) processor.apvts.state.getProperty ("uiBase", 0) != 2022)
-        savedW = juce::roundToInt ((float) savedW * 2022.0f / 1706.0f);
-    processor.apvts.state.setProperty ("uiBase", 2022, nullptr);
-    const int w = juce::jlimit (kMinW, kMaxW, savedW);
+    // taille d'ouverture : la règle commune des plugins ONIRIQUE (OniriqueWindowSize.h)
+    const int w = onirique::window::openingSize (processor.apvts.state, "ONIRIQUE VOCALBOX",
+                                                 { 1760, juce::roundToInt (1760.0f * kBaseH / kBaseW) },
+                                                 { kMinW, juce::roundToInt ((float) kMinW * kBaseH / kBaseW) },
+                                                 { kMaxW, juce::roundToInt ((float) kMaxW * kBaseH / kBaseW) }).x;
     setResizable (true, true);
     setResizeLimits (kMinW, juce::roundToInt (kMinW * kBaseH / kBaseW), kMaxW, juce::roundToInt (kMaxW * kBaseH / kBaseW));
     if (auto* c = getConstrainer()) c->setFixedAspectRatio ((double) (kBaseW / kBaseH));
@@ -3921,8 +3939,15 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
     eqFull.onSelect = [this] (int b) { analyzer.setSelectedSilently (b); selectPeqBand (b); };
     addChildComponent (assistant);
     animated.push_back (&assistant);
+    assistant.paintBehind = [this] (juce::Graphics& g)
+    {
+        if (! backdropLayer.isValid()) { g.fillAll (ui::night); return; }
+        const auto toLogical = juce::AffineTransform::scale (1.0f / layersScale);
+        g.drawImageTransformed (backdropLayer, toLogical);
+        g.drawImageTransformed (cardsLayer, toLogical);
+    };
     showCompTab (compTabs.getSelected());
-    processor.apvts.state.setProperty ("uiWidth", getWidth(), nullptr);
+    onirique::window::remember (processor.apvts.state, getWidth(), getHeight());
 
     // Licence : pastille et page d'activation, par-dessus tout le reste.
     licenseOverlay = std::make_unique<onirique::license::Overlay> ("ONIRIQUE VOCALBOX", processor.license);
@@ -3944,6 +3969,7 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
 OniriqueVocalBoxAudioProcessorEditor::~OniriqueVocalBoxAudioProcessorEditor()
 {
     stopTimer();
+    onirique::window::rememberOnThisComputer ("ONIRIQUE VOCALBOX", getWidth(), getHeight());
     tooltipWindow.setLookAndFeel (nullptr);
     setLookAndFeel (nullptr);
 }
@@ -3958,6 +3984,12 @@ void OniriqueVocalBoxAudioProcessorEditor::timerCallback()
     if (assistant.isVisible())
     {
         assistant.tick();
+        return;
+    }
+    // EQ plein écran : idem, le plugin dessous ne bouge pas (il n'est pas visible)
+    if (eqFull.isVisible())
+    {
+        eqFull.tick();
         return;
     }
     for (auto* a : animated) a->tick();
@@ -4413,7 +4445,7 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
     overRect = { o.getRight() - 84.0f * u, o.getY() + 10.0f * u, 64.0f * u, 18.0f * u };
 
     if (! restoringSize)
-        processor.apvts.state.setProperty ("uiWidth", getWidth(), nullptr);   // taille mémorisée avec le projet
+        onirique::window::remember (processor.apvts.state, getWidth(), getHeight());   // taille mémorisée avec le projet
     veils.setBounds (getLocalBounds());
 }
 

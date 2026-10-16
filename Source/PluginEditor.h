@@ -721,6 +721,8 @@ public:
     ~AssistantPanel() override;
     void open();
     void close();
+    // le fond du plugin (images déjà prêtes : fond et cartes, sans les boutons), dessiné sous la fenêtre
+    std::function<void (juce::Graphics&)> paintBehind;
    #if ONIRIQUE_UI_TEST
     void testWithFile (const juce::File&);   // essais locaux : analyse un fichier au lieu d'écouter le DAW
    #endif
@@ -787,8 +789,16 @@ private:
     bool closing = false;
     double animStart = 0.0;
     juce::Image backdrop;                     // capture floutée du plugin derrière la fenêtre (verre dépoli)
+    juce::Image still;                        // fond une fois ouvert : verre dépoli + voile, assemblés une fois
+    juce::Image cardImage;                    // la fenêtre en image : c'est elle qui grandit et se fond pendant l'animation
+    juce::Rectangle<int> cardImageArea;
     bool animating() const noexcept { return appear < 0.999f || closing; }
     void updateAnimation();
+    void paintBackdrop (juce::Graphics&);
+    void paintCard (juce::Graphics&);
+    void cacheCard();
+    void updateOpacity();
+    void repaintIdle();
 };
 
 class OniriqueVocalBoxAudioProcessorEditor : public juce::AudioProcessorEditor,
