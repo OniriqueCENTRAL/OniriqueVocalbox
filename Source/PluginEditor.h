@@ -714,15 +714,13 @@ private:
 // ASSISTANT IA : fenêtre (dans le plugin) qui écoute la voix pendant que le morceau joue, l'analyse, puis règle tous
 // les modules (voir Assistant/AssistantEngine.h). Choix du style et de l'intensité, résultats détaillés, APPLIQUER /
 // ANNULER. L'analyse et l'optimisation tournent sur un fil à part : l'interface et l'audio restent fluides.
-class AssistantPanel : public juce::Component, public Animated, private juce::Thread
+class AssistantPanel : public juce::Component, public Animated, private juce::Thread, private juce::AsyncUpdater
 {
 public:
     explicit AssistantPanel (OniriqueVocalBoxAudioProcessor&);
     ~AssistantPanel() override;
     void open();
     void close();
-    // le fond du plugin (images déjà prêtes : fond et cartes, sans les boutons), dessiné sous la fenêtre
-    std::function<void (juce::Graphics&)> paintBehind;
    #if ONIRIQUE_UI_TEST
     void testWithFile (const juce::File&);   // essais locaux : analyse un fichier au lieu d'écouter le DAW
    #endif
@@ -788,8 +786,7 @@ private:
     float cardScale = 1.0f, cardShift = 0.0f; // la fenêtre grandit avec un léger rebond et monte un peu à l'ouverture
     bool closing = false;
     double animStart = 0.0;
-    juce::Image backdrop;                     // capture floutée du plugin derrière la fenêtre (verre dépoli)
-    juce::Image still;                        // fond une fois ouvert : verre dépoli + voile, assemblés une fois
+    juce::Image still;                        // le fond aux couleurs de la charte, dessiné une fois par taille
     juce::Image cardImage;                    // la fenêtre en image : c'est elle qui grandit et se fond pendant l'animation
     juce::Rectangle<int> cardImageArea;
     bool animating() const noexcept { return appear < 0.999f || closing; }
@@ -797,7 +794,8 @@ private:
     void paintBackdrop (juce::Graphics&);
     void paintCard (juce::Graphics&);
     void cacheCard();
-    void updateOpacity();
+    void handleAsyncUpdate() override;
+    juce::Rectangle<int> animArea() const;
     void repaintIdle();
 };
 

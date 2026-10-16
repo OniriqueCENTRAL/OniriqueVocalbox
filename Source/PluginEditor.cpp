@@ -3939,13 +3939,6 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
     eqFull.onSelect = [this] (int b) { analyzer.setSelectedSilently (b); selectPeqBand (b); };
     addChildComponent (assistant);
     animated.push_back (&assistant);
-    assistant.paintBehind = [this] (juce::Graphics& g)
-    {
-        if (! backdropLayer.isValid()) { g.fillAll (ui::night); return; }
-        const auto toLogical = juce::AffineTransform::scale (1.0f / layersScale);
-        g.drawImageTransformed (backdropLayer, toLogical);
-        g.drawImageTransformed (cardsLayer, toLogical);
-    };
     showCompTab (compTabs.getSelected());
     onirique::window::remember (processor.apvts.state, getWidth(), getHeight());
 

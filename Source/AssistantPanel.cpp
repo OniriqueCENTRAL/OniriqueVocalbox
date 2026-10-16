@@ -38,6 +38,7 @@ void sparkle (juce::Graphics& g, juce::Point<float> p, float r, juce::Colour c)
 AssistantPanel::AssistantPanel (OniriqueVocalBoxAudioProcessor& p) : juce::Thread ("Onirique Assistant"), processor (p)
 {
     setWantsKeyboardFocus (true);
+    setOpaque (true);   // son propre fond couvre tout : le plugin n'est jamais redessiné dessous
     levelHist.assign (150, -100.0f);
     scratch.assign ((size_t) SpectrumTap::kSize, 0.0f);
 }
@@ -59,39 +60,17 @@ juce::Rectangle<float> AssistantPanel::card() const noexcept
 
 void AssistantPanel::open()
 {
-    // verre dépoli : le fond du plugin (déjà en images) réduit au quart puis au douzième, étiré à l'affichage. Une capture
-    // de toute l'interface coûtait plus de 100 ms (le plugin se figeait à l'ouverture) ; ces images-là, presque rien.
-    if (paintBehind != nullptr && ! isVisible() && getWidth() > 0 && getHeight() > 0)
-    {
-        juce::Image quarter (juce::Image::RGB, std::max (1, getWidth() / 4), std::max (1, getHeight() / 4), true, juce::SoftwareImageType());
-        {
-            juce::Graphics qg (quarter);
-            qg.addTransform (juce::AffineTransform::scale (0.25f));
-            paintBehind (qg);
-        }
-        backdrop = quarter.rescaled (std::max (1, quarter.getWidth() / 3), std::max (1, quarter.getHeight() / 3), juce::Graphics::highResamplingQuality);
-        still = {};
-    }
     if (! isVisible() || closing)
     {
         animStart = juce::Time::getMillisecondCounterHiRes();   // rouvert pendant la fermeture : repart d'où il en est (appear ne redescend pas)
         if (! isVisible()) appear = 0.0f;
     }
     closing = false;
-    cacheCard();
-    updateOpacity();
+    if (! cardImage.isValid()) cacheCard();   // d'habitude déjà prête (voir handleAsyncUpdate) : rien à dessiner au clic
     setVisible (true);
     toFront (true);
     grabKeyboardFocus();
     repaint();
-}
-
-// opaque dès que le fond couvre tout (le plugin n'est plus redessiné dessous) ; transparente pendant la fermeture (le vrai
-// plugin réapparaît dessous)
-void AssistantPanel::updateOpacity()
-{
-    const bool opaque = ! closing && backdrop.isValid() && paintBehind != nullptr;
-    if (opaque != isOpaque()) setOpaque (opaque);
 }
 
 // la fenêtre dessinée une fois dans une image, à la résolution de l'écran, pour l'animation d'ouverture et de fermeture
@@ -104,8 +83,27 @@ void AssistantPanel::cacheCard()
                              std::max (1, juce::roundToInt ((float) cardImageArea.getHeight() * ps)), true);
     juce::Graphics cg (cardImage);
     cg.addTransform (juce::AffineTransform::translation ((float) -cardImageArea.getX(), (float) -cardImageArea.getY()).scaled (ps));
+    const int shownHover = hover;
+    hover = zNone;   // l'image de l'animation, sans survol
     paintCard (cg);
+    hover = shownHover;
     zones.clear();
+}
+
+// fenêtre fermée : son image est préparée en avance, pour que l'ouverture n'ait rien à dessiner
+void AssistantPanel::handleAsyncUpdate()
+{
+    if (isVisible()) return;
+    cacheCard();
+    juce::Image scratch (juce::Image::RGB, 1, 1, false);   // le fond aussi : paintBackdrop le dessine une fois et le garde
+    juce::Graphics sg (scratch);
+    paintBackdrop (sg);
+}
+
+// la zone où la fenêtre bouge pendant l'animation (avec son léger rebond) : seule elle est redessinée
+juce::Rectangle<int> AssistantPanel::animArea() const
+{
+    return cardImageArea.expanded (cardImageArea.getWidth() / 20, cardImageArea.getHeight() / 20 + juce::roundToInt (24.0f * u()));
 }
 
 // animation dans le temps (pas en images) : ouverture 420 ms (fondu doux, la fenêtre grandit avec un léger rebond),
@@ -141,11 +139,14 @@ void AssistantPanel::close()
     }
     if (! closing) animStart = juce::Time::getMillisecondCounterHiRes();
     closing = true;
-    cacheCard();
-    updateOpacity();
+    cacheCard();   // l'état a pu changer (résultats, style) : l'image de la fermeture le montre
 }
 
-void AssistantPanel::resized() {}
+void AssistantPanel::resized()
+{
+    still = cardImage = {};
+    triggerAsyncUpdate();
+}
 
 #if ONIRIQUE_UI_TEST
 void AssistantPanel::testWithFile (const juce::File& f)
@@ -273,8 +274,8 @@ void AssistantPanel::tick()
     if (! isVisible()) return;
     const bool wasAnimating = animating();
     updateAnimation();
-    if (closing && appear <= 0.001f) { setVisible (false); closing = false; backdrop = still = cardImage = {}; setOpaque (false); return; }
-    if (wasAnimating && ! animating()) { updateOpacity(); repaint(); }   // ouverte : place au verre dépoli assemblé une fois
+    if (closing && appear <= 0.001f) { setVisible (false); closing = false; return; }   // l'image reste prête pour la prochaine fois
+    if (wasAnimating && ! animating()) repaint();   // ouverte : la vraie fenêtre, vivante, à la place de son image
     pulse += 1.0f / 60.0f;
 
     if (state == State::listening)
@@ -314,7 +315,8 @@ void AssistantPanel::tick()
             else { failure = analysis.error.isNotEmpty() ? analysis.error : juce::String ("The analysis was interrupted."); state = State::failed; }
         }
     }
-    if (animating() || state == State::listening || state == State::analysing) repaint();
+    if (animating()) repaint (animArea());
+    else if (state == State::listening || state == State::analysing) repaint();
     else repaintIdle();
 }
 
@@ -414,35 +416,32 @@ void AssistantPanel::paintButtonPill (juce::Graphics& g, juce::Rectangle<float> 
     if (enabled) addZone (zone, r);
 }
 
+// le fond, aux couleurs de la charte : la nuit, un halo sang derrière la fenêtre, une lueur braise venue du haut et des
+// coins assombris. Dessiné une fois par taille, puis recopié.
 void AssistantPanel::paintBackdrop (juce::Graphics& g)
 {
     const auto area = getLocalBounds().toFloat();
-    if (! animating() && backdrop.isValid())
+    const float ps = juce::Component::getApproximateScaleFactorForComponent (this);
+    const int w = std::max (1, juce::roundToInt ((float) getWidth() * ps)), hh = std::max (1, juce::roundToInt ((float) getHeight() * ps));
+    if (! still.isValid() || still.getWidth() != w || still.getHeight() != hh)
     {
-        // ouverte : verre dépoli et voile assemblés une fois à la résolution de l'écran, puis simplement recopiés
-        const float ps = juce::Component::getApproximateScaleFactorForComponent (this);
-        const int w = std::max (1, juce::roundToInt ((float) getWidth() * ps)), hh = std::max (1, juce::roundToInt ((float) getHeight() * ps));
-        if (! still.isValid() || still.getWidth() != w || still.getHeight() != hh)
-        {
-            still = juce::Image (juce::Image::RGB, w, hh, false);
-            juce::Graphics sg (still);
-            sg.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
-            sg.drawImage (backdrop, still.getBounds().toFloat(), juce::RectanglePlacement::stretchToFit);
-            sg.setColour (juce::Colours::black.withAlpha (0.52f));
-            sg.fillAll();
-        }
-        g.drawImage (still, area, juce::RectanglePlacement::stretchToFit);
-        return;
+        still = juce::Image (juce::Image::RGB, w, hh, false);
+        juce::Graphics sg (still);
+        sg.addTransform (juce::AffineTransform::scale (ps));
+        const auto c = card();
+        sg.setColour (ui::night);
+        sg.fillAll();
+        sg.setGradientFill (juce::ColourGradient (ui::blood.withAlpha (0.55f), c.getCentreX(), c.getCentreY(),
+                                                  ui::blood.withAlpha (0.0f), c.getCentreX() + area.getWidth() * 0.62f, c.getCentreY(), true));
+        sg.fillAll();
+        sg.setGradientFill (juce::ColourGradient (ui::ember.withAlpha (0.12f), area.getCentreX(), area.getY() - area.getHeight() * 0.1f,
+                                                  ui::ember.withAlpha (0.0f), area.getCentreX(), area.getY() + area.getHeight() * 0.55f, true));
+        sg.fillAll();
+        sg.setGradientFill (juce::ColourGradient (juce::Colours::black.withAlpha (0.0f), area.getCentreX(), area.getCentreY(),
+                                                  juce::Colours::black.withAlpha (0.55f), 0.0f, 0.0f, true));
+        sg.fillAll();
     }
-    if (isOpaque()) paintBehind (g);   // ouverture : le fond du plugin, net, sous le verre qui apparaît
-    if (backdrop.isValid())
-    {
-        g.setOpacity (appear);
-        g.drawImage (backdrop, area, juce::RectanglePlacement::stretchToFit);
-        g.setOpacity (1.0f);
-    }
-    g.setColour (juce::Colours::black.withAlpha (0.52f * appear));
-    g.fillAll();
+    g.drawImage (still, area, juce::RectanglePlacement::stretchToFit);
 }
 
 void AssistantPanel::paint (juce::Graphics& g)
