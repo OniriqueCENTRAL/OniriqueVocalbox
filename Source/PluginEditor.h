@@ -367,7 +367,8 @@ private:
     juce::Point<float> nodePos (int b) const;
     int nodeAt (juce::Point<float>) const;
     void setParam (const char* id, float v, bool gesture = true);
-    juce::Path smoothPath (const std::array<float, kPts>& ys, bool closeToBottom, float bottom) const;
+    juce::Path smoothPath (const std::array<float, kPts>& ys, bool closeToBottom, float bottom, int step = 1) const;
+    void flushDrag();
 
     OniriqueVocalBoxAudioProcessor& processor;
     const bool full;
@@ -388,6 +389,10 @@ private:
     float nodeGlow[kPeq] {}, liveGain[kPeq] {};
     juce::Point<float> dragStart;
     float dragF0 = 1000.0f, dragG0 = 0.0f;
+    // point tiré : la position voulue est retenue à chaque mouvement, et envoyée à l'hôte une fois par image
+    // (une souris rapide envoie des centaines de mouvements par seconde : autant de notifications pour le DAW)
+    float pendingF = 0.0f, pendingG = 0.0f;
+    bool pending = false;
     int qFlashBand = -1, qFlashFrames = 0;   // étiquette "Q x.xx" affichée pendant le réglage à la molette
 };
 

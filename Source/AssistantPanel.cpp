@@ -59,14 +59,12 @@ juce::Rectangle<float> AssistantPanel::card() const noexcept
 
 void AssistantPanel::open()
 {
-    // verre dépoli : capture du plugin (réduite au quart) floutée une fois, puis fondue sous la fenêtre
+    // verre dépoli : capture du plugin réduite au quart, puis encore au tiers, et étirée à l'affichage : le flou vient de
+    // l'agrandissement (le flou gaussien calculé pixel par pixel figeait le plugin à chaque ouverture)
     if (auto* parent = getParentComponent(); parent != nullptr && ! isVisible())
     {
-        auto snap = parent->createComponentSnapshot (parent->getLocalBounds(), true, 0.25f);
-        backdrop = juce::Image (juce::Image::ARGB, snap.getWidth(), snap.getHeight(), true, juce::SoftwareImageType());
-        juce::ImageConvolutionKernel k (11);
-        k.createGaussianBlur (3.2f);
-        k.applyToImage (backdrop, snap, snap.getBounds());
+        const auto snap = parent->createComponentSnapshot (parent->getLocalBounds(), true, 0.25f);
+        backdrop = snap.rescaled (std::max (1, snap.getWidth() / 3), std::max (1, snap.getHeight() / 3), juce::Graphics::highResamplingQuality);
     }
     if (! isVisible() || closing)
     {

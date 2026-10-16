@@ -1494,6 +1494,7 @@ void SpectrumAnalyzer::tick()
     const double fs = processor.getSampleRate() > 0.0 ? processor.getSampleRate() : 48000.0;
     if (std::abs (fs - mapFs) > 0.5) buildMap (fs);
 
+    flushDrag();
     analyse (processor.inputTap, histIn, writeIn, specIn);
     analyse (processor.outputTap, histOut, writeOut, specOut);
     bool eqChanged = updateCurves (fs);
@@ -1721,18 +1722,26 @@ void SpectrumAnalyzer::mouseDrag (const juce::MouseEvent& e)
     const float k = e.mods.isShiftDown() ? 0.25f : 1.0f;
     const auto p = plotArea();
     const float oct = (e.position.x - dragStart.x) * k / p.getWidth() * std::log2 (1000.0f);
-    setParam (ids::peqFreq[dragNode], juce::jlimit (20.0f, 20000.0f, dragF0 * std::pow (2.0f, oct)), false);
-    if (ParametricEQ::hasGain (band (dragNode).type))
-    {
-        const float dg = -(e.position.y - dragStart.y) * k / (p.getHeight() * 0.5f) * kEqRange;
-        setParam (ids::peqGain[dragNode], juce::jlimit (-18.0f, 18.0f, std::round ((dragG0 + dg) * 10.0f) / 10.0f), false);
-    }
+    pendingF = juce::jlimit (20.0f, 20000.0f, dragF0 * std::pow (2.0f, oct));
+    const float dg = -(e.position.y - dragStart.y) * k / (p.getHeight() * 0.5f) * kEqRange;
+    pendingG = juce::jlimit (-18.0f, 18.0f, std::round ((dragG0 + dg) * 10.0f) / 10.0f);
+    pending = true;
+}
+
+void SpectrumAnalyzer::flushDrag()
+{
+    using namespace onirique;
+    if (! pending || dragNode < 0) return;
+    pending = false;
+    setParam (ids::peqFreq[dragNode], pendingF, false);
+    if (ParametricEQ::hasGain (band (dragNode).type)) setParam (ids::peqGain[dragNode], pendingG, false);
 }
 
 void SpectrumAnalyzer::mouseUp (const juce::MouseEvent&)
 {
     using namespace onirique;
     if (dragNode < 0) return;
+    flushDrag();   // la dernière position, avant de clore le geste
     for (auto* id : { ids::peqFreq[dragNode], ids::peqGain[dragNode] })
         if (auto* p = processor.apvts.getParameter (id)) p->endChangeGesture();
     dragNode = -1;
@@ -1920,22 +1929,26 @@ void PeqBandChip::paint (juce::Graphics& g)
 }
 
 // courbe lisse (Catmull-Rom) à travers les points de l'écran
-juce::Path SpectrumAnalyzer::smoothPath (const std::array<float, kPts>& ys, bool closeToBottom, float bottom) const
+// step > 1 : un point sur step (le halo flou n'a pas besoin du détail, et chaque segment coûte à chaque trait)
+juce::Path SpectrumAnalyzer::smoothPath (const std::array<float, kPts>& ys, bool closeToBottom, float bottom, int step) const
 {
     std::array<juce::Point<float>, kPts> pt;
-    for (int i = 0; i < kPts; ++i) pt[(size_t) i] = { xOf (hzAt (i)), ys[(size_t) i] };
+    int n = 0;
+    for (int i = 0; i < kPts; i += step) pt[(size_t) n++] = { xOf (hzAt (i)), ys[(size_t) i] };
+    if (pt[(size_t) n - 1].x < xOf (hzAt (kPts - 1))) pt[(size_t) n++] = { xOf (hzAt (kPts - 1)), ys[(size_t) kPts - 1] };
     juce::Path p;
+    p.preallocateSpace (n * 7 + 8);
     if (closeToBottom) { p.startNewSubPath (pt[0].x, bottom); p.lineTo (pt[0]); }
     else p.startNewSubPath (pt[0]);
-    for (int i = 0; i < kPts - 1; ++i)
+    for (int i = 0; i < n - 1; ++i)
     {
         const auto& p0 = pt[(size_t) std::max (0, i - 1)];
         const auto& p1 = pt[(size_t) i];
         const auto& p2 = pt[(size_t) i + 1];
-        const auto& p3 = pt[(size_t) std::min (kPts - 1, i + 2)];
+        const auto& p3 = pt[(size_t) std::min (n - 1, i + 2)];
         p.cubicTo (p1 + (p2 - p0) / 6.0f, p2 - (p3 - p1) / 6.0f, p2);
     }
-    if (closeToBottom) { p.lineTo (pt[(size_t) kPts - 1].x, bottom); p.closeSubPath(); }
+    if (closeToBottom) { p.lineTo (pt[(size_t) n - 1].x, bottom); p.closeSubPath(); }
     return p;
 }
 
@@ -2037,7 +2050,7 @@ void SpectrumAnalyzer::paintEq (juce::Graphics& g)
         fill.closeSubPath();
         g.setColour (ui::ember.withAlpha (0.12f * (0.3f + 0.7f * eqAmt)));
         g.fillPath (fill);
-        ui::strokeGlow (g, eq, ui::ember, 2.5f * u, 0.3f + 0.7f * eqAmt);
+        ui::strokeGlow (g, smoothPath (yEqC, false, 0.0f, 3), ui::ember, 2.5f * u, 0.3f + 0.7f * eqAmt);
         g.setColour (ui::ember.withAlpha (0.45f + 0.55f * eqAmt));
         g.strokePath (eq, juce::PathStrokeType (std::max (1.5f, 2.4f * u), juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 
@@ -2164,7 +2177,9 @@ void SpectrumAnalyzer::paint (juce::Graphics& g)
     const int w = juce::jmax (1, juce::roundToInt ((float) getWidth() * ps)), hh = juce::jmax (1, juce::roundToInt ((float) getHeight() * ps));
     auto render = [&] (juce::Image& img, void (SpectrumAnalyzer::*fn) (juce::Graphics&))
     {
-        img = juce::Image (juce::Image::ARGB, w, hh, true);
+        // même taille : le calque est vidé et réutilisé (en réallouer un de plusieurs Mo à chaque image faisait ramer le glisser)
+        if (img.isValid() && img.getWidth() == w && img.getHeight() == hh) img.clear (img.getBounds());
+        else img = juce::Image (juce::Image::ARGB, w, hh, true);
         juce::Graphics lg (img);
         lg.addTransform (juce::AffineTransform::scale (ps));
         (this->*fn) (lg);
@@ -3938,6 +3953,13 @@ void OniriqueVocalBoxAudioProcessorEditor::timerCallback()
     clock += 1.0 / 60.0;
     ++frame;
 
+    // assistant ouvert : il couvre tout le plugin, lui seul s'anime (chaque image du plugin, dessous, le forçait à se
+    // redessiner en entier)
+    if (assistant.isVisible())
+    {
+        assistant.tick();
+        return;
+    }
     for (auto* a : animated) a->tick();
 
     // afficheur RESONANCE à 30 images/s
