@@ -1,12 +1,14 @@
 # ONIRIQUE VOCALBOX (JUCE 8 / VST3)
 
-Channel strip vocal : INPUT -> NOISE GATE (toujours en premier, repris du BROADCAST) -> EQ PARAMÉTRIQUE (8 bandes, nettoyage) -> RESONANCE -> COMPRESSION (1176 / LA-2A / DUO) -> PARALLEL (1176 écrasé remis dans la voix, AMOUNT) -> MULTIBAND (opto 4 bandes) -> EQ ANALOG (LOW / MID / HIGH, couleur) -> DE-ESSER (x2) -> SATURATION LAB -> AUTO GAIN -> OUTPUT (+ BYPASS)
+Channel strip vocal : INPUT -> NOISE SUPPRESSOR (un curseur) -> NOISE GATE (repris du BROADCAST) -> EQ PARAMÉTRIQUE (8 bandes, nettoyage) -> RESONANCE -> COMPRESSION (1176 / LA-2A / DUO) -> PARALLEL (1176 écrasé remis dans la voix, AMOUNT) -> MULTIBAND (opto 4 bandes) -> EQ ANALOG (LOW / MID / HIGH, couleur) -> DE-ESSER (x2) -> SATURATION LAB -> AUTO GAIN -> FX (chorus, flanger, delay, reverb) -> OUTPUT (+ BYPASS)
 Chaque module (EQ, EQ ANALOG, RESONANCE, COMPRESSION, PARALLEL, MULTIBAND, DE-ESSER, SATURATION LAB) a son bouton power (coupure sans clic, latence conservée).
 Modes : MIX (qualité maximale, latence ~44 ms compensée par le DAW) / LIVE (latence nulle, pour s'enregistrer à travers le plugin).
 Ordre de traitement des 7 modules réglable à la souris dans l en-tête (glisser-déposer, fondu de 15 ms). Les projets enregistrés avec l'ancien ordre à 6 modules sont convertis au chargement (l'EQ ANALOG se place juste après le MULTIBAND).
 Suréchantillonnage de TOUTE la chaîne de modules (EQ -> SATURATION) OFF / 2X / 4X / 8X, 2X par défaut (MIX uniquement).
 EQ paramétrique : bell / low shelf / high shelf / notch / low cut et high cut 12-24-36-48 dB/oct, mode DYNAMIQUE par bande (clic droit sur un point), plein écran dans la fenêtre du plugin.
-ASSISTANT IA (bouton en haut) : écoute la voix pendant la lecture, l'analyse et règle tous les modules (calcul local, voir Source/Assistant/AssistantEngine.h).
+NOISE SUPPRESSOR : un seul curseur, débruitage spectral (MIX, une trame de latence compensée) ou à latence nulle (LIVE, 24 cloches pilotées par l'analyse).
+FX (bouton en haut, page plein écran) : CHORUS et FLANGER avec gain match automatique, DELAY (tempo, ping-pong, filtres, ducking), REVERB 16 lignes (ROOM, PLATE 1, PLATE 2, HALL, SHIMMER, ducking).
+EQ paramétrique : écoute de la bande sélectionnée (casque), menu de bande ouvert à l'endroit du clic droit.
 
 ## Générer le .vst3 (Windows)
 Prérequis : Visual Studio Build Tools 2022 (charge C++), CMake, Git.
@@ -44,13 +46,14 @@ Presets utilisateur sur Mac : ~/Library/Onirique/VocalBox/Presets.
 - Source/Parameters.h        : IDs + layout APVTS (40 paramètres automatables : COMPRESSION, LOW CUT, air du HIGH, SMART S, bandes RESONANCE (fréquence, largeur, sensibilité), réglages, type de saturation, fréquence du LOW, power par module, Bypass)
 - Source/PluginProcessor.*   : paramètres, latence, bypass hôte, crête de sortie pour l'interface
 - Source/PluginEditor.*      : interface redimensionnable (taille mémorisée) dans la DA du site, animations 60 i/s, afficheur RESONANCE interactif, analyseur temps réel (FFT 8192, lissage 1/6 d octave, courbe exacte de l EQ, calques en cache), EQ plein écran, barre de presets
-- Source/AssistantPanel.cpp   : fenêtre de l ASSISTANT IA (style, intensité, écoute, progression, résultats, APPLY / UNDO)
-- Source/Assistant/AssistantEngine.h : analyse de la voix (niveaux, équilibre tonal comparé à une cible, sifflantes, plosives, résonances, hauteur / auto-tune) et réglages ; compresseurs et de-essers ajustés en faisant tourner la chaîne hors temps réel sur la voix captée
 - Source/PresetManager.h     : presets usine + utilisateur (%APPDATA%/Onirique/VocalBox/Presets/*.ovbpreset)
 - Source/DSP/SpectrumTap.h   : prise audio sans verrou pour l analyseur
 - Resources/logo.png         : sigil du site, intégré au plugin (BinaryData)
 - Source/DSP/VocalChain.h    : chaîne complète, interrupteurs de module, bypass avec fondu, sécurité NaN/Inf
 - Source/DSP/VocalEQ.h       : EQ ANALOG : LOW CUT 85 Hz, LOW (Pultec-like, 80 / 100 / 125 Hz) / MID / HIGH (air 8K / 10K / 20K), fin de course plus généreuse
+- Source/DSP/NoiseSuppressor.h : débruiteur (statistiques de minimum, Wiener "decision-directed", STFT en MIX, cloches IIR en LIVE)
+- Source/DSP/VocalFX.h       : chorus, flanger, delay, reverb FDN 16 lignes, gain match, ducking
+- Source/FxView.cpp          : page FX (curseurs en pastille, visuels animés)
 - Source/DSP/NoiseGate.h     : noise gate transparent d ONIRIQUE BROADCAST (chaîne latérale filtrée, anticipation 1.5 ms en MIX, hystérésis, HOLD, RANGE, LEARN), sans la garde d écho
 - Source/DSP/ParametricEQ.h  : EQ paramétrique 8 bandes ultra clean (filtres appariés à l'analogique, sans resserrement près de Nyquist), pentes jusqu'à 48 dB/oct, notch, mode dynamique par bande, édité dans l'analyseur
 - Source/DSP/Comp1176.h      : 1176 (FET, contre-réaction, attaque 20-800 us, ratios 4 / 8 / 12 / 20 / ALL)

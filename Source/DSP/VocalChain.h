@@ -14,6 +14,8 @@
 #include "SaturationLab.h"
 #include "AutoGain.h"
 #include "NoiseGate.h"
+#include "NoiseSuppressor.h"
+#include "VocalFX.h"
 
 namespace onirique
 {
@@ -115,6 +117,9 @@ public:
         bool peqOn = true;                              // interrupteur de l'EQ paramétrique (eqOn = EQ ANALOG)
         bool gateOn = false;                            // NOISE GATE (premier module, cadence de l'hôte)
         float gateThr = -48.0f, gateRange = 24.0f, gateAttack = 1.5f, gateHold = 120.0f, gateRelease = 220.0f, gateHyst = 5.0f;
+        float nsAmount = 0.0f;                          // NOISE SUPPRESSOR (%), avant le gate
+        bool peqListen = false; int peqListenBand = 2;  // écoute (casque) d'une bande de l'EQ paramétrique
+        fx::FxRack::Params fx;                          // page FX (fin de chaîne)
         float resoAmt = 0.0f, resoLow = 40.0f, resoMid = 100.0f, resoHigh = 80.0f;   // en %
         float resoFreq[3] { 180.0f, 1200.0f, 6500.0f }, resoWidth[3] { 1.5f, 2.0f, 2.0f };   // Hz, octaves
         float deessFreq = 4000.0f, deessAmt = 0.0f;     // amt en %
@@ -154,6 +159,11 @@ public:
         sat.prepare (fsOS, blockOS, 0);   // la saturation tourne déjà à la cadence suréchantillonnée de la chaîne
         autoGain.prepare (fs);
         gate.prepare (fs, live);
+        suppressor.prepare (fs, live);
+        fxRack.prepare (fs);
+        peqListenMix.reset (fs, 0.03);
+        listenF = -1.0f;
+        listenA.reset(); listenB.reset();
 
         eqSw.prepare (fsOS, 0, blockOS);
         peqSw.prepare (fsOS, 0, blockOS);
@@ -167,7 +177,7 @@ public:
         // latence totale (à la cadence de l'hôte) : filtres de suréchantillonnage + modules (multiples du facteur)
         const int modulesOS = reso.getLatencySamples() + deessLatency() + sat.getLatencySamples();
         jassert (modulesOS % osFactor == 0);
-        latency = gate.getLatencySamples() + juce::roundToInt (os->getLatencyInSamples()) + modulesOS / osFactor;
+        latency = suppressor.getLatencySamples() + gate.getLatencySamples() + juce::roundToInt (os->getLatencyInSamples()) + modulesOS / osFactor;
         for (auto& d : dryDelay) d.prepare (latency);
         // écoute RESONANCE : ce qui est retiré est retardé comme le reste de la chaîne (DE-ESSER + SATURATION)
         for (auto& d : listenDelay) d.prepare (deessLatency() + sat.getLatencySamples());
@@ -235,6 +245,9 @@ public:
         sat.setDrive (p.drive, snap);
         sat.setMode (p.satType, snap);
         gate.setParams (p.gateOn, p.gateThr, p.gateRange, p.gateAttack, p.gateHold, p.gateRelease, p.gateHyst);
+        suppressor.setAmount (p.nsAmount * 0.01f);
+        fxRack.set (p.fx);
+        setListenBand (p, snap);
 
         eqSw.set (p.eqOn, snap);
         peqSw.set (p.peqOn, snap);
@@ -266,6 +279,9 @@ public:
     float getParallelReductionDb() const noexcept { return parallel.getGainReductionDb(); }
     float getPeqBandGainDb (int b) const noexcept { return peq.getBandGainDb (b); }
     const NoiseGate::Meter& getGateMeter() const noexcept { return gate.getMeter(); }
+    float getSuppressorReductionDb() const noexcept { return suppressor.getReductionDb(); }
+    float getSuppressorFloorDb() const noexcept { return suppressor.getNoiseFloorDb(); }
+    float getReverbTail() const noexcept { return fxRack.getReverbTail(); }
 
     // mètres (crête linéaire par canal depuis la dernière lecture) : lus et remis à zéro par l'interface
     float consumeInputLevel (int c) noexcept  { return inLevel[c & 1].exchange (0.0f, std::memory_order_relaxed); }
@@ -298,7 +314,9 @@ private:
 
         storePeaks (inLevel, ch, numCh, n);   // mètre INPUT : ce qui entre dans la chaîne (après le gain INPUT)
 
-        // NOISE GATE : premier module, à la cadence de l'hôte (anticipation de 1.5 ms en MIX, rien en LIVE)
+        // NOISE SUPPRESSOR puis NOISE GATE : premiers modules, à la cadence de l'hôte
+        //   (suppressor : une trame de latence en MIX, rien en LIVE ; gate : anticipation de 1.5 ms en MIX, rien en LIVE)
+        suppressor.process (ch, numCh, n);
         gate.process (ch, numCh, n);
         autoGain.analyseReference (ch, numCh, n);
 
@@ -344,8 +362,17 @@ private:
         autoGain.analyseProcessed (ch, numCh, n);
         autoGain.update (autoOn, n);
 
-        // 6) AUTO GAIN + OUTPUT + fondu BYPASS (signal sec et traité alignés)
+        // 6) AUTO GAIN (sur la voix traitée), puis la page FX : les effets ne font pas varier la correction d'AUTO GAIN
+        for (int i = 0; i < n; ++i)
+        {
+            const float ag = autoGain.nextGain();
+            for (int c = 0; c < numCh; ++c) ch[c][i] *= ag;
+        }
+        fxRack.process (ch, numCh, n);
+
+        // 7) OUTPUT + écoutes (RESONANCE, bande de l'EQ) + fondu BYPASS (signal sec et traité alignés)
         //    changement d'ordre : on glisse vers le signal sec aligné (15 ms), on réordonne, on revient (15 ms)
+        const bool listenBandActive = peqListenMix.isSmoothing() || peqListenMix.getTargetValue() > 0.0f;
         for (int i = 0; i < n; ++i)
         {
             if (pendingOrder != order)
@@ -356,11 +383,17 @@ private:
             else if (orderGain < 1.0f && ! orderJustSwapped)
                 orderGain = std::min (1.0f, orderGain + orderStep);
 
-            const float g = autoGain.nextGain() * outGain.getNextValue();
+            const float g = outGain.getNextValue();
             const float m = wetMix.getNextValue() * orderGain;
             const float lm = listenMix.getNextValue();   // écoute RESONANCE : on n'entend plus que ce qui est retiré
+            const float pl = peqListenMix.getNextValue(); // écoute d'une bande de l'EQ : on n'entend plus qu'elle
             for (int c = 0; c < numCh; ++c)
-                ch[c][i] = sanitize (dry[c][i] * (1.0f - m) + (ch[c][i] * g * (1.0f - lm) + removed[c][i] * lm) * m);
+            {
+                float wet = ch[c][i] * g * (1.0f - lm) + removed[c][i] * lm;
+                if (listenBandActive)
+                    wet += pl * (listenGain * listenB.process (listenA.process (dry[c][i], c), c) - wet);
+                ch[c][i] = sanitize (dry[c][i] * (1.0f - m) + wet * m);
+            }
         }
         storePeaks (outLevel, ch, numCh, n);  // mètre OUTPUT : niveau final
     }
@@ -381,6 +414,33 @@ private:
     SaturationLab sat;
     AutoGain autoGain;
     NoiseGate gate;
+    NoiseSuppressor suppressor;
+    fx::FxRack fxRack;
+    // écoute d'une bande de l'EQ paramétrique : le signal d'entrée (aligné) passé dans le filtre de la bande
+    Biquad listenA, listenB;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> peqListenMix;
+    float listenF = -1.0f, listenQ = -1.0f, listenGain = 1.0f; int listenType = -1;
+
+    void setListenBand (const Params& p, bool snap) noexcept
+    {
+        const float target = p.peqListen ? 1.0f : 0.0f;
+        if (snap) peqListenMix.setCurrentAndTargetValue (target); else peqListenMix.setTargetValue (target);
+        const auto& b = p.peq[(size_t) juce::jlimit (0, ParametricEQ::kBands - 1, p.peqListenBand)];
+        if (b.freq == listenF && b.q == listenQ && b.type == listenType) return;
+        listenF = b.freq; listenQ = b.q; listenType = b.type;
+        const double f = juce::jlimit (25.0, 0.45 * fs, (double) b.freq);
+        // cloche / notch : la zone autour de la bande ; shelf ou coupe : la partie du spectre concernée
+        listenGain = (b.type == ParametricEQ::bell || b.type == ParametricEQ::notch) ? 1.6f : 1.0f;   // une bande étroite paraît plus faible
+        if (b.type == ParametricEQ::lowShelf || b.type == ParametricEQ::lowCut)
+        { listenA.setCoeffs (BiquadCoeffs::lowpass (fs, f, 0.707)); listenB.setCoeffs (BiquadCoeffs::lowpass (fs, f, 0.707)); }
+        else if (b.type == ParametricEQ::highShelf || b.type == ParametricEQ::highCut)
+        { listenA.setCoeffs (BiquadCoeffs::highpass (fs, f, 0.707)); listenB.setCoeffs (BiquadCoeffs::highpass (fs, f, 0.707)); }
+        else
+        {
+            const double q = juce::jlimit (0.5, 12.0, (double) b.q);
+            listenA.setCoeffs (BiquadCoeffs::bandpass (fs, f, q)); listenB.setCoeffs (BiquadCoeffs::bandpass (fs, f, q));
+        }
+    }
     ModuleSwitch eqSw, peqSw, resoSw, compSw, parSw, mbSw, deessSw, satSw;
     DelayLine dryDelay[2];
     float dry[2][kChunk] {}, removed[2][kChunk] {}, monoSpare[kChunk] {};

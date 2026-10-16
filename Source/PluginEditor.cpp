@@ -9,7 +9,7 @@ using namespace onirique;
 
 namespace
 {
-constexpr float kBaseW = 2022.0f, kBaseH = 1016.0f;  // 2022 : colonne NOISE GATE à gauche + PARALLEL à droite ; 1016 : deux de-essers + EQ paramétrique agrandi
+constexpr float kBaseW = 2208.0f, kBaseH = 1016.0f;  // 2208 : colonnes NOISE SUPPRESSOR + NOISE GATE à gauche, PARALLEL à droite ; 1016 : deux de-essers + EQ paramétrique agrandi
 constexpr int kMinW = 1180, kMaxW = 3100;
 constexpr float kPi = juce::MathConstants<float>::pi;
 
@@ -54,8 +54,8 @@ juce::Font ui::font (Face f, float h, bool bold, float kerning)
 
 float ui::editorScale (const juce::Component& c)
 {
-    if (auto* ed = c.findParentComponentOfClass<juce::AudioProcessorEditor>()) return (float) ed->getWidth() / 2022.0f;
-    if (auto* ed = dynamic_cast<const juce::AudioProcessorEditor*> (&c)) return (float) ed->getWidth() / 2022.0f;
+    if (auto* ed = c.findParentComponentOfClass<juce::AudioProcessorEditor>()) return (float) ed->getWidth() / 2208.0f;
+    if (auto* ed = dynamic_cast<const juce::AudioProcessorEditor*> (&c)) return (float) ed->getWidth() / 2208.0f;
     return 1.0f;
 }
 
@@ -432,7 +432,10 @@ void KnobComponent::resized()
         const float es = ui::editorScale (*this);
         float D = std::max (10.0f, juce::jmin (maxD, fader ? area.getHeight() / 1.47f
                                                            : juce::jmin (area.getWidth() - 2.0f, area.getHeight() / 1.47f)));
-        const float nameH = std::max (0.15f * D, 17.0f * es), pillH = std::max (0.21f * D, 23.0f * es);
+        // curseur vertical : textes calés sur la largeur (un grand curseur, comme celui du NOISE SUPPRESSOR, garde un nom et
+        // une pastille de valeur à taille normale)
+        const float Dt = fader ? std::min (D, area.getWidth() * 1.3f) : D;
+        const float nameH = std::max (0.15f * Dt, 17.0f * es), pillH = std::max (0.21f * Dt, 23.0f * es);
         D = std::max (10.0f, std::min (D, (area.getHeight() - nameH - pillH) / 1.11f));
         unit = D / 150.0f;
         const float total = nameH + 0.05f * D + D + 0.06f * D + pillH;
@@ -441,7 +444,7 @@ void KnobComponent::resized()
         const float knobTop = top + nameH + 0.05f * D;
         knob = fader ? juce::Rectangle<float> (area.getX(), knobTop, area.getWidth(), D)
                      : juce::Rectangle<float> (D, D).withCentre ({ area.getCentreX(), knobTop + D * 0.5f });
-        const float pillW = juce::jmin (area.getWidth() * (fader ? 0.98f : 0.92f), std::max (D * 0.95f, 92.0f * es));
+        const float pillW = juce::jmin (area.getWidth() * (fader ? 0.98f : 0.92f), std::max (Dt * 0.95f, 92.0f * es));
         valueArea = juce::Rectangle<float> (pillW, pillH).withCentre ({ area.getCentreX(), knob.getBottom() + 0.06f * D + pillH * 0.5f });
     }
     else
@@ -562,7 +565,12 @@ void DragValue::paint (juce::Graphics& g)
 //==============================================================================
 void PowerButton::tick()
 {
-    if (ui::approach (on, getToggleState() ? 1.0f : 0.0f, 0.2f)) repaint();
+    const bool st = getToggleState();
+    if (st && ! was) ripple = 1.0f;   // allumé : une onde braise part du bouton
+    was = st;
+    bool changed = ui::approach (on, st ? 1.0f : 0.0f, 0.2f);
+    if (ripple > 0.0f) { ripple = std::max (0.0f, ripple - 0.045f); changed = true; }
+    if (changed) repaint();
 }
 
 void PowerButton::paintButton (juce::Graphics& g, bool highlighted, bool)
@@ -576,6 +584,12 @@ void PowerButton::paintButton (juce::Graphics& g, bool highlighted, bool)
 
     juce::Path ring;
     ring.addEllipse (disk);
+    if (ripple > 0.0f)
+    {
+        const float e = 1.0f - ripple * ripple;   // part vite, ralentit en s'élargissant
+        g.setColour (ui::ember.withAlpha (0.55f * ripple));
+        g.drawEllipse (disk.expanded (d * 0.18f * e), std::max (1.0f, 1.6f * u * ripple));
+    }
     ui::strokeGlow (g, ring, ui::ember, 1.4f * u, on * (highlighted ? 1.0f : 0.7f));
     g.setColour (juce::Colours::black.withAlpha (0.4f));
     g.fillEllipse (disk);
@@ -597,7 +611,12 @@ void PowerButton::paintButton (juce::Graphics& g, bool highlighted, bool)
 //==============================================================================
 void PillToggle::tick()
 {
-    if (ui::approach (on, getToggleState() ? 1.0f : 0.0f, 0.16f)) repaint();
+    const bool st = getToggleState();
+    if (st && ! was) ripple = 1.0f;
+    was = st;
+    bool changed = ui::approach (on, st ? 1.0f : 0.0f, 0.16f);
+    if (ripple > 0.0f) { ripple = std::max (0.0f, ripple - 0.05f); changed = true; }
+    if (changed) repaint();
 }
 
 void PillToggle::paintButton (juce::Graphics& g, bool highlighted, bool)
@@ -613,6 +632,17 @@ void PillToggle::paintButton (juce::Graphics& g, bool highlighted, bool)
     ui::strokeGlow (g, shape, ui::ember, 1.5f * u, on * 0.8f);
     g.setColour (juce::Colours::black.withAlpha (highlighted ? 0.28f : 0.36f));
     g.fillPath (shape);
+    if (ripple > 0.0f)
+    {
+        // allumé : un reflet traverse la pastille de gauche à droite
+        juce::Graphics::ScopedSaveState ss (g);
+        g.reduceClipRegion (shape);
+        const float x = r.getX() + (1.0f - ripple) * (r.getWidth() + r.getHeight()) - r.getHeight();
+        juce::ColourGradient sheen (juce::Colours::white.withAlpha (0.0f), x, 0.0f, juce::Colours::white.withAlpha (0.0f), x + r.getHeight() * 1.6f, 0.0f, false);
+        sheen.addColour (0.5, juce::Colours::white.withAlpha (0.22f * std::sqrt (ripple)));
+        g.setGradientFill (sheen);
+        g.fillRect (juce::Rectangle<float> (x, r.getY(), r.getHeight() * 1.6f, r.getHeight()));
+    }
     if (on > 0.001f)
     {
         g.setGradientFill (juce::ColourGradient (ui::ember.withAlpha (0.30f * on), r.getX(), r.getY(),
@@ -705,7 +735,7 @@ void SegmentSelector::tick()
 {
     bool changed = false;
     if (slide < 0.0f) { slide = (float) selected; changed = true; }
-    changed |= ui::approach (slide, (float) selected, 0.22f);
+    changed |= ui::spring (slide, slideVel, (float) selected);   // la pastille glisse avec un léger ressort
     changed |= ui::approach (lockAmt, locked ? 1.0f : 0.0f, 0.18f);
     if (changed) repaint();
 }
@@ -1706,7 +1736,7 @@ void SpectrumAnalyzer::mouseDown (const juce::MouseEvent& e)
     const int n = nodeAt (e.position);
     if (n < 0) return;
     select (n);
-    if (e.mods.isPopupMenu()) { showBandMenu (*this, processor.apvts, n); return; }
+    if (e.mods.isPopupMenu()) { showBandMenu (*this, processor.apvts, n, e.getScreenPosition()); return; }
     dragNode = n;
     dragStart = e.position;
     dragF0 = band (n).freq;
@@ -1803,7 +1833,7 @@ void SpectrumAnalyzer::mouseWheelMove (const juce::MouseEvent& e, const juce::Mo
     qFlashFrames = 80;   // l'étiquette "Q" reste ~1.3 s après le dernier cran
 }
 
-void SpectrumAnalyzer::showBandMenu (juce::Component& target, juce::AudioProcessorValueTreeState& apvts, int b)
+void SpectrumAnalyzer::showBandMenu (juce::Component& target, juce::AudioProcessorValueTreeState& apvts, int b, juce::Point<int> screenPos)
 {
     using namespace onirique;
     static const char* names[] { "Bell", "Low Shelf", "High Shelf", "Low Cut", "High Cut", "Notch" };
@@ -1829,7 +1859,7 @@ void SpectrumAnalyzer::showBandMenu (juce::Component& target, juce::AudioProcess
     menu.addItem (101, "Reset band");
 
     auto* ap = &apvts;
-    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&target)
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea (juce::Rectangle<int> (screenPos.x, screenPos.y, 1, 1))
                             .withParentComponent (target.findParentComponentOfClass<juce::AudioProcessorEditor>()),
                         [ap, b] (int r)
                         {
@@ -1888,7 +1918,7 @@ void PeqBandChip::mouseDown (const juce::MouseEvent& e)
         }
     }
     else
-        SpectrumAnalyzer::showBandMenu (*this, apvts, band);
+        SpectrumAnalyzer::showBandMenu (*this, apvts, band, e.getScreenPosition());
 }
 
 void PeqBandChip::paint (juce::Graphics& g)
@@ -2522,7 +2552,9 @@ void GateDisplay::paint (juce::Graphics& g)
 //==============================================================================
 void IconButton::tick()
 {
-    if (ui::approach (glow, isDown() ? 1.0f : (isOver() ? 0.7f : 0.0f), 0.2f)) repaint();
+    bool changed = ui::approach (glow, isDown() ? 1.0f : (isOver() ? 0.7f : 0.0f), 0.2f);
+    changed |= ui::approach (lit, getToggleState() ? 1.0f : 0.0f, 0.2f);
+    if (changed || lit > 0.01f) repaint();   // allumé : la pastille respire
 }
 
 void IconButton::paintButton (juce::Graphics& g, bool, bool)
@@ -2536,12 +2568,42 @@ void IconButton::paintButton (juce::Graphics& g, bool, bool)
     g.fillPath (shape);
     g.setColour (ui::ember.withAlpha (0.14f * glow));
     g.fillPath (shape);
-    g.setColour (ui::line.interpolatedWith (ui::ember, 0.25f + 0.75f * glow));
+    if (lit > 0.001f)
+    {
+        // allumé (écoute) : pastille braise qui respire doucement
+        const float breathe = 0.85f + 0.15f * std::sin ((float) juce::Time::getMillisecondCounter() * 0.004f);
+        g.setGradientFill (juce::ColourGradient (ui::ember.withAlpha (0.75f * lit * breathe), b.getX(), b.getY(),
+                                                 ui::blood.withAlpha (0.8f * lit), b.getRight(), b.getBottom(), false));
+        g.fillPath (shape);
+    }
+    g.setColour (ui::line.interpolatedWith (ui::ember, juce::jmax (lit, 0.25f + 0.75f * glow)));
     g.strokePath (shape, juce::PathStrokeType (std::max (1.0f, 1.2f * u)));
 
-    // pictogramme : 4 coins vers l'extérieur (plein écran) ou vers l'intérieur (sortie)
     const float s = h * 0.42f;
     const float cx = text.isEmpty() ? b.getCentreX() : b.getX() + h * 0.62f, cy = b.getCentreY();
+    if (icon == Icon::headphones)
+    {
+        // casque : arceau + deux écouteurs arrondis
+        juce::Path hp;
+        const float r = s * 0.62f;
+        hp.addCentredArc (cx, cy + r * 0.15f, r, r, 0.0f, -kPi * 0.62f, kPi * 0.62f, true);
+        g.setColour (ui::haze.interpolatedWith (ui::bone, juce::jmax (0.45f, juce::jmax (glow, lit))));
+        g.strokePath (hp, juce::PathStrokeType (std::max (1.3f, 1.8f * u), juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        for (float sx : { -1.0f, 1.0f })
+        {
+            const auto cup = juce::Rectangle<float> (r * 0.5f, r * 0.82f).withCentre ({ cx + sx * r * 0.86f, cy + r * 0.62f });
+            g.fillRoundedRectangle (cup, r * 0.2f);
+        }
+        if (text.isNotEmpty())
+        {
+            const auto tr = b.withTrimmedLeft (h * 1.15f).withTrimmedRight (h * 0.45f);
+            g.setFont (ui::fitFont (ui::Face::body, h * 0.44f, tr.getWidth(), text, true, 0.10f));
+            g.drawText (text, tr, juce::Justification::centred, false);
+        }
+        return;
+    }
+
+    // pictogramme : 4 coins vers l'extérieur (plein écran) ou vers l'intérieur (sortie)
     const float k = s * 0.36f;
     juce::Path ic;
     for (int q = 0; q < 4; ++q)
@@ -2590,6 +2652,11 @@ EqFullView::EqFullView (OniriqueVocalBoxAudioProcessor& p) : analyzer (p, true),
     addAndMakeVisible (power);
     power.setTooltip ("Turn the parametric EQ on/off (click-free).");
     powerAtt = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (processor.apvts, ids::peqPower, power);
+    addAndMakeVisible (listenButton);
+    listenButton.setText ("LISTEN");
+    listenButton.setTooltip ("Listen to the selected band only (the frequencies it acts on), to find what to cut. Click again to hear the whole voice.");
+    listenAtt = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (processor.apvts, ids::peqListen, listenButton);
+    children.push_back (&listenButton);
     children.push_back (&power);
 
     for (int b = 0; b < 8; ++b)
@@ -2623,13 +2690,9 @@ EqFullView::~EqFullView() = default;
 
 void EqFullView::setShown (bool shown)
 {
-    setVisible (shown);
+    motion.show (*this, shown);   // fondu + zoom ; la vue se cache à la fin de la fermeture
     analyzer.setActive (shown);
-    if (shown)
-    {
-        toFront (false);
-        grabKeyboardFocus();
-    }
+    if (shown) grabKeyboardFocus();
 }
 
 void EqFullView::selectBand (int b)
@@ -2643,6 +2706,7 @@ void EqFullView::selectBand (int b)
 void EqFullView::tick()
 {
     if (! isVisible()) return;
+    motion.tick (*this);
     for (auto* a : children) a->tick();
     // DYN / THR : seulement pour les cloches et les shelfs ; le seuil s'estompe quand la bande n'est pas dynamique
     for (int b = 0; b < 8; ++b)
@@ -2665,6 +2729,7 @@ void EqFullView::resized()
     titleArea = r.removeFromTop (40.0f * u);
     exitButton.setBounds (juce::Rectangle<float> (206.0f * u, 32.0f * u).withRightX (titleArea.getRight()).withCentre ({ titleArea.getRight() - 103.0f * u, titleArea.getCentreY() }).toNearestInt());
     power.setBounds (juce::Rectangle<float> (32.0f * u, 32.0f * u).withCentre ({ (float) exitButton.getX() - 26.0f * u, titleArea.getCentreY() }).toNearestInt());
+    listenButton.setBounds (juce::Rectangle<float> (126.0f * u, 30.0f * u).withRightX ((float) power.getX() - 10.0f * u).withY (titleArea.getCentreY() - 15.0f * u).toNearestInt());
     r.removeFromTop (8.0f * u);
     bandsArea = r.removeFromBottom (184.0f * u);
     r.removeFromBottom (10.0f * u);
@@ -2715,7 +2780,7 @@ void EqFullView::paint (juce::Graphics& g)
         g.setColour (ui::mist);
         g.drawText (t, titleArea.withX (titleArea.getX() + 24.0f * u).withWidth (tw), juce::Justification::centredLeft, false);
         const float hintX = titleArea.getX() + 24.0f * u + tw + 14.0f * u;
-        const auto hint = juce::Rectangle<float> (hintX, titleArea.getY(), (float) power.getX() - 16.0f * u - hintX, titleArea.getHeight());
+        const auto hint = juce::Rectangle<float> (hintX, titleArea.getY(), (float) listenButton.getX() - 16.0f * u - hintX, titleArea.getHeight());
         const juce::String h = juce::String (juce::CharPointer_UTF8 ("8 bands  \xc2\xb7  drag the dots (Shift = fine)  \xc2\xb7  wheel = Q  \xc2\xb7  "
                                                                      "double-click = add / switch  \xc2\xb7  right-click = type, slope, DYNAMIC  \xc2\xb7  Esc = exit"));
         g.setColour (ui::haze);
@@ -2748,23 +2813,27 @@ bool EqFullView::keyPressed (const juce::KeyPress& k)
 }
 
 //==============================================================================
-void AiButton::tick()
+void FxButton::tick()
 {
     phase += 1.0f / (60.0f * 4.0f);   // un tour du liseré en 4 s
     if (phase > 1.0f) phase -= 1.0f;
     ui::approach (glow, isDown() ? 1.0f : (isOver() ? 0.8f : 0.0f), 0.2f);
+    ui::approach (litAmt, lit ? 1.0f : 0.0f, 0.12f);
     repaint();
 }
 
-void AiButton::paintButton (juce::Graphics& g, bool, bool)
+void FxButton::paintButton (juce::Graphics& g, bool, bool)
 {
     const auto b = getLocalBounds().toFloat().reduced (3.0f);
     const float h = b.getHeight(), u = h / 30.0f;
     juce::Path shape;
     shape.addRoundedRectangle (b, h * 0.5f);
-    ui::strokeGlow (g, shape, ui::ember, 1.4f * u, 0.45f + 0.5f * glow);
-    g.setGradientFill (juce::ColourGradient (ui::ember.withAlpha (0.30f + 0.15f * glow), b.getX(), b.getY(),
-                                             ui::blood.withAlpha (0.55f), b.getRight(), b.getBottom(), false));
+    // éteint (aucun effet) : verre sombre discret ; allumé : pastille braise lumineuse, liseré qui tourne
+    ui::strokeGlow (g, shape, ui::ember, 1.4f * u, 0.15f + 0.4f * litAmt + 0.4f * glow);
+    g.setColour (juce::Colours::black.withAlpha (0.38f));
+    g.fillPath (shape);
+    g.setGradientFill (juce::ColourGradient (ui::ember.withAlpha ((0.10f + 0.25f * litAmt) + 0.15f * glow), b.getX(), b.getY(),
+                                             ui::blood.withAlpha (0.25f + 0.35f * litAmt), b.getRight(), b.getBottom(), false));
     g.fillPath (shape);
 
     // liseré lumineux qui tourne lentement
@@ -2996,7 +3065,7 @@ void TabBar::tick()
 {
     bool changed = false;
     if (slide < 0.0f) { slide = (float) selected; changed = true; }
-    changed |= ui::approach (slide, (float) selected, 0.22f);
+    changed |= ui::spring (slide, slideVel, (float) selected);
     for (int t = 0; t < 2; ++t) changed |= ui::approach (led[t], moduleOn (t) ? 1.0f : 0.0f, 0.15f);
     if (changed) repaint();
 }
@@ -3438,7 +3507,7 @@ ProcessingOrderBar::ProcessingOrderBar (juce::AudioProcessorValueTreeState& s) :
 
 float ProcessingOrderBar::chipW() const noexcept
 {
-    return ((float) getWidth() - (float) kN * gapW()) / (float) (kN + 1);   // + la pastille GATE fixe
+    return ((float) getWidth() - (float) (kN + 2) * gapW()) / (float) (kN + 3);   // + pastilles fixes NS, GATE (début) et FX (fin)
 }
 
 bool ProcessingOrderBar::moduleOn (int module) const
@@ -3480,7 +3549,8 @@ void ProcessingOrderBar::tick()
         const int m = shown[(size_t) s];
         const float target = m == dragModule ? dragX : slotX (s);
         if (! placed) chipX[(size_t) m] = target;
-        changed |= ui::approach (chipX[(size_t) m], target, m == dragModule ? 1.0f : 0.25f);
+        if (m == dragModule) { changed |= chipX[(size_t) m] != target; chipX[(size_t) m] = target; chipVel[(size_t) m] = 0.0f; }
+        else changed |= ui::spring (chipX[(size_t) m], chipVel[(size_t) m], target, 0.14f, 0.68f);   // les voisines s'écartent avec un léger ressort
     }
     if (! placed) { placed = true; changed = true; }
     for (int m = 0; m < kN; ++m)
@@ -3489,6 +3559,10 @@ void ProcessingOrderBar::tick()
         changed |= ui::approach (hoverGlow[(size_t) m], (m == hoverModule || m == dragModule) ? 1.0f : 0.0f, 0.2f);
     }
     changed |= ui::approach (gateLit, apvts.getRawParameterValue (ids::gateOn)->load() > 0.5f ? 1.0f : 0.0f, 0.15f);
+    changed |= ui::approach (nsLit, apvts.getRawParameterValue (ids::nsAmount)->load() > 0.05f ? 1.0f : 0.0f, 0.15f);
+    bool anyFx = false;
+    for (auto* id : { ids::chorusOn, ids::flangerOn, ids::delayOn, ids::reverbOn }) anyFx |= apvts.getRawParameterValue (id)->load() > 0.5f;
+    changed |= ui::approach (fxLit, anyFx ? 1.0f : 0.0f, 0.15f);
     if (changed) repaint();
 }
 
@@ -3504,7 +3578,7 @@ void ProcessingOrderBar::mouseDown (const juce::MouseEvent& e)
 void ProcessingOrderBar::mouseDrag (const juce::MouseEvent& e)
 {
     if (dragModule < 0) return;
-    dragX = juce::jlimit (slotX (0), (float) getWidth() - chipW(), e.position.x - dragOffset);
+    dragX = juce::jlimit (slotX (0), slotX (kN - 1), e.position.x - dragOffset);
     if (e.getDistanceFromDragStart() > 3) dragMoved = true;
     setMouseCursor (juce::MouseCursor::DraggingHandCursor);
 }
@@ -3538,7 +3612,7 @@ void ProcessingOrderBar::mouseDoubleClick (const juce::MouseEvent&)
 
 juce::String ProcessingOrderBar::getTooltip()
 {
-    return "Processing order: the noise GATE always comes first; drag a module left or right to move it in the chain (smooth 15 ms crossfade). "
+    return "Processing order: the noise suppressor (NS) and the GATE always come first and the FX page last; drag a module left or right to move it in the chain (smooth 15 ms crossfade). "
            "Lit = module on. Double-click = original order.";
 }
 
@@ -3547,7 +3621,7 @@ void ProcessingOrderBar::paint (juce::Graphics& g)
     const float h = (float) getHeight(), w = chipW(), u = h / 20.0f;
 
     // chevrons fixes entre les places
-    for (int s = -1; s < kN - 1; ++s)
+    for (int s = -2; s < kN; ++s)
     {
         const float cx = slotX (s) + w + gapW() * 0.5f, cy = h * 0.5f;
         juce::Path ch;
@@ -3558,24 +3632,28 @@ void ProcessingOrderBar::paint (juce::Graphics& g)
         g.strokePath (ch, juce::PathStrokeType (std::max (1.0f, 1.5f * u), juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
 
-    // pastille GATE fixe : le noise gate est toujours le premier module (cadre en pointillés = non déplaçable)
+    // pastilles fixes (cadre en pointillés = non déplaçables) : NS et GATE toujours en premier, FX toujours en dernier
+    auto fixedChip = [&] (int slot, const char* name, float l)
     {
-        const auto r = juce::Rectangle<float> (0.0f, 0.0f, w, h).reduced (0.5f, 1.0f);
+        const auto r = juce::Rectangle<float> (slotX (slot), 0.0f, w, h).reduced (0.5f, 1.0f);
         juce::Path p;
         p.addRoundedRectangle (r, r.getHeight() * 0.5f);
         g.setColour (juce::Colours::black.withAlpha (0.4f));
         g.fillPath (p);
-        g.setColour (ui::ember.withAlpha (0.10f + 0.14f * gateLit));
+        g.setColour (ui::ember.withAlpha (0.10f + 0.14f * l));
         g.fillPath (p);
         juce::Path dashed;
         const float dash[] { 2.5f * u, 2.0f * u };
         juce::PathStrokeType (std::max (1.0f, 1.0f * u)).createDashedStroke (dashed, p, dash, 2);
-        g.setColour (ui::line.interpolatedWith (ui::ember, 0.35f * gateLit));
+        g.setColour (ui::line.interpolatedWith (ui::ember, 0.35f * l));
         g.fillPath (dashed);
-        g.setColour (ui::haze.interpolatedWith (ui::bone, 0.55f * gateLit));
-        g.setFont (ui::fitFont (ui::Face::mono, h * 0.56f, r.getWidth() - 6.0f * u, "GATE", true, 0.02f));
-        g.drawText ("GATE", r, juce::Justification::centred, false);
-    }
+        g.setColour (ui::haze.interpolatedWith (ui::bone, 0.55f * l));
+        g.setFont (ui::fitFont (ui::Face::mono, h * 0.56f, r.getWidth() - 6.0f * u, name, true, 0.02f));
+        g.drawText (name, r, juce::Justification::centred, false);
+    };
+    fixedChip (-2, "NS", nsLit);
+    fixedChip (-1, "GATE", gateLit);
+    fixedChip (kN, "FX", fxLit);
 
     // pastilles (celle qu'on tire par-dessus)
     for (int pass = 0; pass < 2; ++pass)
@@ -3844,6 +3922,13 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
     fullButton.setTooltip ("Open the parametric EQ full screen, for precise editing of all 8 bands.");
     fullButton.onClick = [this] { showEqFull (true); };
 
+    // NOISE SUPPRESSOR : curseur vertical + réduction appliquée
+    addAndMakeVisible (nsFader);
+    addAndMakeVisible (nsGr);
+    animated.push_back (&nsFader);
+    animated.push_back (&nsGr);
+    nsFader.activity = [this] { return processor.getSuppressorReductionDb(); };
+
     // NOISE GATE : écran (seuil à glisser, LEARN), 5 boutons, hystérésis
     for (auto* k : { &gateThrKnob, &gateRangeKnob, &gateAtkKnob, &gateHoldKnob, &gateRelKnob })
     {
@@ -3856,11 +3941,15 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
     animated.push_back (&gateHystV);
     gateHystV.setPrefix ("HYST ");
 
-    // ASSISTANT IA (en-tête)
-    addAndMakeVisible (aiButton);
-    animated.push_back (&aiButton);
-    aiButton.setTooltip ("AI Assistant: listens to your vocal while the song plays, then sets up the whole VocalBox for it.");
-    aiButton.onClick = [this] { showEqFull (false); assistant.open(); };
+    // FX (en-tête) : ouvre la page des effets ; écoute de la bande de l'EQ (casque)
+    addAndMakeVisible (fxButton);
+    animated.push_back (&fxButton);
+    fxButton.setTooltip ("FX: chorus, flanger, delay and reverb for the voice, at the end of the chain (full page).");
+    fxButton.onClick = [this] { showFx (! fxView.isShown()); };
+    addAndMakeVisible (peqListenButton);
+    animated.push_back (&peqListenButton);
+    peqListenButton.setTooltip ("Listen to the selected band only (the frequencies it acts on), to find what to cut. Click again to hear the whole voice.");
+    peqListenAtt = std::make_unique<ButtonAttachment> (processor.apvts, ids::peqListen, peqListenButton);
 
     // MIX / LIVE, suréchantillonnage, plosives, écoute RESONANCE
     for (auto* c : std::initializer_list<juce::Component*> { &modeSel, &osSel, &plosiveFader, &listenButton })
@@ -3921,7 +4010,7 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
     // resized() à la taille minimale, qui écrasait la largeur sauvegardée (le plugin se rouvrait petit).
     // taille d'ouverture : la règle commune des plugins ONIRIQUE (OniriqueWindowSize.h)
     const int w = onirique::window::openingSize (processor.apvts.state, "ONIRIQUE VOCALBOX",
-                                                 { 1760, juce::roundToInt (1760.0f * kBaseH / kBaseW) },
+                                                 { 1900, juce::roundToInt (1900.0f * kBaseH / kBaseW) },
                                                  { kMinW, juce::roundToInt ((float) kMinW * kBaseH / kBaseW) },
                                                  { kMaxW, juce::roundToInt ((float) kMaxW * kBaseH / kBaseW) }).x;
     setResizable (true, true);
@@ -3932,13 +4021,12 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
     veils.draw = [this] (juce::Graphics& g) { paintVeils (g); };
     addAndMakeVisible (veils);   // ajoutée en dernier : au-dessus des modules, sous les menus ouverts ensuite
 
-    // EQ plein écran puis ASSISTANT, au-dessus des voiles (la licence reste par-dessus tout)
+    // EQ plein écran et page FX, au-dessus des voiles (la licence reste par-dessus tout)
     addChildComponent (eqFull);
-    animated.push_back (&eqFull);
     eqFull.onClose = [this] { showEqFull (false); };
     eqFull.onSelect = [this] (int b) { analyzer.setSelectedSilently (b); selectPeqBand (b); };
-    addChildComponent (assistant);
-    animated.push_back (&assistant);
+    addChildComponent (fxView);
+    fxView.onClose = [this] { showFx (false); };
     showCompTab (compTabs.getSelected());
     onirique::window::remember (processor.apvts.state, getWidth(), getHeight());
 
@@ -3948,11 +4036,11 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
     resized();
 
    #if ONIRIQUE_UI_TEST
-    // essais locaux uniquement (jamais dans les versions publiées) : ONIRIQUE_UI_TEST=eqfull ou assistant:<fichier wav>
+    // essais locaux uniquement (jamais dans les versions publiées) : ONIRIQUE_UI_TEST=eqfull ou fx
     {
         const auto t = juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_TEST", {});
         if (t == "eqfull") showEqFull (true);
-        if (t.startsWith ("assistant")) { assistant.open(); assistant.testWithFile (juce::File (t.fromFirstOccurrenceOf (":", false, false))); }
+        if (t == "fx") showFx (true);
     }
    #endif
 
@@ -3971,19 +4059,21 @@ void OniriqueVocalBoxAudioProcessorEditor::timerCallback()
 {
     clock += 1.0 / 60.0;
     ++frame;
-
-    // assistant ouvert : il couvre tout le plugin, lui seul s'anime (chaque image du plugin, dessous, le forçait à se
-    // redessiner en entier)
-    if (assistant.isVisible())
     {
-        assistant.tick();
-        return;
+        bool anyFx = false;
+        for (auto* id : { ids::chorusOn, ids::flangerOn, ids::delayOn, ids::reverbOn }) anyFx |= processor.apvts.getRawParameterValue (id)->load() > 0.5f;
+        fxButton.setLit (anyFx);   // le bouton FX s'allume quand un effet tourne
     }
-    // EQ plein écran : idem, le plugin dessous ne bouge pas (il n'est pas visible)
-    if (eqFull.isVisible())
+
+    // page plein écran ouverte (EQ, FX) : elle couvre les modules, elle seule s'anime (chaque image des modules,
+    // dessous, la forçait à se redessiner). Le bouton FX de l'en-tête reste vivant. Pendant la transition d'ouverture
+    // ou de fermeture, les modules sont en partie visibles : ils continuent de s'animer.
+    if (eqFull.isVisible() || fxView.isVisible())
     {
-        eqFull.tick();
-        return;
+        bool moving = false;
+        if (eqFull.isVisible()) { eqFull.tick(); moving |= eqFull.isAnimating(); }
+        if (fxView.isVisible()) { fxView.tick(); moving |= fxView.isAnimating(); }
+        if (! moving) { fxButton.tick(); orderBar.tick(); return; }   // l'en-tête reste vivant
     }
     for (auto* a : animated) a->tick();
 
@@ -4062,7 +4152,7 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
     const float botY = resoY + resoH + gap, botH = 250.0f * u;                 // rangée du bas : EQ paramétrique agrandi
     // COMPRESSION (largeur fixe) puis colonne PARALLEL à sa droite
     // colonne NOISE GATE à gauche (rangées du haut et du milieu), puis les modules ; COMPRESSION (largeur fixe), PARALLEL à droite
-    const float gateW = 300.0f * u, x0 = m + gateW + gap;
+    const float nsW = 170.0f * u, gateW = 300.0f * u, x0 = m + nsW + gap + gateW + gap;   // colonnes NOISE SUPPRESSOR puis NOISE GATE
     const float compX = x0 + leftW + gap, compW = 504.0f * u;
     const float parX = compX + compW + gap, parW = W - m - parX;
     const float availW = leftW;
@@ -4090,8 +4180,8 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
         const float titleRight = logoRect.getRight() + 14.0f * u
                                + ui::textWidth (ui::font (ui::Face::display, 30.0f * u, true, 0.10f), "ONIRIQUE") + 2.0f + 10.0f * u
                                + ui::textWidth (ui::font (ui::Face::display, 30.0f * u, false, 0.10f), "VOCALBOX") + 2.0f;
-        const float aiX = titleRight + 18.0f * u, aiW = 210.0f * u;
-        aiButton.setBounds (juce::Rectangle<float> (aiX, 17.0f * u, aiW, 32.0f * u).toNearestInt());
+        const float fxX = titleRight + 18.0f * u;
+        fxButton.setBounds (juce::Rectangle<float> (fxX, 17.0f * u, 150.0f * u, 32.0f * u).toNearestInt());
     }
 
     if (logo.isValid())
@@ -4115,7 +4205,7 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
         const float x = W * 0.33f + ((float) osSel.getX() - 12.0f * u - W * 0.33f) * rnd.nextFloat();   // entre le titre et les réglages de l'en-tête
         const float y = (8.0f + 66.0f * rnd.nextFloat()) * u;
         const float size = (2.5f + 4.5f * rnd.nextFloat() * rnd.nextFloat()) * u;
-        if (aiButton.getBounds().toFloat().expanded (8.0f * u).contains (x, y)) continue;   // pas d'étoile sous le bouton de l'assistant
+        if (fxButton.getBounds().toFloat().expanded (8.0f * u).contains (x, y)) continue;   // pas d'étoile sous le bouton FX
         stars.push_back ({ { x, y }, size });
     }
 
@@ -4197,7 +4287,18 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
     sections.push_back ({ "MBAREA",   mbArea, nullptr, 0.0f, true, ! mbTab, true });   // zone voilée quand le MULTIBAND est coupé
     sections.push_back ({ "COMPAREA", mbArea, nullptr, 0.0f, true, mbTab, true });     // idem pour 1176 / LA-2A
     sections.push_back ({ "PARALLEL", { parX, topY, parW, resoY + resoH - topY }, &parPower });   // index 13
-    sections.push_back ({ "NOISE GATE", { m, topY, gateW, resoY + resoH - topY }, &gatePower });       // index 14
+    sections.push_back ({ "NOISE GATE", { m + nsW + gap, topY, gateW, resoY + resoH - topY }, &gatePower });   // index 14
+    sections.push_back ({ "NOISE SUPPRESSOR", { m, topY, nsW, resoY + resoH - topY } });                      // index 15
+    {
+        // NOISE SUPPRESSOR : grand curseur vertical (comme un fader de console) + mètre de la réduction appliquée
+        auto nc = inner (sections[15].bounds);
+        nc.removeFromTop (6.0f * u);
+        const auto grCol = nc.removeFromRight (46.0f * u);
+        nc.removeFromRight (8.0f * u);
+        nsGr.setBounds (grCol.withSizeKeepingCentre (grCol.getWidth(), std::min (grCol.getHeight() - 10.0f * u, 420.0f * u)).toNearestInt());
+        nsFader.setMaxDiameter (nc.getHeight() / 1.47f);
+        nsFader.setBounds (nc.toNearestInt());
+    }
     {
         // NOISE GATE : écran en haut, THRESHOLD / RANGE, puis ATTACK / HOLD / RELEASE, HYST en bas
         auto gc = inner (sections[14].bounds);
@@ -4411,7 +4512,8 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
         // BANDE + type | FREQ | GAIN | Q | THR (bande dynamique) | plein écran | power
         const auto card = sections[10].bounds;
         fullButton.setBounds (juce::Rectangle<float> (30.0f * u, 26.0f * u).withRightX (card.getRight() - 46.0f * u).withY (card.getY() + 6.0f * u).toNearestInt());
-        auto strip = juce::Rectangle<float> ((float) fullButton.getX() - 10.0f * u - 600.0f * u, card.getY() + 7.0f * u, 600.0f * u, 24.0f * u);
+        peqListenButton.setBounds (juce::Rectangle<float> (40.0f * u, 26.0f * u).withRightX ((float) fullButton.getX() - 8.0f * u).withY (card.getY() + 6.0f * u).toNearestInt());
+        auto strip = juce::Rectangle<float> ((float) peqListenButton.getX() - 10.0f * u - 600.0f * u, card.getY() + 7.0f * u, 600.0f * u, 24.0f * u);
         peqChip.setBounds (strip.removeFromLeft (160.0f * u).toNearestInt());
         strip.removeFromLeft (6.0f * u);
         const auto fR = strip.removeFromLeft (112.0f * u);
@@ -4432,7 +4534,7 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
     }
     // EQ plein écran : toute la surface des modules (l'en-tête reste visible) ; ASSISTANT : toute la fenêtre
     eqFull.setBounds (juce::Rectangle<float> (m, topY, W - 2.0f * m, (float) getHeight() - topY - m).toNearestInt());
-    assistant.setBounds (getLocalBounds());
+    fxView.setBounds (eqFull.getBounds());
 
     const auto& o = sections[6].bounds;
     overRect = { o.getRight() - 84.0f * u, o.getY() + 10.0f * u, 64.0f * u, 18.0f * u };
@@ -4446,6 +4548,9 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
 void OniriqueVocalBoxAudioProcessorEditor::selectPeqBand (int b)
 {
     peqChip.setBand (b);
+    // l'écoute (casque) suit la bande sélectionnée
+    if (auto* lb = processor.apvts.getParameter (ids::peqListenBand); lb != nullptr && juce::roundToInt (lb->convertFrom0to1 (lb->getValue())) != b)
+        lb->setValueNotifyingHost (lb->convertTo0to1 ((float) b));
     const int type = juce::roundToInt (processor.apvts.getRawParameterValue (ids::peqType[b])->load());
     peqDynShown = processor.apvts.getRawParameterValue (ids::peqDyn[b])->load() > 0.5f && ParametricEQ::canBeDynamic (type);
     for (int i = 0; i < 8; ++i)
@@ -4460,9 +4565,16 @@ void OniriqueVocalBoxAudioProcessorEditor::selectPeqBand (int b)
 // EQ paramétrique en plein écran : un seul analyseur lit les prises (celui qui est affiché)
 void OniriqueVocalBoxAudioProcessorEditor::showEqFull (bool show)
 {
-    if (show) eqFull.selectBand (analyzer.getSelected());
+    if (show) { eqFull.selectBand (analyzer.getSelected()); if (fxView.isShown()) fxView.setShown (false); }
     eqFull.setShown (show);
     analyzer.setActive (! show);
+}
+
+// page FX : une seule page plein écran à la fois
+void OniriqueVocalBoxAudioProcessorEditor::showFx (bool show)
+{
+    if (show && eqFull.isShown()) showEqFull (false);
+    fxView.setShown (show);
 }
 
 // carte COMPRESSION : affiche l'onglet 1176 / LA-2A (0) ou MULTIBAND (1)

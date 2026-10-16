@@ -55,6 +55,22 @@ namespace ids
     inline constexpr const char* mbGain[4] { "mbGain1", "mbGain2", "mbGain3", "mbGain4" };
     inline constexpr const char* mbAttack  = "mbAttack";
     inline constexpr const char* mbRelease = "mbRelease";
+    // NOISE SUPPRESSOR (un seul curseur, avant le NOISE GATE)
+    inline constexpr const char* nsAmount    = "nsAmount";
+    // écoute d'une bande de l'EQ paramétrique (casque) : réglages de session, hors presets
+    inline constexpr const char* peqListen     = "peqListen";
+    inline constexpr const char* peqListenBand = "peqListenBand";
+    // FX (page FX) : CHORUS, FLANGER, DELAY, REVERB
+    inline constexpr const char* chorusOn = "fxChorusOn", *chorusRate = "fxChorusRate", *chorusDepth = "fxChorusDepth", *chorusMix = "fxChorusMix";
+    inline constexpr const char* flangerOn = "fxFlangerOn", *flangerRate = "fxFlangerRate", *flangerDepth = "fxFlangerDepth",
+                                 *flangerFeedback = "fxFlangerFeedback", *flangerMix = "fxFlangerMix";
+    inline constexpr const char* delayOn = "fxDelayOn", *delaySync = "fxDelaySync", *delayTime = "fxDelayTime", *delayNote = "fxDelayNote",
+                                 *delayFeedback = "fxDelayFeedback", *delayMix = "fxDelayMix", *delayPingPong = "fxDelayPingPong",
+                                 *delayLowCut = "fxDelayLowCut", *delayHighCut = "fxDelayHighCut", *delayDucking = "fxDelayDucking";
+    inline constexpr const char* reverbOn = "fxReverbOn", *reverbMode = "fxReverbMode", *reverbPreDelay = "fxReverbPreDelay",
+                                 *reverbDecay = "fxReverbDecay", *reverbSize = "fxReverbSize", *reverbDiffusion = "fxReverbDiffusion",
+                                 *reverbModRate = "fxReverbModRate", *reverbModDepth = "fxReverbModDepth", *reverbMix = "fxReverbMix",
+                                 *reverbLowCut = "fxReverbLowCut", *reverbHighCut = "fxReverbHighCut", *reverbDucking = "fxReverbDucking";
     // NOISE GATE (premier module, comme celui d'ONIRIQUE BROADCAST)
     inline constexpr const char* gateOn      = "gateOn";
     inline constexpr const char* gateThr     = "gateThreshold";
@@ -160,6 +176,18 @@ inline int convertLegacyOrder (int legacyIndex)
         if (m == 3) out[k++] = 4;
     }
     return encodeOrder (out);
+}
+
+// DELAY calé sur le tempo : valeurs de note (en noires) du sélecteur
+inline const juce::StringArray& delayNoteNames()
+{
+    static const juce::StringArray n { "1/2", "1/4", "1/4 D", "1/4 T", "1/8", "1/8 D", "1/8 T", "1/16", "1/16 D", "1/16 T" };
+    return n;
+}
+inline float delayNoteBeats (int index)
+{
+    static constexpr float b[] { 2.0f, 1.0f, 1.5f, 2.0f / 3.0f, 0.5f, 0.75f, 1.0f / 3.0f, 0.25f, 0.375f, 1.0f / 6.0f };
+    return b[juce::jlimit (0, 9, index)];
 }
 
 inline juce::String orderText (int index)
@@ -373,6 +401,69 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
                                                             Attr().withLabel ("ms").withStringFromValueFunction (ms)));
         p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::mbRelease, 1 }, "Multiband Release", rel, 200.0f,
                                                             Attr().withLabel ("ms").withStringFromValueFunction (ms)));
+    }
+
+    // ---- NOISE SUPPRESSOR : un seul curseur, 0 = coupé
+    {
+        auto pct = [] (float v, int) { return String (juce::roundToInt (v)) + " %"; };
+        p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::nsAmount, 1 }, "Noise Suppressor",
+            NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f, Attr().withLabel ("%").withStringFromValueFunction (pct)));
+
+        // écoute d'une bande de l'EQ paramétrique (session : ni presets, ni automation)
+        p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::peqListen, 1 }, "Param EQ Listen", false,
+                                                           AudioParameterBoolAttributes().withAutomatable (false)));
+        p.push_back (std::make_unique<AudioParameterInt> (ParameterID { ids::peqListenBand, 1 }, "Param EQ Listen Band", 0, 7, 2,
+                                                          AudioParameterIntAttributes().withAutomatable (false)));
+
+        // ---- FX : tous coupés par défaut
+        auto hzT = [] (float v, int) { return v >= 1000.0f ? String (v / 1000.0f, v >= 10000.0f ? 1 : 2) + " kHz" : String (juce::roundToInt (v)) + " Hz"; };
+        auto msT = [] (float v, int) { return v >= 1000.0f ? String (v / 1000.0f, 2) + " s" : String (juce::roundToInt (v)) + " ms"; };
+        auto addB = [&] (const char* id, const char* name, bool def) { p.push_back (std::make_unique<AudioParameterBool> (ParameterID { id, 1 }, name, def)); };
+        auto addF = [&] (const char* id, const char* name, NormalisableRange<float> r, float def, const char* label,
+                         std::function<String (float, int)> txt)
+        {
+            p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { id, 1 }, name, r, def,
+                                                                Attr().withLabel (label).withStringFromValueFunction (std::move (txt))));
+        };
+        auto skewed = [] (float lo, float hi, float step, float centre) { NormalisableRange<float> r (lo, hi, step); r.setSkewForCentre (centre); return r; };
+        auto rateT = [] (float v, int) { return String (v, v < 1.0f ? 2 : 1) + " Hz"; };
+
+        addB (ids::chorusOn, "Chorus On", false);
+        addF (ids::chorusRate, "Chorus Rate", skewed (0.05f, 4.0f, 0.01f, 0.8f), 0.6f, "Hz", rateT);
+        addF (ids::chorusDepth, "Chorus Depth", { 0.0f, 100.0f, 0.1f }, 50.0f, "%", pct);
+        addF (ids::chorusMix, "Chorus Mix", { 0.0f, 100.0f, 0.1f }, 35.0f, "%", pct);
+
+        addB (ids::flangerOn, "Flanger On", false);
+        addF (ids::flangerRate, "Flanger Rate", skewed (0.02f, 5.0f, 0.01f, 0.5f), 0.25f, "Hz", rateT);
+        addF (ids::flangerDepth, "Flanger Depth", { 0.0f, 100.0f, 0.1f }, 60.0f, "%", pct);
+        addF (ids::flangerFeedback, "Flanger Feedback", { -95.0f, 95.0f, 0.1f }, 40.0f, "%", pct);
+        addF (ids::flangerMix, "Flanger Mix", { 0.0f, 100.0f, 0.1f }, 50.0f, "%", pct);
+
+        addB (ids::delayOn, "Delay On", false);
+        addB (ids::delaySync, "Delay Sync", true);
+        addF (ids::delayTime, "Delay Time", skewed (10.0f, 2000.0f, 1.0f, 300.0f), 375.0f, "ms", msT);
+        p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { ids::delayNote, 1 }, "Delay Note", delayNoteNames(), 4));
+        addF (ids::delayFeedback, "Delay Feedback", { 0.0f, 95.0f, 0.1f }, 35.0f, "%", pct);
+        addF (ids::delayMix, "Delay Mix", { 0.0f, 100.0f, 0.1f }, 25.0f, "%", pct);
+        addB (ids::delayPingPong, "Delay Ping-Pong", true);
+        addF (ids::delayLowCut, "Delay Low Cut", skewed (20.0f, 2000.0f, 1.0f, 250.0f), 250.0f, "Hz", hzT);
+        addF (ids::delayHighCut, "Delay High Cut", skewed (1000.0f, 20000.0f, 1.0f, 6000.0f), 6000.0f, "Hz", hzT);
+        addF (ids::delayDucking, "Delay Ducking", { 0.0f, 100.0f, 0.1f }, 0.0f, "%", pct);
+
+        addB (ids::reverbOn, "Reverb On", false);
+        p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { ids::reverbMode, 1 }, "Reverb Mode",
+                                                             StringArray { "Room", "Plate 1", "Plate 2", "Hall", "Shimmer" }, 1));
+        addF (ids::reverbPreDelay, "Reverb Pre-Delay", skewed (0.0f, 250.0f, 0.1f, 40.0f), 20.0f, "ms", msT);
+        addF (ids::reverbDecay, "Reverb Decay", skewed (0.2f, 20.0f, 0.01f, 2.5f), 2.2f, "s",
+              [] (float v, int) { return String (v, v < 10.0f ? 2 : 1) + " s"; });
+        addF (ids::reverbSize, "Reverb Size", { 0.0f, 100.0f, 0.1f }, 60.0f, "%", pct);
+        addF (ids::reverbDiffusion, "Reverb Diffusion", { 0.0f, 100.0f, 0.1f }, 75.0f, "%", pct);
+        addF (ids::reverbModRate, "Reverb Mod Rate", skewed (0.05f, 5.0f, 0.01f, 0.8f), 0.8f, "Hz", rateT);
+        addF (ids::reverbModDepth, "Reverb Mod Depth", { 0.0f, 100.0f, 0.1f }, 35.0f, "%", pct);
+        addF (ids::reverbMix, "Reverb Mix", { 0.0f, 100.0f, 0.1f }, 20.0f, "%", pct);
+        addF (ids::reverbLowCut, "Reverb Low Cut", skewed (20.0f, 1000.0f, 1.0f, 200.0f), 180.0f, "Hz", hzT);
+        addF (ids::reverbHighCut, "Reverb High Cut", skewed (1000.0f, 20000.0f, 1.0f, 7000.0f), 9000.0f, "Hz", hzT);
+        addF (ids::reverbDucking, "Reverb Ducking", { 0.0f, 100.0f, 0.1f }, 0.0f, "%", pct);
     }
 
     // ---- NOISE GATE : coupé par défaut (les anciens projets ne changent pas) ; réglages d'usine du BROADCAST

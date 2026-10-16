@@ -3,6 +3,45 @@
 
 using namespace onirique;
 
+namespace
+{
+// NOISE SUPPRESSOR, écoute d'une bande de l'EQ, puis la page FX (même ordre que readExtras)
+const char* const kFxIds[] {
+    ids::nsAmount, ids::peqListen, ids::peqListenBand,
+    ids::chorusOn, ids::chorusRate, ids::chorusDepth, ids::chorusMix,
+    ids::flangerOn, ids::flangerRate, ids::flangerDepth, ids::flangerFeedback, ids::flangerMix,
+    ids::delayOn, ids::delaySync, ids::delayTime, ids::delayNote, ids::delayFeedback, ids::delayMix, ids::delayPingPong,
+    ids::delayLowCut, ids::delayHighCut, ids::delayDucking,
+    ids::reverbOn, ids::reverbMode, ids::reverbPreDelay, ids::reverbDecay, ids::reverbSize, ids::reverbDiffusion,
+    ids::reverbModRate, ids::reverbModDepth, ids::reverbMix, ids::reverbLowCut, ids::reverbHighCut, ids::reverbDucking };
+static_assert (sizeof (kFxIds) / sizeof (kFxIds[0]) == OniriqueVocalBoxAudioProcessor::kNumFxParams, "liste des réglages FX");
+} // namespace
+
+void OniriqueVocalBoxAudioProcessor::readExtras (VocalChain::Params& p) const noexcept
+{
+    int k = 0;
+    auto f = [&] { return pFx[k++]->load(); };
+    auto b = [&] { return pFx[k++]->load() > 0.5f; };
+    auto i = [&] { return juce::roundToInt (pFx[k++]->load()); };
+    p.nsAmount = f();
+    p.peqListen = b();
+    p.peqListenBand = i();
+    auto& x = p.fx;
+    x.chorusOn = b(); x.chorusRate = f(); x.chorusDepth = f() * 0.01f; x.chorusMix = f() * 0.01f;
+    x.flangerOn = b(); x.flangerRate = f(); x.flangerDepth = f() * 0.01f; x.flangerFeedback = f() * 0.01f; x.flangerMix = f() * 0.01f;
+    x.delayOn = b();
+    const bool sync = b();
+    const float timeMs = f();
+    const int note = i();
+    const double bpm = juce::jlimit (30.0, 300.0, hostBpm.load (std::memory_order_relaxed));
+    x.delayTimeSec = sync ? (float) (60.0 / bpm * delayNoteBeats (note)) : timeMs * 0.001f;
+    x.delayFeedback = f() * 0.01f; x.delayMix = f() * 0.01f; x.delayPingPong = b();
+    x.delayLowCut = f(); x.delayHighCut = f(); x.delayDucking = f() * 0.01f;
+    auto& r = x.reverb;
+    r.on = b(); r.mode = i(); r.preDelayMs = f(); r.decay = f(); r.size = f() * 0.01f; r.diffusion = f() * 0.01f;
+    r.modRate = f(); r.modDepth = f() * 0.01f; r.mix = f() * 0.01f; r.lowCut = f(); r.highCut = f(); r.ducking = f() * 0.01f;
+}
+
 OniriqueVocalBoxAudioProcessor::OniriqueVocalBoxAudioProcessor()
     : AudioProcessor (BusesProperties()
                           .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
@@ -45,6 +84,7 @@ OniriqueVocalBoxAudioProcessor::OniriqueVocalBoxAudioProcessor()
         const char* g[7] { ids::gateOn, ids::gateThr, ids::gateRange, ids::gateAttack, ids::gateHold, ids::gateRelease, ids::gateHyst };
         for (int i = 0; i < 7; ++i) pGate[i] = apvts.getRawParameterValue (g[i]);
     }
+    for (int i = 0; i < kNumFx; ++i) pFx[i] = apvts.getRawParameterValue (kFxIds[i]);
     for (int i = 0; i < 3; ++i) pMbX[i] = apvts.getRawParameterValue (ids::mbX[i]);
     for (int b = 0; b < 4; ++b)
     {
@@ -131,6 +171,7 @@ VocalChain::Params OniriqueVocalBoxAudioProcessor::readParams() const noexcept
     p.gateOn = pGate[0]->load() > 0.5f;
     p.gateThr = pGate[1]->load(); p.gateRange = pGate[2]->load(); p.gateAttack = pGate[3]->load();
     p.gateHold = pGate[4]->load(); p.gateRelease = pGate[5]->load(); p.gateHyst = pGate[6]->load();
+    readExtras (p);
     p.compOn    = pComp[0]->load() > 0.5f;
     p.compMode  = juce::roundToInt (pComp[1]->load());
     p.compOrder = juce::roundToInt (pComp[2]->load());
@@ -226,12 +267,16 @@ void OniriqueVocalBoxAudioProcessor::processBlock (juce::AudioBuffer<float>& buf
     if (numCh < 1 || total < 1)
         return;
 
+    // tempo de l'hôte (DELAY calé sur le tempo) ; sans transport, on garde le dernier connu
+    if (auto* ph = getPlayHead())
+        if (const auto pos = ph->getPosition())
+            if (const auto bpm = pos->getBpm(); bpm.hasValue() && *bpm > 1.0)
+                hostBpm.store (*bpm, std::memory_order_relaxed);
+
     chain.setParams (readParams());
 
     float* ch[2] { buffer.getWritePointer (0), numCh > 1 ? buffer.getWritePointer (1) : nullptr };
     inputTap.push (ch[0], ch[1], total);    // analyseur : signal d'entrée
-    if (assistListening.load (std::memory_order_relaxed))
-        assistTap.push (ch[0], ch[1], total);   // ASSISTANT : la voix brute, telle qu'elle arrive
     chain.process (ch, numCh, total);
     outputTap.push (ch[0], ch[1], total);   // analyseur : signal de sortie
     license.process (buffer, getSampleRate(), isNonRealtime());

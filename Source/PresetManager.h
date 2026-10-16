@@ -148,6 +148,7 @@ private:
         for (auto* p : apvts.processor.getParameters())
             if (auto* r = dynamic_cast<juce::RangedAudioParameter*> (p))
                 if (const auto id = r->getParameterID(); id != ids::bypass && id != ids::liveMode && id != ids::oversampling && id != ids::resoListen
+                                                         && id != ids::peqListen && id != ids::peqListenBand
                                                          && ! id.startsWith ("mbSolo"))
                     v.push_back (r);   // réglages de session exclus : bypass, mode LIVE/MIX, suréchantillonnage, écoute
         return v;

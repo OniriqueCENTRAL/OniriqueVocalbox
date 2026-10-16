@@ -40,7 +40,7 @@ juce_add_plugin(OniriqueVocalBox
 target_sources(OniriqueVocalBox PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp
-    Source/AssistantPanel.cpp)
+    Source/FxView.cpp)
 
 # logo du site (sigil blanc), intégré au binaire
 juce_add_binary_data(OniriqueAssets SOURCES Resources/logo.png)

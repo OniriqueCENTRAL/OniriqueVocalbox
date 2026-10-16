@@ -3,7 +3,6 @@
 #include "License/LicenseOverlay.h"
 #include "PluginProcessor.h"
 #include "MultibandPresets.h"
-#include "Assistant/AssistantEngine.h"
 
 #include <array>
 #include <map>
@@ -54,6 +53,16 @@ inline bool approach (float& v, float target, float k) noexcept
     v += k * (target - v);
     return true;
 }
+
+// ressort légèrement sous-amorti (glissements de pastilles, d'onglets, de pastilles d'ordre) : part vite, dépasse à peine
+// (~3 %), se pose sans à-coup. vel : vitesse gardée entre deux images (60 Hz).
+inline bool spring (float& v, float& vel, float target, float stiffness = 0.16f, float damping = 0.70f) noexcept
+{
+    vel = vel * damping + (target - v) * stiffness;
+    v += vel;
+    if (std::abs (target - v) < 1.0e-3f && std::abs (vel) < 1.0e-3f) { const bool moved = v != target; v = target; vel = 0.0f; return moved; }
+    return true;
+}
 } // namespace onirique::ui
 
 // Tout ce qui s'anime reçoit tick() à 60 Hz depuis l'éditeur (une seule horloge pour toute l'interface).
@@ -61,6 +70,54 @@ struct Animated
 {
     virtual ~Animated() = default;
     virtual void tick() = 0;
+};
+
+// Pages plein écran (EQ, FX) : fondu + léger zoom depuis le centre, dans le temps (et non image par image) : ouverture
+// en ease-out (260 ms), fermeture en ease-in (180 ms). Rouvrir pendant une fermeture repart de là où elle en est.
+class OverlayMotion
+{
+public:
+    void show (juce::Component& c, bool shouldShow)
+    {
+        if (shouldShow == target && c.isVisible() == shouldShow && ! running) return;
+        target = shouldShow;
+        from = value;
+        start = juce::Time::getMillisecondCounterHiRes();
+        running = true;
+        if (shouldShow) { c.setVisible (true); c.toFront (false); }
+        apply (c);
+    }
+    // renvoie true tant que la transition tourne (le plugin dessous est alors en partie visible)
+    bool tick (juce::Component& c)
+    {
+        if (! running) return false;
+        const float t = (float) juce::jlimit (0.0, 1.0, (juce::Time::getMillisecondCounterHiRes() - start) / (target ? 260.0 : 180.0));
+        const float e = target ? 1.0f - std::pow (1.0f - t, 3.0f) : t * t * t;
+        value = target ? from + (1.0f - from) * e : from * (1.0f - e);
+        apply (c);
+        if (t >= 1.0f)
+        {
+            running = false;
+            c.setAlpha (1.0f);
+            c.setTransform ({});
+            if (! target) c.setVisible (false);
+        }
+        return true;
+    }
+    bool isAnimating() const noexcept { return running; }
+    bool isShown() const noexcept { return target; }
+
+private:
+    void apply (juce::Component& c)
+    {
+        c.setAlpha (juce::jlimit (0.0f, 1.0f, value));
+        const float s = 0.965f + 0.035f * value;
+        const auto b = c.getBounds().toFloat();
+        c.setTransform (juce::AffineTransform::scale (s, s, b.getCentreX(), b.getCentreY()));
+    }
+    double start = 0.0;
+    float from = 0.0f, value = 0.0f;
+    bool target = false, running = false;
 };
 
 class OniriqueLookAndFeel : public juce::LookAndFeel_V4
@@ -163,7 +220,8 @@ public:
     void tick() override;
 
 private:
-    float on = 1.0f;
+    float on = 1.0f, ripple = 0.0f;   // ripple : onde qui part du bouton quand on l'allume
+    bool was = true;
 };
 
 // Interrupteur : grand (AUTO GAIN, ON/OFF + correction en dB) ou petit (BYPASS avec LED)
@@ -180,7 +238,8 @@ public:
 private:
     Style style;
     juce::String caption;
-    float on = 0.0f;
+    float on = 0.0f, ripple = 0.0f;
+    bool was = true;
 };
 
 // Sélecteur segmenté relié à un paramètre à choix ; la pastille braise glisse vers le choix.
@@ -209,7 +268,7 @@ private:
     juce::StringArray labels, tips;
     std::unique_ptr<juce::ParameterAttachment> attachment;
     int selected = 0, hover = -1;
-    float slide = -1.0f, lockAmt = 0.0f;
+    float slide = -1.0f, slideVel = 0.0f, lockAmt = 0.0f;
     juce::String title, titleTip, lockedText, lockedTip;
     bool locked = false;
 
@@ -342,7 +401,8 @@ public:
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
     // menu de bande : type, pente (coupe-bas / coupe-haut), mode dynamique, allumer / couper, remise à zéro
-    static void showBandMenu (juce::Component& target, juce::AudioProcessorValueTreeState&, int band);
+    // le menu s'ouvre à l'endroit du clic (screenPos), plus jamais au bord de l'analyseur
+    static void showBandMenu (juce::Component& target, juce::AudioProcessorValueTreeState&, int band, juce::Point<int> screenPos);
 
 private:
     static constexpr int kOrder = 13, kN = 1 << kOrder, kPts = 320, kPeq = onirique::ParametricEQ::kBands;
@@ -424,8 +484,8 @@ private:
 class IconButton : public juce::Button, public Animated
 {
 public:
-    enum class Icon { expand, collapse };
-    explicit IconButton (Icon i) : juce::Button ("icon"), icon (i) {}
+    enum class Icon { expand, collapse, headphones };   // headphones : interrupteur (écoute de la bande), braise quand il est allumé
+    explicit IconButton (Icon i) : juce::Button ("icon"), icon (i) { if (i == Icon::headphones) setClickingTogglesState (true); }
     void setText (const juce::String& t) { text = t; repaint(); }
     void paintButton (juce::Graphics&, bool highlighted, bool down) override;
     void tick() override;
@@ -433,7 +493,7 @@ public:
 private:
     Icon icon;
     juce::String text;
-    float glow = 0.0f;
+    float glow = 0.0f, lit = 0.0f;
 };
 
 // EQ paramétrique en plein écran (dans la fenêtre du plugin) : grand analyseur + les 8 bandes réglables d'un coup d'œil.
@@ -446,11 +506,14 @@ public:
     std::function<void (int)> onSelect;
     void selectBand (int b);
     void setShown (bool shown);
+    bool isAnimating() const noexcept { return motion.isAnimating(); }
+    bool isShown() const noexcept { return motion.isShown(); }
 
     void paint (juce::Graphics&) override;
     void resized() override;
     void tick() override;
     bool keyPressed (const juce::KeyPress&) override;
+    void parentHierarchyChanged() override { resized(); }   // l'échelle vient de la fenêtre du plugin : relayout une fois rattachée
 
     SpectrumAnalyzer analyzer;
 
@@ -459,6 +522,9 @@ private:
     IconButton exitButton { IconButton::Icon::collapse };
     PowerButton power;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> powerAtt;
+    IconButton listenButton { IconButton::Icon::headphones };   // écoute de la bande sélectionnée
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> listenAtt;
+    OverlayMotion motion;
     std::array<std::unique_ptr<PeqBandChip>, 8> chips;
     std::array<std::unique_ptr<DragValue>, 8> freqV, gainV, qV, thrV;
     std::array<std::unique_ptr<PillToggle>, 8> dynB;
@@ -466,6 +532,96 @@ private:
     std::vector<Animated*> children;
     juce::Rectangle<float> titleArea, bandsArea;
     int selected = 2;
+};
+
+// Curseur horizontal en pastille (page FX) : nom à gauche, remplissage braise qui glisse jusqu'à la valeur, valeur à
+// droite. Glisser horizontalement (Maj = fin), molette, double-clic = valeur par défaut.
+class PillSlider : public juce::Component, public juce::SettableTooltipClient, public Animated
+{
+public:
+    PillSlider (juce::AudioProcessorValueTreeState&, const char* paramId, const juce::String& name, const juce::String& tooltip);
+    void paint (juce::Graphics&) override;
+    void tick() override;
+    void mouseEnter (const juce::MouseEvent&) override { hovering = true; }
+    void mouseExit (const juce::MouseEvent&) override  { hovering = false; }
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+
+private:
+    juce::RangedAudioParameter* param = nullptr;
+    std::unique_ptr<juce::ParameterAttachment> attachment;
+    juce::String name;
+    float shown = -1.0f, glow = 0.0f, startNorm = 0.0f;
+    bool hovering = false, dragging = false;
+};
+
+// Visuel animé d'une carte de la page FX : voix du chorus, peigne du flanger, échos du delay, rubans de la reverb.
+class FxVisual : public juce::Component, public Animated
+{
+public:
+    enum class Kind { chorus, flanger, delay, reverb };
+    FxVisual (OniriqueVocalBoxAudioProcessor& p, Kind k) : processor (p), kind (k) { setInterceptsMouseClicks (false, false); }
+    void paint (juce::Graphics&) override;
+    void tick() override;
+
+private:
+    float param (const char* id) const { return processor.apvts.getRawParameterValue (id)->load(); }
+    OniriqueVocalBoxAudioProcessor& processor;
+    Kind kind;
+    double phase = 0.0;
+    float on = 0.0f, level = 0.0f;
+};
+
+// Page FX en plein écran (dans la fenêtre du plugin) : CHORUS, FLANGER, DELAY en haut, REVERB en grand dessous.
+class FxView : public juce::Component, public Animated
+{
+public:
+    FxView (OniriqueVocalBoxAudioProcessor&, juce::LookAndFeel&);
+    ~FxView() override;
+    std::function<void()> onClose;
+    void setShown (bool shown);
+    bool isAnimating() const noexcept { return motion.isAnimating(); }
+    bool isShown() const noexcept { return motion.isShown(); }
+
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void tick() override;
+    bool keyPressed (const juce::KeyPress&) override;
+    void parentHierarchyChanged() override { resized(); }   // l'échelle vient de la fenêtre du plugin : relayout une fois rattachée
+
+private:
+    struct Card
+    {
+        juce::String title, subtitle;
+        juce::Rectangle<float> bounds;
+        PowerButton* power = nullptr;
+    };
+    void paintCard (juce::Graphics&, const Card&) const;
+    PillSlider& slider (const char* id, const juce::String& name, const juce::String& tip);
+
+    OniriqueVocalBoxAudioProcessor& processor;
+    OverlayMotion motion;
+    IconButton exitButton { IconButton::Icon::collapse };
+    PowerButton chorusPower, flangerPower, delayPower, reverbPower;
+    std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>> attachments;
+    std::vector<std::unique_ptr<PillSlider>> sliders;
+    FxVisual chorusVis { processor, FxVisual::Kind::chorus }, flangerVis { processor, FxVisual::Kind::flanger },
+             delayVis { processor, FxVisual::Kind::delay }, reverbVis { processor, FxVisual::Kind::reverb };
+    PillToggle delaySync { "SYNC", PillToggle::Style::mini }, delayPing { "PING-PONG", PillToggle::Style::mini };
+    DragValue delayNote;
+    SegmentSelector reverbMode;
+    KnobComponent reverbMix;
+    PillSlider *chorusRate = nullptr, *chorusDepth = nullptr, *chorusMix = nullptr;
+    PillSlider *flangerRate = nullptr, *flangerDepth = nullptr, *flangerFb = nullptr, *flangerMix = nullptr;
+    PillSlider *delayTime = nullptr, *delayFb = nullptr, *delayMix = nullptr, *delayLow = nullptr, *delayHigh = nullptr, *delayDuck = nullptr;
+    PillSlider *revPre = nullptr, *revDecay = nullptr, *revSize = nullptr, *revDiff = nullptr, *revModRate = nullptr, *revModDepth = nullptr;
+    PillSlider *revLow = nullptr, *revHigh = nullptr, *revDuck = nullptr;
+    Card chorusCard, flangerCard, delayCard, reverbCard;
+    juce::Rectangle<float> titleArea;
+    std::vector<Animated*> children;
 };
 
 // Barre de presets (en-tête) : précédent / nom (menu) / suivant + SAVE (champ de nom intégré).
@@ -518,7 +674,7 @@ private:
     juce::StringArray labels;
     std::function<bool (int)> moduleOn;
     int selected = 0;
-    float slide = -1.0f, led[2] {};
+    float slide = -1.0f, slideVel = 0.0f, led[2] {};
 };
 
 // Écran du MULTIBAND : 4 bandes avec niveau d'entrée, seuil (glisser verticalement dans la bande),
@@ -603,8 +759,8 @@ private:
     static constexpr int kN = onirique::kOrderModules;
     float chipW() const noexcept;
     float gapW() const noexcept { return (float) getHeight() * 0.75f; }
-    // place 0 = pastille GATE fixe (le noise gate est toujours en premier), puis les 7 modules déplaçables
-    float slotX (int slot) const noexcept { return (float) (slot + 1) * (chipW() + gapW()); }
+    // places fixes NS (-2) et GATE (-1) au début, FX (kN) à la fin ; les 7 modules déplaçables entre les deux
+    float slotX (int slot) const noexcept { return (float) (slot + 2) * (chipW() + gapW()); }
     int moduleAt (juce::Point<float>) const noexcept;
     std::array<int, kN> previewOrder() const noexcept;
     bool moduleOn (int module) const;
@@ -612,8 +768,8 @@ private:
     juce::AudioProcessorValueTreeState& apvts;
     std::unique_ptr<juce::ParameterAttachment> attachment;
     std::array<int, kN> order { 0, 1, 2, 3, 4, 5, 6 };
-    std::array<float, kN> chipX {}, lit {}, hoverGlow {};
-    float gateLit = 0.0f;
+    std::array<float, kN> chipX {}, chipVel {}, lit {}, hoverGlow {};
+    float gateLit = 0.0f, nsLit = 0.0f, fxLit = 0.0f;
     bool placed = false;
     int dragModule = -1, hoverModule = -1;
     float dragOffset = 0.0f, dragX = 0.0f;
@@ -699,104 +855,19 @@ private:
     int messageFrames = 0;
 };
 
-// Bouton de l'en-tête qui ouvre l'ASSISTANT : pastille braise, étincelle, liseré qui tourne doucement.
-class AiButton : public juce::Button, public Animated
+// Bouton FX de l'en-tête (ouvre la page des effets) : pastille braise, étincelle, liseré qui tourne doucement ;
+// le liseré s'allume quand au moins un effet est actif.
+class FxButton : public juce::Button, public Animated
 {
 public:
-    AiButton() : juce::Button ("AI ASSISTANT") {}
+    FxButton() : juce::Button ("FX") {}
+    void setLit (bool l) { lit = l; }
     void paintButton (juce::Graphics&, bool highlighted, bool down) override;
     void tick() override;
 
 private:
-    float phase = 0.0f, glow = 0.0f;
-};
-
-// ASSISTANT IA : fenêtre (dans le plugin) qui écoute la voix pendant que le morceau joue, l'analyse, puis règle tous
-// les modules (voir Assistant/AssistantEngine.h). Choix du style et de l'intensité, résultats détaillés, APPLIQUER /
-// ANNULER. L'analyse et l'optimisation tournent sur un fil à part : l'interface et l'audio restent fluides.
-class AssistantPanel : public juce::Component, public Animated, private juce::Thread, private juce::AsyncUpdater
-{
-public:
-    explicit AssistantPanel (OniriqueVocalBoxAudioProcessor&);
-    ~AssistantPanel() override;
-    void open();
-    void close();
-   #if ONIRIQUE_UI_TEST
-    void testWithFile (const juce::File&);   // essais locaux : analyse un fichier au lieu d'écouter le DAW
-   #endif
-
-    void paint (juce::Graphics&) override;
-    void resized() override;
-    void tick() override;
-    void mouseMove (const juce::MouseEvent&) override;
-    void mouseExit (const juce::MouseEvent&) override;
-    void mouseDown (const juce::MouseEvent&) override;
-    bool keyPressed (const juce::KeyPress&) override;
-
-private:
-    enum class State { idle, listening, analysing, ready, applied, failed };
-    enum Zone { zNone = -1, zClose = 0, zStyle = 10, zIntensity = 20, zListen = 30, zApply = 31, zUndo = 32, zAnalyseNow = 33, zBackdrop = 40 };
-    static constexpr float kTargetVoiceSec = 12.0f, kMinVoiceSec = 4.0f;
-
-    void run() override;
-    void startListening();
-    void finishListening();
-    void startWork (bool reuseAnalysis);
-    void apply();
-    void undo();
-    float u() const noexcept;
-    juce::Rectangle<float> card() const noexcept;
-    int zoneAt (juce::Point<float>) const;
-    void addZone (int id, juce::Rectangle<float> r) const { zones.push_back ({ id, r }); }
-
-    void paintLeft (juce::Graphics&, juce::Rectangle<float>);
-    void paintRight (juce::Graphics&, juce::Rectangle<float>);
-    void paintListening (juce::Graphics&, juce::Rectangle<float>);
-    void paintProgress (juce::Graphics&, juce::Rectangle<float>);
-    void paintResults (juce::Graphics&, juce::Rectangle<float>);
-    void paintIntro (juce::Graphics&, juce::Rectangle<float>);
-    void paintButtonPill (juce::Graphics&, juce::Rectangle<float>, const juce::String&, bool primary, bool enabled, int zone) const;
-
-    OniriqueVocalBoxAudioProcessor& processor;
-    State state = State::idle;
-    int style = 0, intensity = 1, hover = zNone;
-    mutable std::vector<std::pair<int, juce::Rectangle<float>>> zones;
-
-    // capture de la voix
-    std::vector<float> capture, scratch;
-    double captureFs = 48000.0;
-    float voiceSec = 0.0f, silentSec = 0.0f, levelNow = -100.0f;
-    std::vector<float> levelHist;           // niveau des 0.1 s passées (onde affichée pendant l'écoute)
-    double blockAcc = 0.0; int blockN = 0;
-
-    // travail en arrière-plan
-    juce::CriticalSection lock;
-    float progress = 0.0f, shownProgress = 0.0f;
-    juce::String stage;
-    std::atomic<bool> cancel { false }, workDone { false };
-    bool reuse = false;
-    std::unique_ptr<onirique::assist::Engine> engine;
-    onirique::assist::Analysis analysis;
-    onirique::assist::Proposal proposal;
-    juce::String failure;
-
-    std::map<juce::String, float> undoValues;
-    juce::String undoName;
-    float appear = 0.0f, pulse = 0.0f;       // appear : 0..1 (fondu + flou du fond), animé dans le temps
-    float cardScale = 1.0f, cardShift = 0.0f; // la fenêtre grandit avec un léger rebond et monte un peu à l'ouverture
-    bool closing = false;
-    double animStart = 0.0;
-    juce::Image still;                        // le fond aux couleurs de la charte, dessiné une fois par taille
-    juce::Image cardImage;                    // la fenêtre en image : c'est elle qui grandit et se fond pendant l'animation
-    juce::Rectangle<int> cardImageArea;
-    bool animating() const noexcept { return appear < 0.999f || closing; }
-    void updateAnimation();
-    void paintBackdrop (juce::Graphics&);
-    void paintCard (juce::Graphics&);
-    void cacheCard();
-    void handleAsyncUpdate() override;
-    juce::Rectangle<int> animArea() const;
-    void repaintIdle();
+    float phase = 0.0f, glow = 0.0f, litAmt = 0.0f;
+    bool lit = false;
 };
 
 class OniriqueVocalBoxAudioProcessorEditor : public juce::AudioProcessorEditor,
@@ -826,7 +897,7 @@ private:
     };
 
     void timerCallback() override;
-    float scale() const noexcept { return (float) getWidth() / 2022.0f; }
+    float scale() const noexcept { return (float) getWidth() / 2208.0f; }
     void paintHeader (juce::Graphics&);
     void paintStar (juce::Graphics&, juce::Point<float> c, float r, float alpha);
     // fond et cartes ne bougent pas : dessinés une fois (à la résolution réelle de l'écran) dans deux images,
@@ -954,8 +1025,10 @@ private:
     PeqBandChip peqChip { processor.apvts };
     std::array<std::unique_ptr<DragValue>, 8> peqFreqV, peqGainV, peqQV, peqThrV;   // réglages précis de la bande sélectionnée
     IconButton fullButton { IconButton::Icon::expand };
+    IconButton peqListenButton { IconButton::Icon::headphones };   // écoute de la bande sélectionnée
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> peqListenAtt;
     bool peqDynShown = false;
-    AiButton aiButton;
+    FxButton fxButton;
     PresetBar presetBar { processor.presets };
     ProcessingOrderBar orderBar { processor.apvts };
     // ---- PARALLEL : compression parallèle (1176 écrasé remis dans la voix)
@@ -1007,6 +1080,14 @@ private:
     PowerButton eqPower, resoPower, cardPower, compPower, mbPower, parPower, deessPower, satPower, peqPower, gatePower;
     std::unique_ptr<ButtonAttachment> eqPowerAtt, resoPowerAtt, cardPowerAtt, compPowerAtt, mbPowerAtt, parPowerAtt, deessPowerAtt, satPowerAtt, peqPowerAtt, gatePowerAtt;
 
+    // ---- NOISE SUPPRESSOR (un seul curseur, avant le gate) : plus il monte, plus le bruit de fond descend
+    KnobComponent nsFader { processor.apvts, onirique::ids::nsAmount, "SUPPRESS", "", "", Layout::fader,
+                            "Noise suppressor: raise it to remove the background noise (hiss, room, fans, hum). It keeps the voice "
+                            "untouched and follows the noise by itself, no LEARN needed. MIX: spectral (one frame of latency, compensated); "
+                            "LIVE: zero latency. Double-click to reset.", lnf };
+    GainReductionBar nsGr { [this] { return processor.getSuppressorReductionDb(); },
+                            "How much background noise the suppressor is removing right now (dB).", 30.0f };
+
     // ---- NOISE GATE (premier module)
     GateDisplay gateDisplay { processor };
     KnobComponent gateThrKnob   { processor.apvts, onirique::ids::gateThr,     "THRESHOLD", "-80", "0",  Layout::textBelow,
@@ -1024,8 +1105,9 @@ private:
 
     // EQ paramétrique plein écran et ASSISTANT : par-dessus les modules (et leurs voiles), sous la licence
     EqFullView eqFull { processor };
-    AssistantPanel assistant { processor };
     void showEqFull (bool show);
+    FxView fxView { processor, lnf };
+    void showFx (bool show);
 
 
     std::vector<Animated*> animated;
