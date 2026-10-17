@@ -422,6 +422,83 @@ private:
     bool dragMoved = false;
 };
 
+// Bulle au-dessus du point de la bande sélectionnée : marche / arrêt, fréquence, écoute (casque, maintenir), retirer la
+// bande (x) ; Q (et gain) ; pente des coupes (flèches) ou type de la bande (menu). Pointe vers le point de la bande.
+class BandBubble : public juce::Component, public Animated
+{
+public:
+    BandBubble (juce::AudioProcessorValueTreeState&, std::atomic<bool>& listenHold);
+    void setBand (int b) { if (b != band) { band = b; shownText.clear(); repaint(); } }
+    void setPointsDown (bool down) { if (down != pointsDown) { pointsDown = down; resized(); repaint(); } }
+    std::function<void()> onRemoved;   // bande retirée (x) : le panneau se ferme
+
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void tick() override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseExit (const juce::MouseEvent&) override { hover = -1; repaint(); }
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+
+private:
+    enum Zone { none = -1, power, listen, close, slopeUp, slopeDown, typeMenu };
+    Zone zoneAt (juce::Point<float>) const noexcept;
+    float get (const char* id) const { return apvts.getRawParameterValue (id)->load(); }
+    void set (const char* id, float v);
+
+    juce::AudioProcessorValueTreeState& apvts;
+    std::atomic<bool>& hold;
+    int band = 2, hover = -1;
+    bool pointsDown = true, listening = false, listenWas = false;
+    juce::String shownText;
+    juce::Rectangle<float> box, zPower, zListen, zClose, zUp, zDown, zType;
+};
+
+// Panneau flottant de la bande sélectionnée (en bas de l'analyseur, plein écran) : marche / arrêt, type et pente à gauche ;
+// FREQ, GAIN, Q au centre (le GAIN, plus grand, sous la bosse du panneau) ; bande précédente / suivante, fermer, mode
+// dynamique et son seuil à droite. Une rangée de réglages par bande, seule celle de la bande choisie est visible.
+class BandPanel : public juce::Component, public Animated
+{
+public:
+    BandPanel (juce::AudioProcessorValueTreeState&);
+    ~BandPanel() override;
+    void setBand (int b);
+    void setOpen (bool shouldOpen);
+    bool isOpen() const noexcept { return open; }
+    std::function<void (int)> onBand;     // < >
+    std::function<void()> onClose;        // x
+
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void tick() override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseExit (const juce::MouseEvent&) override { hover = -1; repaint(); }
+    void mouseDown (const juce::MouseEvent&) override;
+    bool hitTest (int x, int y) override { return shape.contains ((float) x, (float) y); }
+
+private:
+    enum Zone { none = -1, prev, next, close, typeMenu };
+    Zone zoneAt (juce::Point<float>) const noexcept;
+    float get (const char* id) const { return apvts.getRawParameterValue (id)->load(); }
+
+    juce::AudioProcessorValueTreeState& apvts;
+    OniriqueLookAndFeel lnf;   // les boutons rotatifs du panneau
+    struct Set
+    {
+        std::unique_ptr<KnobComponent> freq, gain, q;
+        std::unique_ptr<DragValue> thr;
+        PowerButton power;
+        PillToggle dyn { "DYN", PillToggle::Style::mini };
+        std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> powerAtt, dynAtt;
+    };
+    std::array<std::unique_ptr<Set>, 8> sets;
+    int band = 2, hover = -1, shownType = -1, shownSlope = -1;
+    bool open = false;
+    float shown = 0.0f;   // apparition (fondu + léger glissement vers le haut)
+    juce::Path shape;
+    juce::Rectangle<float> body, zPrev, zNext, zClose, zType, gainCentre;
+};
+
 // Analyseur en temps réel + EQ paramétrique : spectres d'entrée et de sortie (FFT 8192, lissage 1/6 d'octave et
 // retombée douce, courbes lissées), courbe EXACTE de l'EQ paramétrique (mêmes filtres que l'audio, gain dynamique en
 // direct) et, en pointillés, la couleur de l'EQ ANALOG. Les points numérotés se tirent à la souris ; clic droit = menu
@@ -430,6 +507,11 @@ class SpectrumAnalyzer : public juce::Component, public juce::TooltipClient, pub
 {
 public:
     SpectrumAnalyzer (OniriqueVocalBoxAudioProcessor&, bool fullScreen = false);
+    ~SpectrumAnalyzer() override;
+
+    // clic dans le vide (pas sur un point) : ferme le panneau de bande
+    std::function<void()> onBackgroundClick;
+    BandBubble bubble;   // au-dessus du point de la bande sélectionnée
 
     // EQ paramétrique : bande sélectionnée (affichée dans la barre de réglage de la carte)
     std::function<void (int)> onSelect;
@@ -460,7 +542,8 @@ private:
 
     struct PointMap { int b0 = 1, b1 = 1; float pos = 1.0f, width = 1.0f; bool interp = true; };
     void buildMap (double fs);
-    void analyse (onirique::SpectrumTap&, std::vector<float>& hist, int& writePos, std::array<float, kPts>& spec);
+    bool analyse (onirique::SpectrumTap&, std::vector<float>& hist, int& writePos, std::array<float, kPts>& spec);   // true : le spectre a bougé
+    int tickCount = 0;
     bool updateCurves (double fs);
     void paintGrid (juce::Graphics&);
     void paintEq (juce::Graphics&);
@@ -504,6 +587,7 @@ private:
     float pendingF = 0.0f, pendingG = 0.0f;
     bool pending = false;
     int qFlashBand = -1, qFlashFrames = 0;   // étiquette "Q x.xx" affichée pendant le réglage à la molette
+    void placeBubble();
 };
 
 // Barre de réglage d'une bande de l'EQ paramétrique : n° + LED (on/off) + type (menu), "DYN" quand elle est dynamique.
@@ -555,6 +639,7 @@ public:
     std::function<void()> onClose;
     std::function<void (int)> onSelect;
     void selectBand (int b);
+    void showBandPanel (int b) { selectBand (b); panel.setOpen (true); }
     void setShown (bool shown);
     bool isAnimating() const noexcept { return motion.isAnimating(); }
     bool isShown() const noexcept { return motion.isShown(); }
@@ -575,12 +660,9 @@ private:
     IconButton listenButton { IconButton::Icon::headphones };   // écoute de la bande sélectionnée
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> listenAtt;
     OverlayMotion motion;
-    std::array<std::unique_ptr<PeqBandChip>, 8> chips;
-    std::array<std::unique_ptr<DragValue>, 8> freqV, gainV, qV, thrV, slopeV;
-    std::array<std::unique_ptr<PillToggle>, 8> dynB;
-    std::array<std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>, 8> dynAtt;
+    BandPanel panel;   // réglages de la bande sélectionnée, flottant en bas de l'analyseur
     std::vector<Animated*> children;
-    juce::Rectangle<float> titleArea, bandsArea;
+    juce::Rectangle<float> titleArea;
     int selected = 2;
 };
 
@@ -1174,6 +1256,7 @@ private:
     juce::Image backdropLayer, cardsLayer;   // vidées au redimensionnement
     float layersScale = 0.0f;
     juce::Rectangle<float> logoRect, signalRect, overRect;
+    juce::Rectangle<float> lastStreak;   // impulsion de la ligne de signal à l'image précédente (zone à effacer)
     std::vector<std::pair<juce::Point<float>, float>> stars;   // position, taille
     double clock = 0.0;
     int overHold = 0, frame = 0;

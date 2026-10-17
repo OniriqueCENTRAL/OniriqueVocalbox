@@ -5,7 +5,7 @@
 #include "Parameters.h"   // ordre de traitement (decodeOrder)
 #include "VocalEQ.h"
 #include "ParametricEQ.h"
-#include "ResonanceSuppressor.h"
+#include "ResoMultirate.h"
 #include "DeEsser.h"
 #include "PlosiveSuppressor.h"
 #include "CompressorModule.h"
@@ -28,12 +28,15 @@ class ModuleSwitch
 public:
     void prepare (double fs, int latencySamples, int maxBlock)
     {
+        latency = latencySamples;
         for (int c = 0; c < 2; ++c)
         {
             delay[c].prepare (latencySamples);
             dry[c].assign ((size_t) maxBlock, 0.0f);
         }
         mix.reset (fs, 0.02);
+        asleep = false;
+        warm = 0;
     }
 
     void set (bool on, bool snap) noexcept
@@ -42,14 +45,38 @@ public:
         else      mix.setTargetValue (on ? 1.0f : 0.0f);
     }
 
-    // simulation hors temps réel (ASSISTANT) : un module coupé n'est pas calculé du tout
-    bool skipWhenOff = false;
-
     template <typename Fn>
     void process (float* const* ch, int numCh, int n, Fn&& runModule) noexcept
     {
-        if (skipWhenOff && ! mix.isSmoothing() && mix.getTargetValue() <= 0.0f)
+        process (ch, numCh, n, std::forward<Fn> (runModule), [] {});
+    }
+
+    // wake : remise à zéro du module quand il est rallumé après avoir dormi
+    template <typename Fn, typename Wake>
+    void process (float* const* ch, int numCh, int n, Fn&& runModule, Wake&& wake) noexcept
+    {
+        // module coupé (fondu terminé) : il n'est pas calculé du tout (avec le suréchantillonnage, un module coupé coûtait
+        // autant qu'un module allumé). Seule sa ligne à retard tourne : la latence et l'alignement ne changent pas.
+        if (! mix.isSmoothing() && mix.getTargetValue() <= 0.0f)
+        {
+            asleep = true;
+            for (int c = 0; c < numCh; ++c)
+                for (int i = 0; i < n; ++i)
+                    ch[c][i] = dry[c][(size_t) i] = delay[c].process (ch[c][i]);
             return;
+        }
+
+        // rallumé : détecteurs remis à zéro, puis le module se remplit du signal actuel (deux fois sa latence) pendant
+        // qu'on garde le signal sec aligné ; le fondu de 20 ms ne commence qu'ensuite (rien de l'ancien signal ne ressort)
+        if (asleep)
+        {
+            asleep = false;
+            wake();
+            warm = 2 * latency + 64;
+            const float t = mix.getTargetValue();
+            mix.setCurrentAndTargetValue (0.0f);
+            mix.setTargetValue (t);
+        }
 
         for (int c = 0; c < numCh; ++c)
             for (int i = 0; i < n; ++i)
@@ -57,11 +84,17 @@ public:
 
         runModule (ch, numCh, n);
 
-        if (! mix.isSmoothing() && mix.getTargetValue() >= 1.0f)
+        if (warm <= 0 && ! mix.isSmoothing() && mix.getTargetValue() >= 1.0f)
             return;
 
         for (int i = 0; i < n; ++i)
         {
+            if (warm > 0)
+            {
+                --warm;
+                for (int c = 0; c < numCh; ++c) ch[c][i] = dry[c][(size_t) i];
+                continue;
+            }
             const float m = mix.getNextValue();
             for (int c = 0; c < numCh; ++c)
                 ch[c][i] = dry[c][(size_t) i] + m * (ch[c][i] - dry[c][(size_t) i]);
@@ -75,6 +108,8 @@ public:
 private:
     std::vector<float> dry[2];
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> mix;
+    int latency = 0, warm = 0;
+    bool asleep = false;
 };
 
 /*  Chaîne complète : INPUT -> NOISE GATE -> EQ PARAMÉTRIQUE -> RESONANCE -> COMPRESSION -> MULTIBAND -> EQ ANALOG -> DE-ESSER
@@ -151,7 +186,7 @@ public:
 
         eq.prepare (fsOS);
         peq.prepare (fsOS);
-        reso.prepare (fsOS, live);
+        reso.prepare (fsOS, live, osFactor, blockOS);
         deEsser.prepare (fsOS, live, osFactor);
         deEsser2.prepare (fsOS, live, osFactor);   // toujours dans la chaîne : la latence ne change pas avec le bouton +
         plosive.prepare (fsOS);
@@ -194,12 +229,6 @@ public:
     }
 
     int getLatencySamples() const noexcept { return latency; }
-
-    // ASSISTANT : chaîne préparée en LIVE (latence nulle) pour une simulation ; les modules coupés ne sont pas calculés
-    void setSimulationMode (bool on) noexcept
-    {
-        for (auto* s : { &eqSw, &peqSw, &resoSw, &compSw, &parSw, &mbSw, &deessSw, &satSw }) s->skipWhenOff = on;
-    }
 
     void setParams (const Params& p, bool snap = false) noexcept
     {
@@ -326,15 +355,17 @@ private:
         gate.process (ch, numCh, n);
         autoGain.analyseReference (ch, numCh, n);
 
-        // 3) montée en cadence : canaux audio + 2 canaux pour l'écoute RESONANCE (redescendus avec le reste)
+        // 3) montée en cadence. Les 2 canaux de l'écoute RESONANCE (ce qu'elle retire) ne montent et ne redescendent
+        //    qu'en écoute ; une piste mono ne fait monter qu'un canal (le suréchantillonnage coûte par canal).
+        const bool listening = listenMix.isSmoothing() || listenMix.getTargetValue() > 0.0f;
         for (int c = 0; c < 2; ++c) std::fill (removed[c], removed[c] + n, 0.0f);
-        if (numCh < 2) std::copy (ch[0], ch[0] + n, monoSpare);
+        if (numCh < 2 && listening) std::copy (ch[0], ch[0] + n, monoSpare);
         float* chans[4] { ch[0], numCh > 1 ? ch[1] : monoSpare, removed[0], removed[1] };
-        juce::dsp::AudioBlock<float> block (chans, 4, (size_t) n);
+        juce::dsp::AudioBlock<float> block (chans, (size_t) (listening ? 4 : numCh), (size_t) n);
         auto up = os->processSamplesUp (block);
         const int nOS = n * osFactor;
-        float* x[2] { up.getChannelPointer (0), up.getChannelPointer (1) };
-        float* rem[2] { up.getChannelPointer (2), up.getChannelPointer (3) };
+        float* x[2] { up.getChannelPointer (0), numCh > 1 || listening ? up.getChannelPointer (1) : nullptr };
+        float* rem[2] { listening ? up.getChannelPointer (2) : nullptr, listening ? up.getChannelPointer (3) : nullptr };
 
         // 4) les 7 modules dans l'ordre choisi (cadence suréchantillonnée)
         for (int k = 0; k < kOrderModules; ++k)
@@ -343,27 +374,28 @@ private:
             {
                 case 0: peqSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { peq.process (s, nc, q); }); break;
                 case 1:
-                    resoSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { reso.process (s, nc, q); });
+                    resoSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { reso.process (s, nc, q); }, [this] { reso.reset(); });
                     // LISTEN : ce que RESONANCE retire = son entrée (alignée) - sa sortie
-                    for (int c = 0; c < numCh; ++c)
+                    if (listening)
+                        for (int c = 0; c < numCh; ++c)
                     {
                         const float* in = resoSw.getDry (c);
                         for (int i = 0; i < nOS; ++i) rem[c][i] = listenDelay[c].process (in[i] - x[c][i]);
                     }
                     break;
                 case 2:   // COMPRESSION puis PARALLEL (la compression parallèle suit la compression dans l'ordre)
-                    compSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { comp.process (s, nc, q); });
-                    parSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { parallel.process (s, nc, q); });
+                    compSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { comp.process (s, nc, q); }, [this] { comp.reset(); });
+                    parSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { parallel.process (s, nc, q); }, [this] { parallel.reset(); });
                     break;
                 case 3:   // MULTIBAND puis son OUTPUT
                     mbSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q)
                     {
                         multiband.process (s, nc, q);
                         for (int i = 0; i < q; ++i) { const float g = mbOutGain.getNextValue(); for (int c = 0; c < nc; ++c) s[c][i] *= g; }
-                    });
+                    }, [this] { multiband.reset(); });
                     break;
                 case 4: eqSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { eq.process (s, nc, q); }); break;   // EQ ANALOG
-                case 5: deessSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { plosive.process (s, nc, q); deEsser.process (s, nc, q); deEsser2.process (s, nc, q); }); break;
+                case 5: deessSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { plosive.process (s, nc, q); deEsser.process (s, nc, q); deEsser2.process (s, nc, q); }, [this] { plosive.reset(); }); break;
                 default: satSw.process (x, numCh, nOS, [this] (float* const* s, int nc, int q) { sat.process (s, nc, q); }); break;
             }
         }
@@ -417,7 +449,7 @@ private:
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> inGain, outGain, wetMix;
     VocalEQ eq;
     ParametricEQ peq;
-    ResonanceSuppressor reso;
+    ResoMultirate reso;   // RESONANCE : analyse à la cadence de l'hôte, même dans la chaîne suréchantillonnée
     CompressorModule comp;
     ParallelComp parallel;
     MultibandOpto multiband;

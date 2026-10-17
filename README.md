@@ -11,6 +11,8 @@ FX (bouton en haut, page plein écran) : CHORUS et FLANGER avec gain match autom
 EQ paramétrique : pente des coupe-bas / coupe-haut au choix (12 à 48 dB/oct), écoute (casque) de la bande tenue au clic, menu de bande ouvert à l'endroit du clic droit.
 MULTIBAND : réglage OUTPUT (-12 à +12 dB). PARALLEL : DE-ESS sur le bus écrasé (même algorithme que le DE-ESSER, AMOUNT + FREQ).
 Pages plein écran (EQ, FX) : ouverture et fermeture à 60 i/s (photos du plugin et de la page mêlées par un calque, boutons gardés en image).
+EQ paramétrique : bulle au-dessus du point de la bande choisie (marche, fréquence, Q / gain, pente, écoute, retirer) et, en plein écran, panneau flottant de la bande (type, pente, FREQ / GAIN / Q, bandes, DYN + seuil).
+Performances : un module coupé n'est plus calculé (sa ligne à retard garde l'alignement ; au rallumage, remise à zéro + remplissage avant le fondu) ; RESONANCE analyse à la cadence de l'hôte même suréchantillonnée (ResoMultirate : demi-bandes polyphase) et ne calcule plus que les bins utiles (identique au bit près) ; analyseur à 30 i/s et rien de redessiné à l'arrêt ; en-tête : seule la zone de l'impulsion est redessinée. Mesures (1 instance, session type) : 2x 10.4 -> 7.2 %, 4x 21.6 -> 11.0 %, 8x 44.3 -> 18.5 % d'un coeur ; interface au repos 39 -> 23 %.
 
 ## Générer le .vst3 (Windows)
 Prérequis : Visual Studio Build Tools 2022 (charge C++), CMake, Git.
@@ -66,6 +68,7 @@ Presets utilisateur sur Mac : ~/Library/Onirique/VocalBox/Presets.
 - Source/DSP/CompressorModule.h : solo / duo, ordre inversable en fondu (paire clonée, sans saut)
 - Source/DSP/MultibandOpto.h : multibande opto 4 bandes (Linkwitz-Riley, somme plate), compression crémeuse pour la voix
 - Source/MultibandPresets.h  : presets internes du multibande (Vocal Smooth, De-Harsh, Air Control...)
+- Source/DSP/ResoMultirate.h : RESONANCE à la cadence de l hôte dans la chaîne suréchantillonnée (descente / remontée demi-bande)
 - Source/DSP/ResonanceSuppressor.h : suppression dynamique des résonances (STFT en MIX ; en LIVE, 28 cloches dynamiques pilotées par l'analyse, latence nulle), écoute LISTEN, mesure pour l'afficheur
 - Source/DSP/PlosiveSuppressor.h : détection intelligente des plosives (bouffée grave qui domine le médium), shelf grave dynamique, latence nulle
 - Source/DSP/DeEsser.h       : de-esser dynamique 2 bandes + anticipation ; la 2e bande = SMART S du HIGH (activable)

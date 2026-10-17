@@ -128,6 +128,19 @@ public:
             bandHi[(size_t) b] = juce::jlimit (0, nb - 1, z);
         }
 
+        // zone utile : rien n'est réduit au-dessus de 20 kHz ; au-delà de la fenêtre d'analyse de ce dernier bin, le spectre
+        // ne sert plus à rien. Suréchantillonnée (x2..x8), la chaîne donne 2 à 8 fois plus de bins, presque tous vides :
+        // ils ne sont plus calculés (le résultat est identique, la RESONANCE coûtait autant que tout le reste réuni).
+        {
+            // deux moyennes glissantes à la suite (enveloppe puis enveloppe des crêtes écrêtées) : deux fenêtres de marge
+            const int kr = juce::jlimit (0, nb - 1, (int) std::ceil (std::ceil (kHi * r) * r) + 1);
+            int top = kr + maxHalf[(size_t) kr] + 2;
+            for (int b = 0; b < kBands; ++b) top = std::max (top, bandHi[(size_t) b]);
+            nu = juce::jlimit (8, nb, top + 1);
+            for (int k = 0; k < nu; ++k) winHi[(size_t) k] = std::min (winHi[(size_t) k], nu - 1);
+            dq.assign ((size_t) nu, 0);
+        }
+
         const double hopSec = (double) hop / fs;
         atk = (float) (1.0 - std::exp (-hopSec / 0.005));
         rel = (float) (1.0 - std::exp (-hopSec / 0.080));
@@ -261,8 +274,8 @@ private:
     void boxMean (const std::vector<float>& src, std::vector<float>& dst) noexcept
     {
         prefix[0] = 0.0;
-        for (int k = 0; k < nb; ++k) prefix[(size_t) k + 1] = prefix[(size_t) k] + src[(size_t) k];
-        for (int k = 0; k < nb; ++k)
+        for (int k = 0; k < nu; ++k) prefix[(size_t) k + 1] = prefix[(size_t) k] + src[(size_t) k];
+        for (int k = 0; k < nu; ++k)
         {
             const int a = winLo[(size_t) k], z = winHi[(size_t) k];
             dst[(size_t) k] = (float) ((prefix[(size_t) z + 1] - prefix[(size_t) a]) / (z - a + 1));
@@ -284,7 +297,7 @@ private:
         }
 
         const float invCh = 1.0f / (float) numCh;
-        for (int k = 0; k < nb; ++k)
+        for (int k = 0; k < nu; ++k)
         {
             float p = 0.0f;
             for (int c = 0; c < numCh; ++c)
@@ -297,21 +310,29 @@ private:
 
         // ---- enveloppe des crêtes (maximum glissant : elle passe par le sommet des harmoniques),
         //      puis moyenne robuste -> niveau "normal" des crêtes voisines ; excès -> réduction
-        for (int k = 0; k < nb; ++k)
+        //      maximum glissant en une passe (file monotone) : les deux bords de la fenêtre ne font qu'avancer
         {
-            const int h = maxHalf[(size_t) k];
-            const int a = std::max (0, k - h), z = std::min (nb - 1, k + h);
-            float m = db[(size_t) a];
-            for (int j = a + 1; j <= z; ++j) m = std::max (m, db[(size_t) j]);
-            peak[(size_t) k] = m;
+            int head = 0, tail = 0, next = 0;
+            for (int k = 0; k < nu; ++k)
+            {
+                const int h = maxHalf[(size_t) k];
+                const int a = std::max (0, k - h), z = std::min (nu - 1, k + h);
+                for (; next <= z; ++next)
+                {
+                    while (tail > head && db[(size_t) dq[(size_t) tail - 1]] <= db[(size_t) next]) --tail;
+                    dq[(size_t) tail++] = next;
+                }
+                while (dq[(size_t) head] < a) ++head;
+                peak[(size_t) k] = db[(size_t) dq[(size_t) head]];
+            }
         }
 
         boxMean (peak, env);
-        for (int k = 0; k < nb; ++k)
+        for (int k = 0; k < nu; ++k)
             clipped[(size_t) k] = std::min (peak[(size_t) k], env[(size_t) k] + 2.0f);
         boxMean (clipped, env);
 
-        for (int k = 0; k < nb; ++k)
+        for (int k = 0; k < nu; ++k)
         {
             float t = 0.0f;
             if (amount > 0.0f && k >= kLo && k <= kHi && db[(size_t) k] > -80.0f)
@@ -324,8 +345,8 @@ private:
         }
 
         tmp[0] = target[0];
-        tmp[(size_t) nb - 1] = target[(size_t) nb - 1];
-        for (int k = 1; k < nb - 1; ++k)
+        tmp[(size_t) nu - 1] = target[(size_t) nu - 1];
+        for (int k = 1; k < nu - 1; ++k)
             tmp[(size_t) k] = 0.25f * target[(size_t) k - 1] + 0.5f * target[(size_t) k] + 0.25f * target[(size_t) k + 1];
         target.swap (tmp);
 
@@ -334,7 +355,7 @@ private:
         {
             // mode LIVE : la réduction de chaque cloche = la plus forte réduction dans sa zone
             const double df = fs / N;
-            for (int k = 0; k < nb; ++k)
+            for (int k = 0; k < nu; ++k)
             {
                 float& r = red[(size_t) k];
                 const float t = target[(size_t) k];
@@ -343,15 +364,15 @@ private:
             const double half = std::pow (16000.0 / 100.0, 0.5 / (kDyn - 1));
             for (int j = 0; j < kDyn; ++j)
             {
-                const int a = juce::jlimit (0, nb - 1, (int) std::floor (dynHz[(size_t) j] / half / df));
-                const int z = juce::jlimit (a, nb - 1, (int) std::ceil (dynHz[(size_t) j] * half / df));
+                const int a = juce::jlimit (0, nu - 1, (int) std::floor (dynHz[(size_t) j] / half / df));
+                const int z = juce::jlimit (a, nu - 1, (int) std::ceil (dynHz[(size_t) j] * half / df));
                 float mx = 0.0f;
                 for (int k = a; k <= z; ++k) mx = std::max (mx, red[(size_t) k]);
                 dynTarget[(size_t) j] = mx;
             }
         }
 
-        for (int k = 0; k < nb && ! live; ++k)
+        for (int k = 0; k < nu && ! live; ++k)   // au-dessus de la zone utile : aucune réduction (gain 1)
         {
             float& r = red[(size_t) k];
             const float t = target[(size_t) k];
@@ -388,7 +409,8 @@ private:
     }
 
     double fs = 44100.0;
-    int N = 2048, mask = 2047, hop = 512, nb = 1025, pos = 0, hopCount = 0, kLo = 1, kHi = 1;
+    int N = 2048, mask = 2047, hop = 512, nb = 1025, nu = 1025, pos = 0, hopCount = 0, kLo = 1, kHi = 1;   // nu : bins utiles
+    std::vector<int> dq;   // file du maximum glissant
     std::unique_ptr<juce::dsp::FFT> fft;
     std::vector<float> window, inBuf[2], outBuf[2], spec[2];
     std::vector<float> db, peak, env, clipped, target, tmp, red, weight;

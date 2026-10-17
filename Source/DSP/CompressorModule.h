@@ -38,6 +38,9 @@ public:
         fading = false;
     }
 
+    // remise à zéro des détecteurs (module rallumé après avoir dormi : pas de réduction gardée d'un ancien passage)
+    void reset() noexcept { for (auto& p : pairs) { p.fet.reset(); p.opto.reset(); } }
+
     void setMode (int mode, int optoFirst, bool snap) noexcept
     {
         mode = juce::jlimit (0, 2, mode);
