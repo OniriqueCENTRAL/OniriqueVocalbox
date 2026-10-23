@@ -525,6 +525,8 @@ public:
     // clic dans le vide (pas sur un point) : ferme le panneau de bande
     std::function<void()> onBackgroundClick;
     BandBubble bubble;   // au-dessus du point de la bande sélectionnée
+    // clic dans le vide (ici ou ailleurs dans le plugin) : la bulle se ferme ; elle revient dès qu'on choisit une bande
+    void closeBubble() noexcept { bubbleClosed = true; }
 
     // EQ paramétrique : bande sélectionnée (affichée dans la barre de réglage de la carte)
     std::function<void (int)> onSelect;
@@ -600,6 +602,7 @@ private:
     bool pending = false;
     int qFlashBand = -1, qFlashFrames = 0;   // étiquette "Q x.xx" affichée pendant le réglage à la molette
     void placeBubble();
+    bool bubbleClosed = false;
 };
 
 // Barre de réglage d'une bande de l'EQ paramétrique : n° + LED (on/off) + type (menu), "DYN" quand elle est dynamique.
@@ -659,6 +662,7 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
     void tick() override;
+    void mouseDown (const juce::MouseEvent&) override { analyzer.closeBubble(); }   // clic dans le vide : la bulle se ferme
     bool keyPressed (const juce::KeyPress&) override;
     void parentHierarchyChanged() override { resized(); }   // l'échelle vient de la fenêtre du plugin : relayout une fois rattachée
 
@@ -678,30 +682,6 @@ private:
     int selected = 2;
 };
 
-// Curseur horizontal en pastille (page FX) : nom à gauche, remplissage braise qui glisse jusqu'à la valeur, valeur à
-// droite. Glisser horizontalement (Maj = fin), molette, double-clic = valeur par défaut.
-class PillSlider : public juce::Component, public juce::SettableTooltipClient, public Animated
-{
-public:
-    PillSlider (juce::AudioProcessorValueTreeState&, const char* paramId, const juce::String& name, const juce::String& tooltip);
-    void paint (juce::Graphics&) override;
-    void tick() override;
-    void mouseEnter (const juce::MouseEvent&) override { hovering = true; }
-    void mouseExit (const juce::MouseEvent&) override  { hovering = false; }
-    void mouseDown (const juce::MouseEvent&) override;
-    void mouseDrag (const juce::MouseEvent&) override;
-    void mouseUp (const juce::MouseEvent&) override;
-    void mouseDoubleClick (const juce::MouseEvent&) override;
-    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
-
-private:
-    juce::RangedAudioParameter* param = nullptr;
-    std::unique_ptr<juce::ParameterAttachment> attachment;
-    juce::String name;
-    float shown = -1.0f, glow = 0.0f, startNorm = 0.0f;
-    bool hovering = false, dragging = false;
-};
-
 // Visuel animé d'une carte de la page FX : voix du chorus, peigne du flanger, échos du delay, rubans de la reverb.
 class FxVisual : public juce::Component, public Animated
 {
@@ -717,9 +697,13 @@ private:
     Kind kind;
     double phase = 0.0;
     float on = 0.0f, level = 0.0f;
+    juce::Image backdrop;   // DELAY : le décor fixe, dessiné une fois (à la taille réelle en pixels)
 };
 
-// Page FX en plein écran (dans la fenêtre du plugin) : CHORUS, FLANGER, DELAY en haut, REVERB en grand dessous.
+// Page FX en plein écran (dans la fenêtre du plugin), dans l'esprit de VOCAL MINI : trois bandes, titre à gauche, potards.
+//   FX     : DOUBLER | PHONE | CHORUS | FLANGER (chaque effet : sa pastille marche / arrêt à son nom, ses potards dessous)
+//   DELAY  : écho animé | SYNC, NOTE ou TIME, PING-PONG | FEEDBACK, SEND, LOW CUT, HIGH CUT, DUCKING
+//   REVERB : espaces | rubans animés | deux rangées de potards (SEND en tête)
 class FxView : public juce::Component, public Animated
 {
 public:
@@ -737,35 +721,41 @@ public:
     void parentHierarchyChanged() override { resized(); }   // l'échelle vient de la fenêtre du plugin : relayout une fois rattachée
 
 private:
-    struct Card
+    struct Band
     {
         juce::String title, subtitle;
         juce::Rectangle<float> bounds;
-        PowerButton* power = nullptr;
+        std::function<bool()> lit;   // un des effets de la bande tourne : le témoin du titre s'allume
     };
-    void paintCard (juce::Graphics&, const Card&) const;
-    PillSlider& slider (const char* id, const juce::String& name, const juce::String& tip);
+    void paintBand (juce::Graphics&, const Band&) const;
+    KnobComponent& knob (const char* id, const juce::String& name, const juce::String& tip, bool bipolar = false);
+    PillToggle& toggle (PillToggle&, const char* id, const juce::String& tip);
+    bool on (const char* id) const { return processor.apvts.getRawParameterValue (id)->load() > 0.5f; }
 
     OniriqueVocalBoxAudioProcessor& processor;
+    juce::LookAndFeel& lnf;
     OverlayMotion motion;
     IconButton exitButton { IconButton::Icon::collapse };
-    PowerButton chorusPower, flangerPower, delayPower, reverbPower, doublerPower, phonePower;
     std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>> attachments;
-    std::vector<std::unique_ptr<PillSlider>> sliders;
-    FxVisual chorusVis { processor, FxVisual::Kind::chorus }, flangerVis { processor, FxVisual::Kind::flanger },
-             delayVis { processor, FxVisual::Kind::delay }, reverbVis { processor, FxVisual::Kind::reverb },
-             doublerVis { processor, FxVisual::Kind::doubler }, phoneVis { processor, FxVisual::Kind::phone };
+    std::vector<std::unique_ptr<KnobComponent>> knobs;
+    PillToggle doublerOn { "DOUBLER", PillToggle::Style::mini }, phoneOn { "PHONE", PillToggle::Style::mini },
+               chorusOn { "CHORUS", PillToggle::Style::mini }, flangerOn { "FLANGER", PillToggle::Style::mini },
+               delayOn { "DELAY", PillToggle::Style::mini }, reverbOn { "REVERB", PillToggle::Style::mini };
+    FxVisual delayVis { processor, FxVisual::Kind::delay }, reverbVis { processor, FxVisual::Kind::reverb };
     PillToggle delaySync { "SYNC", PillToggle::Style::mini }, delayPing { "PING-PONG", PillToggle::Style::mini };
-    DragValue delayNote;
+    DragValue delayNote, delayTime;
     SegmentSelector reverbMode;
     KnobComponent reverbMix;
-    PillSlider *chorusRate = nullptr, *chorusDepth = nullptr, *chorusMix = nullptr;
-    PillSlider *flangerRate = nullptr, *flangerDepth = nullptr, *flangerFb = nullptr, *flangerMix = nullptr;
-    PillSlider *delayTime = nullptr, *delayFb = nullptr, *delayMix = nullptr, *delayLow = nullptr, *delayHigh = nullptr, *delayDuck = nullptr;
-    PillSlider *revPre = nullptr, *revDecay = nullptr, *revSize = nullptr, *revDiff = nullptr, *revModRate = nullptr, *revModDepth = nullptr;
-    PillSlider *revLow = nullptr, *revHigh = nullptr, *revDuck = nullptr, *revWidth = nullptr, *revClean = nullptr;
-    PillSlider *doublerAmt = nullptr, *phoneAmt = nullptr;
-    Card chorusCard, flangerCard, delayCard, reverbCard, doublerCard, phoneCard;
+    KnobComponent *doublerAmt = nullptr, *phoneAmt = nullptr;
+    KnobComponent *chorusRate = nullptr, *chorusDepth = nullptr, *chorusMix = nullptr;
+    KnobComponent *flangerRate = nullptr, *flangerDepth = nullptr, *flangerFb = nullptr, *flangerMix = nullptr;
+    KnobComponent *delayFb = nullptr, *delayMix = nullptr, *delayLow = nullptr, *delayHigh = nullptr, *delayDuck = nullptr;
+    KnobComponent *revPre = nullptr, *revDecay = nullptr, *revSize = nullptr, *revDiff = nullptr, *revModRate = nullptr, *revModDepth = nullptr;
+    KnobComponent *revLow = nullptr, *revHigh = nullptr, *revDuck = nullptr, *revWidth = nullptr, *revClean = nullptr;
+    Band fxBand, delayBand, reverbBand;
+    std::vector<juce::Rectangle<float>> dividers;   // filets verticaux entre les effets d'une bande
+    static constexpr float kTitleW = 210.0f;          // largeur du bloc de titre d'une bande (unités de la fenêtre)
+    bool litShown[3] {};
     juce::Rectangle<float> titleArea;
     std::vector<Animated*> children;
 };
@@ -1026,6 +1016,7 @@ public:
     void paint (juce::Graphics&) override;
     void paintVeils (juce::Graphics&);   // voiles des modules coupés, dessinés par la couche "veils"
     void resized() override;
+    void mouseDown (const juce::MouseEvent&) override;   // clic dans le vide : la bulle de la bande de l'EQ se ferme
 
 private:
     using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;

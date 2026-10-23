@@ -329,6 +329,7 @@ public:
     float getSuppressorReductionDb() const noexcept { return suppressor.getReductionDb(); }
     float getSuppressorFloorDb() const noexcept { return suppressor.getNoiseFloorDb(); }
     float getReverbTail() const noexcept { return fxRack.getReverbTail(); }
+    const mini::VoiceReverb& getReverbEngine() const noexcept { return fxRack.getReverbEngine(); }
     float getParallelDeEssDb() const noexcept { return parallel.getDeEssReductionDb(); }
 
     // mètres (crête linéaire par canal depuis la dernière lecture) : lus et remis à zéro par l'interface

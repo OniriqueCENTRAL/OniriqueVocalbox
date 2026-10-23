@@ -2,111 +2,10 @@
 
 using namespace onirique;
 
-/*  Page FX : les effets de voix (fin de chaîne), en plein écran dans la fenêtre du plugin.
-    CHORUS, FLANGER et DELAY en haut, la REVERB en grand dessous (modes, visuel, MIX au centre, réglages de part et
-    d'autre, coupe-bas / DUCKING / coupe-haut en bas). Rien n'est caché : chaque réglage est sous la main.
+/*  Page FX : les effets de voix (fin de chaîne), en plein écran dans la fenêtre du plugin, dans l'esprit des rangées de
+    VOCAL MINI : trois bandes (FX, DELAY, REVERB), le titre à gauche, des potards. Rien n'est caché : chaque réglage est
+    sous la main.
 */
-
-//==============================================================================
-PillSlider::PillSlider (juce::AudioProcessorValueTreeState& apvts, const char* paramId, const juce::String& n, const juce::String& tip)
-    : name (n)
-{
-    setTooltip (tip);
-    setMouseCursor (juce::MouseCursor::LeftRightResizeCursor);
-    param = apvts.getParameter (paramId);
-    if (param != nullptr)
-    {
-        attachment = std::make_unique<juce::ParameterAttachment> (*param, [this] (float) { repaint(); });
-        attachment->sendInitialUpdate();
-    }
-}
-
-void PillSlider::tick()
-{
-    if (param == nullptr) return;
-    const float target = param->getValue();
-    bool changed = false;
-    if (shown < 0.0f) { shown = target; changed = true; }
-    changed |= ui::approach (shown, target, 0.3f);
-    changed |= ui::approach (glow, dragging ? 1.0f : (hovering ? 0.6f : 0.0f), 0.18f);
-    if (changed) repaint();
-}
-
-void PillSlider::mouseDown (const juce::MouseEvent&)
-{
-    if (param == nullptr) return;
-    dragging = true;
-    startNorm = param->getValue();
-    attachment->beginGesture();
-}
-
-void PillSlider::mouseDrag (const juce::MouseEvent& e)
-{
-    if (param == nullptr) return;
-    const float range = (float) getWidth() * (e.mods.isShiftDown() ? 4.0f : 1.0f);   // Maj = réglage fin
-    const float norm = juce::jlimit (0.0f, 1.0f, startNorm + (float) e.getDistanceFromDragStartX() / std::max (1.0f, range));
-    attachment->setValueAsPartOfGesture (param->convertFrom0to1 (norm));
-}
-
-void PillSlider::mouseUp (const juce::MouseEvent&)
-{
-    if (param == nullptr) return;
-    dragging = false;
-    attachment->endGesture();
-}
-
-void PillSlider::mouseDoubleClick (const juce::MouseEvent&)
-{
-    if (param != nullptr) attachment->setValueAsCompleteGesture (param->convertFrom0to1 (param->getDefaultValue()));
-}
-
-void PillSlider::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
-{
-    if (param == nullptr) return;
-    const float d = std::abs (w.deltaY) > std::abs (w.deltaX) ? w.deltaY : -w.deltaX;
-    const float norm = juce::jlimit (0.0f, 1.0f, param->getValue() + d * (e.mods.isShiftDown() ? 0.01f : 0.05f));
-    attachment->setValueAsCompleteGesture (param->convertFrom0to1 (norm));
-}
-
-void PillSlider::paint (juce::Graphics& g)
-{
-    if (param == nullptr) return;
-    const auto r = getLocalBounds().toFloat().reduced (1.0f);
-    const float h = r.getHeight(), u = h / 36.0f, rad = h * 0.5f;
-    juce::Path shape;
-    shape.addRoundedRectangle (r, rad);
-    ui::strokeGlow (g, shape, ui::ember, 1.0f * u, 0.5f * glow);
-    g.setColour (juce::Colours::black.withAlpha (0.38f));
-    g.fillPath (shape);
-
-    // remplissage jusqu'à la valeur : dégradé sang -> braise, reflet clair en haut, trait lumineux au bout
-    const float v = juce::jlimit (0.0f, 1.0f, shown < 0.0f ? param->getValue() : shown);
-    if (v > 0.001f)
-    {
-        juce::Graphics::ScopedSaveState ss (g);
-        g.reduceClipRegion (shape);
-        const auto fill = r.withWidth (std::max (h * 0.5f, r.getWidth() * v));
-        g.setGradientFill (juce::ColourGradient (ui::blood.withAlpha (0.85f), fill.getX(), 0.0f, ui::ember.withAlpha (0.55f + 0.25f * glow), fill.getRight(), 0.0f, false));
-        g.fillRect (fill);
-        g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.10f), 0.0f, fill.getY(), juce::Colours::white.withAlpha (0.0f), 0.0f, fill.getCentreY(), false));
-        g.fillRect (fill);
-        g.setColour (ui::bone.withAlpha (0.75f + 0.25f * glow));
-        g.fillRect (juce::Rectangle<float> (fill.getRight() - 2.0f * u, fill.getY() + h * 0.22f, 2.0f * u, h * 0.56f));
-    }
-    g.setColour (ui::line.interpolatedWith (ui::ember, 0.15f + 0.6f * glow));
-    g.strokePath (shape, juce::PathStrokeType (std::max (1.0f, 1.1f * u)));
-
-    auto tr = r.reduced (h * 0.42f, 0.0f);
-    const auto vf = ui::font (ui::Face::mono, h * 0.40f, true);
-    const juce::String val = param->getCurrentValueAsText();
-    const float vw = ui::textWidth (vf, val) + 6.0f * u;
-    g.setColour (ui::mist);
-    g.setFont (vf);
-    g.drawText (val, tr.removeFromRight (vw), juce::Justification::centredRight, false);
-    g.setColour (ui::bone.withAlpha (0.88f));
-    g.setFont (ui::fitFont (ui::Face::body, h * 0.36f, tr.getWidth() - 4.0f * u, name, true, 0.12f));
-    g.drawText (name, tr, juce::Justification::centredLeft, false);
-}
 
 //==============================================================================
 void FxVisual::tick()
@@ -184,25 +83,89 @@ void FxVisual::paint (juce::Graphics& g)
     }
     else if (kind == Kind::delay)
     {
-        // échos : une barre par répétition, à sa place dans le temps (2 s sur la largeur), qui s'éteint avec la réinjection
+        // couloir en perspective : un sol quadrillé qui file vers l'horizon, chaque écho y est une onde lumineuse posée à
+        // sa distance (2 s jusqu'à l'horizon), plus petite et plus pâle à chaque répétition (FEEDBACK). En PING-PONG les
+        // échos alternent à gauche et à droite. Une impulsion part de devant et allume chaque écho en passant.
+        // Le décor fixe (lueur, halo, lignes de fuite) est dessiné une fois dans une image ; à chaque image, seuls les
+        // traverses, les ondes et les faisceaux (un seul dégradé pour tous) sont redessinés.
         const bool sync = param (ids::delaySync) > 0.5f, ping = param (ids::delayPingPong) > 0.5f;
-        const float timeS = sync ? (float) (60.0 / 120.0 * delayNoteBeats (juce::roundToInt (param (ids::delayNote)))) : param (ids::delayTime) * 0.001f;
+        const float timeS = std::max (0.03f, sync ? (float) (60.0 / 120.0 * delayNoteBeats (juce::roundToInt (param (ids::delayNote))))
+                                                  : param (ids::delayTime) * 0.001f);
         const float fb = param (ids::delayFeedback) * 0.01f;
-        const float pulse = (float) std::fmod (phase * 0.6, 1.0);
+        const float bright = juce::jlimit (0.0f, 1.0f, (param (ids::delayHighCut) - 2000.0f) / 14000.0f);   // HIGH CUT : échos plus clairs
+        const float cx = r.getCentreX(), horizon = r.getY() + r.getHeight() * 0.16f, floorY = r.getBottom() - 4.0f * u;
+        const float halfW = r.getWidth() * 0.62f;
+        auto depth = [] (float z) { return 1.0f / (1.0f + 5.0f * z); };            // échelle à la distance z (0 devant, 1 au fond)
+        auto at = [&] (float lateral, float z) { const float s = depth (z); return juce::Point<float> (cx + lateral * halfW * s, horizon + (floorY - horizon) * s); };
+
+        {
+            const float ps = juce::jmax (1.0f, g.getInternalContext().getPhysicalPixelScaleFactor());
+            const int w = juce::jmax (1, juce::roundToInt (r.getWidth() * ps)), h = juce::jmax (1, juce::roundToInt (r.getHeight() * ps));
+            if (! backdrop.isValid() || backdrop.getWidth() != w || backdrop.getHeight() != h)
+            {
+                backdrop = juce::Image (juce::Image::ARGB, w, h, true);
+                juce::Graphics bg (backdrop);
+                bg.addTransform (juce::AffineTransform::translation (-r.getX(), -r.getY()).scaled (ps));
+                juce::ColourGradient sky (ui::blood.withAlpha (0.10f), cx, r.getY(), ui::blood.withAlpha (0.18f), cx, r.getBottom(), false);
+                sky.addColour ((horizon - r.getY()) / r.getHeight(), ui::ember.withAlpha (0.20f));
+                bg.setGradientFill (sky);
+                bg.fillRect (r);
+                bg.setGradientFill (juce::ColourGradient (ui::ember.withAlpha (0.22f), cx, horizon, ui::ember.withAlpha (0.0f), cx + r.getWidth() * 0.45f, horizon, true));
+                bg.fillRect (r);
+                for (int i = -4; i <= 4; ++i)
+                {
+                    const float lat = (float) i / 4.0f;
+                    bg.setColour (ui::ember.withAlpha (0.05f + 0.07f * (1.0f - std::abs (lat))));
+                    bg.drawLine (juce::Line<float> (at (lat, 0.0f), at (lat, 1.0f)), std::max (1.0f, 0.8f * u));
+                }
+            }
+            g.setOpacity (a);
+            g.drawImage (backdrop, r, juce::RectanglePlacement::stretchToFit);
+            g.setOpacity (1.0f);
+        }
+        // les traverses avancent doucement vers nous
+        const float scroll = (float) std::fmod (phase * 0.35, 1.0);
+        for (int j = 0; j < 10; ++j)
+        {
+            const float z = std::fmod (((float) j + 1.0f - scroll) / 10.0f, 1.0f);
+            const auto l = at (-1.0f, z), rr = at (1.0f, z);
+            g.setColour (ui::ember.withAlpha (a * 0.12f * (1.0f - z)));
+            g.drawLine (l.x, l.y, rr.x, rr.y, std::max (1.0f, 0.8f * u));
+        }
+
+        // les échos, du plus lointain au plus proche (les proches passent devant)
+        const float travel = (float) std::fmod (phase * 0.5, 1.0) * 2.0f;          // l'impulsion : 0..2 s
+        struct Echo { float z, amp, lat; int k; };
+        Echo echoes[24];
+        int count = 0;
         float amp = 1.0f;
         for (int k = 0; k < 24 && amp > 0.03f; ++k)
         {
-            const float x = r.getX() + 8.0f * u + (r.getWidth() - 16.0f * u) * std::min (1.0f, timeS * (float) k / 2.0f);
-            if (x > r.getRight() - 4.0f * u) break;
-            const float hgt = (r.getHeight() - 12.0f * u) * amp;
-            const bool right = ping && (k & 1);
-            const auto bar = juce::Rectangle<float> (x - 2.5f * u, right ? r.getY() + 6.0f * u : r.getBottom() - 6.0f * u - hgt * (ping ? 0.5f : 1.0f),
-                                                     5.0f * u, hgt * (ping ? 0.5f : 1.0f));
-            const float lit = std::exp (-12.0f * std::abs (pulse * 2.0f / std::max (0.05f, timeS) - (float) k) / 8.0f);
-            g.setColour ((k == 0 ? ui::bone : ui::ember).withAlpha (a * (0.45f + 0.55f * lit)));
-            g.fillRoundedRectangle (bar, 2.5f * u);
+            const float t = timeS * (float) k;
+            if (t > 2.0f) break;
+            echoes[count++] = { 0.10f + 0.90f * t / 2.0f, amp, ping && k > 0 ? ((k & 1) ? -0.45f : 0.45f) : 0.0f, k };
             amp = k == 0 ? 0.85f : amp * fb;
         }
+        juce::Path beams;   // tous les faisceaux : un seul dégradé, du sol vers l'horizon
+        for (int i = count - 1; i >= 0; --i)
+        {
+            const auto& e = echoes[i];
+            const float s = depth (e.z);
+            const auto c = at (e.lat, e.z);
+            const float lit = std::exp (-std::abs (travel - e.z * 2.0f) * 9.0f);   // l'impulsion passe sur cet écho
+            const float alpha = a * e.amp * (0.45f + 0.55f * lit);
+            const float rw = halfW * 0.20f * s * (0.6f + 0.4f * e.amp), rh = rw * 0.28f;
+            const auto col = (e.k == 0 ? ui::bone : ui::ember.interpolatedWith (ui::lilac, 0.5f * bright));
+            g.setColour (col.withAlpha (alpha * 0.18f));
+            g.fillEllipse (juce::Rectangle<float> (rw * 2.6f, rh * 2.6f).withCentre (c));
+            g.setColour (col.withAlpha (alpha));
+            g.drawEllipse (juce::Rectangle<float> (rw * 2.0f, rh * 2.0f).withCentre (c), std::max (1.0f, 2.2f * u * s + 0.6f * u));
+            const float beamH = (floorY - horizon) * 0.95f * s * e.amp;
+            beams.addRectangle (juce::Rectangle<float> (std::max (1.5f * u, 4.0f * u * s), beamH).withCentre ({ c.x, c.y - beamH * 0.5f }));
+        }
+        g.setGradientFill (juce::ColourGradient (ui::ember.interpolatedWith (ui::lilac, 0.4f).withAlpha (0.75f * a), cx, floorY,
+                                                 ui::ember.withAlpha (0.0f), cx, horizon, false));
+        g.fillPath (beams);
     }
     else if (kind == Kind::doubler)
     {
@@ -255,45 +218,72 @@ void FxVisual::paint (juce::Graphics& g)
     }
     else
     {
-        // rubans de la reverb : leur ampleur suit la queue réelle (et l'allure : la taille, la décroissance, le mode)
-        const float size = param (ids::reverbSize) * 0.01f, decay = juce::jlimit (0.0f, 1.0f, std::log (param (ids::reverbDecay) / 0.2f) / std::log (100.0f));
-        const int mode = juce::roundToInt (param (ids::reverbMode));
-        const float amp = r.getHeight() * (0.16f + 0.26f * juce::jlimit (0.0f, 1.0f, 0.3f * on + 0.9f * level));
-        const int lines = 14;
-        for (int l = 0; l < lines; ++l)
+        // l'affichage de VOCAL MINI : la voix (blanc), la queue de reverb entendue (braise) et ce que CLEAN / DUCKING
+        // retirent (rose pâle), en barres miroir qui défilent de droite à gauche (~2.7 s, lu dans le moteur de reverb).
+        // Les barres d'une même couleur forment un seul tracé, et le passé s'estompe par un seul dégradé : trois remplissages
+        // par image au lieu de plusieurs centaines.
+        const auto& rev = processor.getReverbEngine();
+        const auto area = r.reduced (10.0f * u, 10.0f * u);
+        const float cy = area.getCentreY(), half = area.getHeight() * 0.5f;
+        g.setColour (juce::Colours::white.withAlpha (0.06f));
+        g.fillRect (juce::Rectangle<float> (area.getX(), cy - 0.5f * u, area.getWidth(), std::max (1.0f, u)));
+
+        const int bars = 120, stride = 4;
+        const int H = mini::VoiceReverb::kHistory;
+        const int newest = rev.getHistoryPos() - 1;
+        const float slotW = area.getWidth() / (float) bars;
+        const float sub = (float) ((newest + 1) % stride) / (float) stride;   // décalage fin entre deux barres : défilement fluide
+        const float bw = std::max (1.2f, slotW * 0.42f);
+        auto h01 = [] (float v) { return v > 1.0e-6f ? std::pow (juce::jlimit (0.0f, 1.0f, (20.0f * std::log10 (v) + 54.0f) / 54.0f), 1.25f) : 0.0f; };
+        juce::Path pPre, pWet, pDry;
+        auto bar = [&] (juce::Path& p, float x, float v01)
         {
-            const float k = (float) l / (float) (lines - 1);
-            juce::Path p;
-            for (int i = 0; i <= 90; ++i)
+            if (v01 <= 0.002f) return;
+            const float hh = std::max (bw * 0.5f, v01 * half);
+            p.addRoundedRectangle (juce::Rectangle<float> (bw, 2.0f * hh).withCentre ({ x, cy }), bw * 0.5f);
+        };
+        for (int i = 0; i < bars; ++i)
+        {
+            float dry = 0.0f, wet = 0.0f, pre = 0.0f;
+            const int last = newest - (bars - 1 - i) * stride - ((newest + 1) % stride);
+            for (int s = 0; s < stride; ++s)
             {
-                const float t = (float) i / 90.0f;
-                const float env = std::sin (t * 3.14159f) * (0.6f + 0.4f * std::sin (t * 3.14159f * 2.0f + ph * 0.3f));
-                float y = std::sin (t * tw * (1.2f + 1.6f * (1.0f - size)) + ph + k * 1.3f) * 0.6f
-                        + std::sin (t * tw * (2.7f + 2.0f * decay) - ph * 0.7f + k * 2.1f) * 0.3f;
-                if (mode == 4) y += 0.18f * std::sin (t * tw * 9.0f + ph * 2.5f + k * 4.0f);   // SHIMMER : scintillement
-                y = r.getCentreY() + (k - 0.5f) * r.getHeight() * 0.10f * env + amp * env * y * (0.55f + 0.45f * (1.0f - std::abs (k - 0.5f) * 2.0f));
-                if (i == 0) p.startNewSubPath (r.getX(), y); else p.lineTo (r.getX() + r.getWidth() * t, y);
+                float d, w, p;
+                rev.getHistory ((last - s + H) % H, d, w, p);
+                dry = std::max (dry, d); wet = std::max (wet, w); pre = std::max (pre, p);
             }
-            const auto c = ui::ember.interpolatedWith (ui::bone, 0.25f + 0.6f * (1.0f - std::abs (k - 0.5f) * 2.0f));
-            g.setColour (c.withAlpha (a * (0.25f + 0.5f * (1.0f - std::abs (k - 0.5f) * 2.0f))));
-            g.strokePath (p, juce::PathStrokeType (std::max (1.0f, 1.2f * u), juce::PathStrokeType::curved));
+            const float x = area.getX() + ((float) i + 0.5f - sub) * slotW;
+            if (x < area.getX() || x > area.getRight()) continue;
+            if (pre > wet * 1.15f) bar (pPre, x, h01 (pre));
+            bar (pWet, x, h01 (wet));
+            bar (pDry, x, h01 (dry) * 0.92f);
         }
+        auto fill = [&] (const juce::Path& p, juce::Colour c, float alpha)
+        {
+            if (p.isEmpty()) return;
+            g.setGradientFill (juce::ColourGradient (c.withAlpha (alpha * 0.35f * a), area.getX(), 0.0f, c.withAlpha (alpha * a), area.getRight(), 0.0f, false));
+            g.fillPath (p);
+        };
+        fill (pPre, ui::lilac, 0.16f);                                   // ce que CLEAN / DUCKING retirent
+        fill (pWet, ui::ember.interpolatedWith (ui::lilac, 0.25f), 0.75f); // la queue entendue
+        fill (pDry, ui::bone, 0.85f);                                    // la voix
     }
 }
 
 //==============================================================================
-FxView::FxView (OniriqueVocalBoxAudioProcessor& p, juce::LookAndFeel& lnf)
-    : processor (p),
+FxView::FxView (OniriqueVocalBoxAudioProcessor& p, juce::LookAndFeel& lookAndFeel)
+    : processor (p), lnf (lookAndFeel),
       delayNote (p.apvts, ids::delayNote, "Delay length in notes, locked to your session tempo (drag up/down)."),
+      delayTime (p.apvts, ids::delayTime, "Delay time in ms, free (drag up/down)."),
       reverbMode (p.apvts, ids::reverbMode, { "ROOM", "PLATE 1", "PLATE 2", "HALL", "SHIMMER" },
                   { "Room: short and close, natural early reflections. Puts the voice in a real space without washing it.",
                     "Plate 1: the classic bright vocal plate, dense and smooth, no early reflections.",
                     "Plate 2: a darker, wider plate with more movement: lush ballads, R&B.",
                     "Hall: big, open space with early reflections and a long, soft tail.",
                     "Shimmer: an octave above, fed back into the tail: airy, ethereal pads behind the voice." }),
-      reverbMix (p.apvts, ids::reverbMix, "SEND", "0", "100", KnobComponent::Layout::textBelow,
+      reverbMix (p.apvts, ids::reverbMix, "SEND", "", "", KnobComponent::Layout::textBelow,
                  "Level of the reverb return. The reverb is an aux track: the voice always stays at 100 %, the reverb is added on top "
-                 "(raise it as much as you like, the voice never drowns; DUCKING clears it under the words). Double-click to reset.", lnf)
+                 "(raise it as much as you like, the voice never drowns; DUCKING clears it under the words). Double-click to reset.", lookAndFeel)
 {
     setWantsKeyboardFocus (true);
     setOpaque (true);
@@ -304,83 +294,76 @@ FxView::FxView (OniriqueVocalBoxAudioProcessor& p, juce::LookAndFeel& lnf)
     exitButton.onClick = [this] { if (onClose) onClose(); };
     children.push_back (&exitButton);
 
-    struct PowerDef { PowerButton& b; const char* id; const char* name; };
-    for (auto& d : { PowerDef { chorusPower, ids::chorusOn, "chorus" }, PowerDef { flangerPower, ids::flangerOn, "flanger" },
-                     PowerDef { delayPower, ids::delayOn, "delay" }, PowerDef { reverbPower, ids::reverbOn, "reverb" },
-                     PowerDef { doublerPower, ids::doublerOn, "doubler" }, PowerDef { phonePower, ids::phoneOn, "phone effect" } })
-    {
-        addAndMakeVisible (d.b);
-        d.b.setTooltip (juce::String ("Turn the ") + d.name + " on/off (click-free).");
-        attachments.push_back (std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (p.apvts, d.id, d.b));
-        children.push_back (&d.b);
-    }
-    chorusCard  = { "CHORUS", "3 voices  |  auto gain match", {}, &chorusPower };
-    flangerCard = { "FLANGER", "jet sweep  |  auto gain match", {}, &flangerPower };
-    delayCard   = { "DELAY", "aux track  |  tempo sync  |  ping-pong  |  ducking", {}, &delayPower };
-    reverbCard  = { "REVERB", "aux track  |  5 modes  |  clean  |  ducking", {}, &reverbPower };
-    doublerCard = { "DOUBLER", "double take  |  L / R", {}, &doublerPower };
-    phoneCard   = { "PHONE", "telephone voice", {}, &phonePower };
+    // chaque effet : sa pastille marche / arrêt (fondu sans clic), à son nom
+    toggle (doublerOn, ids::doublerOn, "Doubler on/off: a real double take left and right, the lead voice stays in the centre.");
+    toggle (phoneOn, ids::phoneOn, "Phone on/off: from a full voice to a telephone.");
+    toggle (chorusOn, ids::chorusOn, "Chorus on/off.");
+    toggle (flangerOn, ids::flangerOn, "Flanger on/off.");
+    toggle (delayOn, ids::delayOn, "Delay on/off (aux track: the voice always stays at 100 %).");
+    toggle (reverbOn, ids::reverbOn, "Reverb on/off (aux track: the voice always stays at 100 %).");
 
-    for (auto* v : { &chorusVis, &flangerVis, &delayVis, &reverbVis, &doublerVis, &phoneVis })
-    {
-        addAndMakeVisible (v);
-        children.push_back (v);
-    }
+    doublerAmt = &knob (ids::doublerAmount, "AMOUNT", "Level of the two doubles (left and right). The lead voice stays in the centre, untouched.");
+    phoneAmt   = &knob (ids::phoneAmount, "AMOUNT", "From a full voice to a telephone: the band narrows and the small speaker bites. The level stays the same.");
+    chorusRate  = &knob (ids::chorusRate, "RATE", "Speed of the chorus movement.");
+    chorusDepth = &knob (ids::chorusDepth, "DEPTH", "How far the voices drift apart: subtle widening up to a lush ensemble.");
+    chorusMix   = &knob (ids::chorusMix, "MIX", "Chorus amount. The level stays the same at any setting (auto gain match).");
+    flangerRate  = &knob (ids::flangerRate, "RATE", "Speed of the flanger sweep.");
+    flangerDepth = &knob (ids::flangerDepth, "DEPTH", "Width of the sweep.");
+    flangerFb    = &knob (ids::flangerFeedback, "FEEDBACK", "Resonance of the sweep (negative = hollow, positive = metallic jet).", true);
+    flangerMix   = &knob (ids::flangerMix, "MIX", "Flanger amount. The level stays the same at any setting (auto gain match).");
 
-    chorusRate  = &slider (ids::chorusRate, "RATE", "Speed of the chorus movement.");
-    chorusDepth = &slider (ids::chorusDepth, "DEPTH", "How far the voices drift apart: subtle widening up to a lush ensemble.");
-    chorusMix   = &slider (ids::chorusMix, "MIX", "Chorus amount. The level stays the same at any setting (auto gain match).");
-
-    flangerRate  = &slider (ids::flangerRate, "RATE", "Speed of the flanger sweep.");
-    flangerDepth = &slider (ids::flangerDepth, "DEPTH", "Width of the sweep.");
-    flangerFb    = &slider (ids::flangerFeedback, "FEEDBACK", "Resonance of the sweep (negative = hollow, positive = metallic jet).");
-    flangerMix   = &slider (ids::flangerMix, "MIX", "Flanger amount. The level stays the same at any setting (auto gain match).");
-
-    addAndMakeVisible (delaySync);
-    addAndMakeVisible (delayPing);
-    addAndMakeVisible (delayNote);
-    for (auto* a : std::initializer_list<Animated*> { &delaySync, &delayPing, &delayNote }) children.push_back (a);
-    delaySync.setTooltip ("Sync: delay length in notes, locked to your session tempo. Off: free time in ms.");
-    delayPing.setTooltip ("Ping-pong: the echoes bounce left / right.");
-    attachments.push_back (std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (p.apvts, ids::delaySync, delaySync));
-    attachments.push_back (std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (p.apvts, ids::delayPingPong, delayPing));
+    for (auto* v : { &delayVis, &reverbVis }) { addAndMakeVisible (v); children.push_back (v); }
+    toggle (delaySync, ids::delaySync, "Sync: delay length in notes, locked to your session tempo. Off: free time in ms.");
+    toggle (delayPing, ids::delayPingPong, "Ping-pong: the echoes bounce left / right.");
+    for (auto* d : { &delayNote, &delayTime }) { addAndMakeVisible (d); children.push_back (d); }
     delayNote.setPrefix ("NOTE ");
-    delayTime = &slider (ids::delayTime, "TIME", "Delay time in ms (when SYNC is off).");
-    delayFb   = &slider (ids::delayFeedback, "FEEDBACK", "How many repeats. They soften a little each time, like tape.");
-    delayMix  = &slider (ids::delayMix, "SEND", "Level of the delay return. The delay is an aux track: the voice always stays at 100 %, the echoes are added on top.");
-    delayLow  = &slider (ids::delayLowCut, "LOW CUT", "Removes the low end of the repeats: clean echoes that don't muddy the voice.");
-    delayHigh = &slider (ids::delayHighCut, "HIGH CUT", "Darkens the repeats so they sit behind the voice.");
-    delayDuck = &slider (ids::delayDucking, "DUCKING", "The echoes step back while you sing and come back in the gaps.");
+    delayTime.setPrefix ("TIME ");
+    delayFb   = &knob (ids::delayFeedback, "FEEDBACK", "How many repeats. They soften a little each time, like tape.");
+    delayMix  = &knob (ids::delayMix, "SEND", "Level of the delay return. The delay is an aux track: the voice always stays at 100 %, the echoes are added on top.");
+    delayLow  = &knob (ids::delayLowCut, "LOW CUT", "Removes the low end of the repeats: clean echoes that don't muddy the voice.");
+    delayHigh = &knob (ids::delayHighCut, "HIGH CUT", "Darkens the repeats so they sit behind the voice.");
+    delayDuck = &knob (ids::delayDucking, "DUCKING", "The echoes step back while you sing and come back in the gaps.");
 
     addAndMakeVisible (reverbMode);
     addAndMakeVisible (reverbMix);
     children.push_back (&reverbMode);
     children.push_back (&reverbMix);
-    revPre      = &slider (ids::reverbPreDelay, "PRE-DELAY", "Gap before the reverb starts: keeps the words clear in front of the tail.");
-    revDecay    = &slider (ids::reverbDecay, "DECAY", "Length of the tail.");
-    revSize     = &slider (ids::reverbSize, "SIZE", "Size of the space.");
-    revDiff     = &slider (ids::reverbDiffusion, "DIFFUSION", "Density of the tail: low = distinct reflections, high = smooth wash.");
-    revModRate  = &slider (ids::reverbModRate, "MOD RATE", "Speed of the movement inside the tail (keeps it from ringing).");
-    revModDepth = &slider (ids::reverbModDepth, "MOD DEPTH", "Amount of movement inside the tail: more = lusher, chorus-like.");
-    revLow      = &slider (ids::reverbLowCut, "LOW CUT", "Removes the low end of the reverb: no mud under the voice.");
-    revHigh     = &slider (ids::reverbHighCut, "HIGH CUT", "Darkens the tail so it doesn't fight the sibilance.");
-    revDuck     = &slider (ids::reverbDucking, "DUCKING", "The reverb steps back while you sing and blooms in the gaps.");
-    revClean    = &slider (ids::reverbClean, "CLEAN", "Every new phrase starts clean: no sibilance in the reverb, less mud in the tail, and the old tail is cleared when you sing again.");
-    revWidth    = &slider (ids::reverbWidth, "WIDTH", "Stereo width of the tail (it never cancels in mono).");
+    revPre      = &knob (ids::reverbPreDelay, "PRE-DELAY", "Gap before the reverb starts: keeps the words clear in front of the tail.");
+    revDecay    = &knob (ids::reverbDecay, "DECAY", "Length of the tail.");
+    revSize     = &knob (ids::reverbSize, "SIZE", "Size of the space.");
+    revDiff     = &knob (ids::reverbDiffusion, "DIFFUSION", "Density of the tail: low = distinct reflections, high = smooth wash.");
+    revWidth    = &knob (ids::reverbWidth, "WIDTH", "Stereo width of the tail (it never cancels in mono).");
+    revModRate  = &knob (ids::reverbModRate, "MOD RATE", "Speed of the movement inside the tail (keeps it from ringing).");
+    revModDepth = &knob (ids::reverbModDepth, "MOD DEPTH", "Amount of movement inside the tail: more = lusher, chorus-like.");
+    revLow      = &knob (ids::reverbLowCut, "LOW CUT", "Removes the low end of the reverb: no mud under the voice.");
+    revHigh     = &knob (ids::reverbHighCut, "HIGH CUT", "Darkens the tail so it doesn't fight the sibilance.");
+    revClean    = &knob (ids::reverbClean, "CLEAN", "Every new phrase starts clean: no sibilance in the reverb, less mud in the tail, and the old tail is cleared when you sing again.");
+    revDuck     = &knob (ids::reverbDucking, "DUCKING", "The reverb steps back while you sing and blooms in the gaps.");
 
-    doublerAmt = &slider (ids::doublerAmount, "AMOUNT", "Level of the two doubles (left and right). The lead voice stays in the centre, untouched.");
-    phoneAmt   = &slider (ids::phoneAmount, "AMOUNT", "From a full voice to a telephone: the band narrows and the small speaker bites. The level stays the same.");
+    fxBand     = { "FX", "WIDTH & COLOUR", {}, [this] { return on (ids::doublerOn) || on (ids::phoneOn) || on (ids::chorusOn) || on (ids::flangerOn); } };
+    delayBand  = { "DELAY", "AUX SEND", {}, [this] { return on (ids::delayOn); } };
+    reverbBand = { "REVERB", "AUX SEND", {}, [this] { return on (ids::reverbOn); } };
 }
 
 FxView::~FxView() = default;
 
-PillSlider& FxView::slider (const char* id, const juce::String& name, const juce::String& tip)
+KnobComponent& FxView::knob (const char* id, const juce::String& name, const juce::String& tip, bool bipolar)
 {
-    sliders.push_back (std::make_unique<PillSlider> (processor.apvts, id, name, tip));
-    auto& s = *sliders.back();
-    addAndMakeVisible (s);
-    children.push_back (&s);
-    return s;
+    knobs.push_back (std::make_unique<KnobComponent> (processor.apvts, id, name, "", "", KnobComponent::Layout::textBelow,
+                                                      tip + " Double-click to reset.", lnf, bipolar));
+    auto& k = *knobs.back();
+    addAndMakeVisible (k);
+    children.push_back (&k);
+    return k;
+}
+
+PillToggle& FxView::toggle (PillToggle& t, const char* id, const juce::String& tip)
+{
+    addAndMakeVisible (t);
+    t.setTooltip (tip);
+    attachments.push_back (std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (processor.apvts, id, t));
+    children.push_back (&t);
+    return t;
 }
 
 void FxView::setShown (bool shown)
@@ -394,9 +377,16 @@ void FxView::tick()
     if (motion.tick (*this) || ! isVisible()) return;   // en transition : le calque seul s'anime
     for (auto* a : children) a->tick();
     // SYNC : la note remplace le temps en ms
-    const bool sync = processor.apvts.getRawParameterValue (ids::delaySync)->load() > 0.5f;
+    const bool sync = on (ids::delaySync);
     delayNote.setVisible (sync);
-    delayTime->setVisible (! sync);
+    delayTime.setVisible (! sync);
+    // témoins des titres de bande : ne redessine que quand l'un d'eux change
+    const bool lit[3] { fxBand.lit(), delayBand.lit(), reverbBand.lit() };
+    if (lit[0] != litShown[0] || lit[1] != litShown[1] || lit[2] != litShown[2])
+    {
+        for (int i = 0; i < 3; ++i) litShown[i] = lit[i];
+        repaint();
+    }
 }
 
 bool FxView::keyPressed (const juce::KeyPress& k)
@@ -413,106 +403,100 @@ void FxView::resized()
     exitButton.setBounds (juce::Rectangle<float> (170.0f * u, 32.0f * u).withRightX (titleArea.getRight()).withY (titleArea.getCentreY() - 16.0f * u).toNearestInt());
     r.removeFromTop (10.0f * u);
 
-    auto top = r.removeFromTop (300.0f * u);
-    r.removeFromTop (14.0f * u);
-    // DOUBLER et PHONE (un seul bouton chacun) l'un sur l'autre, puis CHORUS, FLANGER et DELAY
-    const float gap = 14.0f * u, smallW = top.getWidth() * 0.19f, cw = (top.getWidth() - smallW - 3.0f * gap) / 3.0f;
-    {
-        auto col = top.removeFromLeft (smallW);
-        top.removeFromLeft (gap);
-        doublerCard.bounds = col.removeFromTop ((col.getHeight() - gap) * 0.5f);
-        col.removeFromTop (gap);
-        phoneCard.bounds = col;
-    }
-    chorusCard.bounds  = top.removeFromLeft (cw); top.removeFromLeft (gap);
-    flangerCard.bounds = top.removeFromLeft (cw); top.removeFromLeft (gap);
-    delayCard.bounds   = top;
-    reverbCard.bounds  = r;
+    const float gap = 14.0f * u;
+    const float bandH = (r.getHeight() - 2.0f * gap) * 0.29f;
+    fxBand.bounds = r.removeFromTop (bandH);
+    r.removeFromTop (gap);
+    delayBand.bounds = r.removeFromTop (bandH);
+    r.removeFromTop (gap);
+    reverbBand.bounds = r;
+    dividers.clear();
 
-    auto body = [u] (juce::Rectangle<float> b) { return b.withTrimmedTop (44.0f * u).reduced (16.0f * u, 0.0f).withTrimmedBottom (14.0f * u); };
-    for (auto* c : { &chorusCard, &flangerCard, &delayCard, &reverbCard, &doublerCard, &phoneCard })
-        c->power->setBounds (juce::Rectangle<float> (32.0f * u, 32.0f * u).withCentre ({ c->bounds.getRight() - 24.0f * u, c->bounds.getY() + 22.0f * u }).toNearestInt());
-
-    const float rowH = 32.0f * u, rowGap = 9.0f * u;
-    auto stack = [&] (juce::Rectangle<float>& area, std::initializer_list<juce::Component*> comps)
+    // le contenu d'une bande : à droite du bloc de titre, comme les rangées de VOCAL MINI
+    auto content = [&] (const Band& b) { return b.bounds.withTrimmedLeft (kTitleW * u).reduced (14.0f * u, 14.0f * u); };
+    const float pillH = 30.0f * u, pillGap = 10.0f * u, sepW = 24.0f * u;
+    // les pastilles marche / arrêt : toutes de la même taille, calées en haut à gauche de leur zone, sur une même ligne
+    auto pill = [&] (juce::Component& p, juce::Rectangle<float>& area)
     {
-        for (auto* c : comps) { c->setBounds (area.removeFromTop (rowH).toNearestInt()); area.removeFromTop (rowGap); }
+        p.setBounds (area.removeFromTop (pillH).withWidth (std::min (area.getWidth(), 170.0f * u)).toNearestInt());
+        area.removeFromTop (pillGap);
     };
-    for (auto [card, vis, amt] : { std::tuple<Card*, FxVisual*, PillSlider*> { &doublerCard, &doublerVis, doublerAmt },
-                                   std::tuple<Card*, FxVisual*, PillSlider*> { &phoneCard, &phoneVis, phoneAmt } })
+    auto divider = [&] (juce::Rectangle<float>& c, float share)
     {
-        auto b = body (card->bounds);
-        amt->setBounds (b.removeFromBottom (rowH).toNearestInt());
-        vis->setBounds (b.withTrimmedBottom (rowGap).toNearestInt());
-    }
+        const auto sep = c.removeFromLeft (sepW);
+        dividers.push_back (sep.withSizeKeepingCentre (1.0f, sep.getHeight() * share));
+    };
+    auto placeKnobs = [&] (juce::Rectangle<float> area, std::initializer_list<KnobComponent*> ks)
     {
-        auto b = body (chorusCard.bounds);
-        auto vis = b.removeFromTop (b.getHeight() - 3.0f * (rowH + rowGap));
-        chorusVis.setBounds (vis.withTrimmedBottom (rowGap).toNearestInt());
-        stack (b, { chorusRate, chorusDepth, chorusMix });
-    }
-    {
-        auto b = body (flangerCard.bounds);
-        auto vis = b.removeFromTop (b.getHeight() - 4.0f * (rowH + rowGap));
-        flangerVis.setBounds (vis.withTrimmedBottom (rowGap).toNearestInt());
-        stack (b, { flangerRate, flangerDepth, flangerFb, flangerMix });
-    }
-    {
-        auto b = body (delayCard.bounds);
-        auto vis = b.removeFromTop (b.getHeight() - 4.0f * (rowH + rowGap));
-        delayVis.setBounds (vis.withTrimmedBottom (rowGap).toNearestInt());
-        auto row = b.removeFromTop (rowH);
-        delaySync.setBounds (row.removeFromLeft (row.getWidth() * 0.22f).toNearestInt());
-        row.removeFromLeft (8.0f * u);
-        auto pingR = row.removeFromRight (row.getWidth() * 0.36f);
-        row.removeFromRight (8.0f * u);
-        delayNote.setBounds (row.toNearestInt());
-        delayTime->setBounds (row.toNearestInt());
-        delayPing.setBounds (pingR.toNearestInt());
-        b.removeFromTop (rowGap);
-        stack (b, { delayFb, delayMix });
-        auto cuts = b.removeFromTop (rowH);
-        const float third = (cuts.getWidth() - 16.0f * u) / 3.0f;
-        delayLow->setBounds (cuts.removeFromLeft (third).toNearestInt());
-        cuts.removeFromLeft (8.0f * u);
-        delayHigh->setBounds (cuts.removeFromLeft (third).toNearestInt());
-        cuts.removeFromLeft (8.0f * u);
-        delayDuck->setBounds (cuts.toNearestInt());
-    }
-    {
-        // REVERB : modes, visuel, puis réglages de part et d'autre du MIX, puis coupe-bas / DUCKING / coupe-haut
-        auto b = body (reverbCard.bounds);
-        reverbMode.setBounds (b.removeFromTop (34.0f * u).withSizeKeepingCentre (std::min (b.getWidth(), 620.0f * u), 34.0f * u).toNearestInt());
-        b.removeFromTop (12.0f * u);
-        auto bottomRow = b.removeFromBottom (rowH + 4.0f * u);
-        b.removeFromBottom (14.0f * u);
-        auto controls = b.removeFromBottom (3.0f * rowH + 2.0f * 14.0f * u + 30.0f * u);
-        b.removeFromBottom (14.0f * u);
-        reverbVis.setBounds (b.toNearestInt());
-
-        const float colW = std::min (520.0f * u, (controls.getWidth() - 260.0f * u) * 0.5f);
-        auto left = controls.removeFromLeft (colW).withSizeKeepingCentre (colW, 3.0f * rowH + 2.0f * 14.0f * u);
-        auto right = controls.removeFromRight (colW).withSizeKeepingCentre (colW, 3.0f * rowH + 2.0f * 14.0f * u);
-        for (auto* s : { revPre, revDecay, revSize }) { s->setBounds (left.removeFromTop (rowH).toNearestInt()); left.removeFromTop (14.0f * u); }
-        for (auto* s : { revDiff, revModRate, revModDepth }) { s->setBounds (right.removeFromTop (rowH).toNearestInt()); right.removeFromTop (14.0f * u); }
-        const float D = std::min (controls.getHeight() / 1.6f, 150.0f * u);
-        reverbMix.setMaxDiameter (D);
-        reverbMix.setBounds (controls.withSizeKeepingCentre (std::min (controls.getWidth(), D * 1.6f), controls.getHeight()).toNearestInt());
-
-        // coupe-bas, CLEAN, DUCKING, WIDTH, coupe-haut
-        const float bgap = 18.0f * u, bw = (bottomRow.getWidth() - 4.0f * bgap) / 5.0f;
-        for (auto* s : { revLow, revClean, revDuck, revWidth, revHigh })
+        const float w = area.getWidth() / (float) ks.size();
+        const float D = std::min ({ 92.0f * u, w - 14.0f * u, (area.getHeight() - 26.0f * u) / 1.47f });
+        int i = 0;
+        for (auto* k : ks)
         {
-            s->setBounds (bottomRow.removeFromLeft (bw).withSizeKeepingCentre (bw, rowH).toNearestInt());
-            bottomRow.removeFromLeft (bgap);
+            k->setMaxDiameter (D);
+            k->setBounds (juce::Rectangle<float> (area.getX() + w * (float) i++, area.getY(), w, area.getHeight()).toNearestInt());
         }
+    };
+
+    {
+        // FX : DOUBLER (1) | PHONE (1) | CHORUS (3) | FLANGER (4) : une colonne par potard, un filet entre les effets
+        auto c = content (fxBand);
+        struct G { PillToggle* t; std::initializer_list<KnobComponent*> ks; };
+        const G groups[] { { &doublerOn, { doublerAmt } }, { &phoneOn, { phoneAmt } },
+                           { &chorusOn, { chorusRate, chorusDepth, chorusMix } }, { &flangerOn, { flangerRate, flangerDepth, flangerFb, flangerMix } } };
+        const float colW = (c.getWidth() - 3.0f * sepW) / 9.0f;
+        for (int gi = 0; gi < 4; ++gi)
+        {
+            const auto& g = groups[gi];
+            auto col = c.removeFromLeft (colW * (float) g.ks.size());
+            if (gi < 3) divider (c, 0.8f);
+            pill (*g.t, col);
+            placeKnobs (col, g.ks);
+        }
+    }
+    {
+        // DELAY : marche / arrêt et échos animés | SYNC, NOTE ou TIME, PING-PONG au-dessus des potards
+        auto c = content (delayBand);
+        auto left = c.removeFromLeft (c.getWidth() * 0.26f);
+        pill (delayOn, left);
+        delayVis.setBounds (left.toNearestInt());
+        divider (c, 0.8f);
+        auto row = c.removeFromTop (pillH);
+        const float bw = std::min (170.0f * u, (row.getWidth() - 24.0f * u) / 3.0f);
+        auto opts = row;   // SYNC, NOTE ou TIME, PING-PONG : même ligne et même largeur que les pastilles
+        delaySync.setBounds (opts.removeFromLeft (bw).toNearestInt());
+        opts.removeFromLeft (12.0f * u);
+        const auto noteR = opts.removeFromLeft (bw);
+        delayNote.setBounds (noteR.toNearestInt());
+        delayTime.setBounds (noteR.toNearestInt());
+        opts.removeFromLeft (12.0f * u);
+        delayPing.setBounds (opts.removeFromLeft (bw).toNearestInt());
+        c.removeFromTop (pillGap);
+        placeKnobs (c, { delayFb, delayMix, delayLow, delayHigh, delayDuck });
+    }
+    {
+        // REVERB : marche / arrêt, espaces et rubans animés à gauche | deux rangées de potards, SEND en tête
+        auto c = content (reverbBand);
+        auto left = c.removeFromLeft (c.getWidth() * 0.34f);
+        auto head = left.removeFromTop (pillH);
+        reverbOn.setBounds (head.removeFromLeft (std::min (head.getWidth() * 0.32f, 170.0f * u)).toNearestInt());
+        head.removeFromLeft (12.0f * u);
+        reverbMode.setBounds (head.toNearestInt());
+        left.removeFromTop (pillGap);
+        reverbVis.setBounds (left.toNearestInt());
+        divider (c, 0.85f);
+        auto top = c.removeFromTop (c.getHeight() * 0.5f);
+        placeKnobs (top, { &reverbMix, revPre, revDecay, revSize, revDiff, revWidth });
+        placeKnobs (c, { revModRate, revModDepth, revLow, revHigh, revClean, revDuck });
     }
 }
 
-void FxView::paintCard (juce::Graphics& g, const Card& c) const
+// une bande : verre sombre et filet ; à gauche son titre (comme VOCAL MINI : trait braise allumé quand un effet tourne,
+// titre, sous-titre), séparé du contenu par un filet
+void FxView::paintBand (juce::Graphics& g, const Band& b) const
 {
     const float u = ui::editorScale (*this);
-    const auto r = c.bounds;
+    const auto r = b.bounds;
     const float rad = 14.0f * u;
     g.setGradientFill (juce::ColourGradient (ui::deep2.withAlpha (0.95f), 0.0f, r.getY(), ui::deep.withAlpha (0.97f), 0.0f, r.getBottom(), false));
     g.fillRoundedRectangle (r, rad);
@@ -521,22 +505,21 @@ void FxView::paintCard (juce::Graphics& g, const Card& c) const
     g.setColour (juce::Colours::white.withAlpha (0.045f));
     g.drawHorizontalLine (juce::roundToInt (r.getY() + 1.5f * u), r.getX() + rad, r.getRight() - rad);
 
-    const bool on = c.power != nullptr && c.power->getToggleState();
-    const float dot = 7.0f * u;
-    const auto dr = juce::Rectangle<float> (dot, dot).withCentre ({ r.getX() + 22.0f * u, r.getY() + 22.0f * u });
-    g.setColour (ui::ember.withAlpha (on ? 0.35f : 0.0f));
-    g.fillEllipse (dr.expanded (dot * 0.7f));
-    g.setColour (on ? ui::ember : ui::haze.withAlpha (0.5f));
-    g.fillEllipse (dr);
-    const auto f = ui::font (ui::Face::display, 17.0f * u, true, 0.08f);
-    const float tw = ui::textWidth (f, c.title) + 12.0f * u;
-    g.setFont (f);
+    const bool lit = b.lit && b.lit();
+    const auto block = r.withWidth (kTitleW * u).reduced (20.0f * u, 0.0f);
+    const auto bar = juce::Rectangle<float> (3.0f * u, 46.0f * u).withCentre ({ block.getX() + 1.5f * u, r.getCentreY() });
+    if (lit) { g.setColour (ui::ember.withAlpha (0.35f)); g.fillRoundedRectangle (bar.expanded (2.5f * u), 3.0f * u); }
+    g.setColour (lit ? ui::ember : ui::haze.withAlpha (0.35f));
+    g.fillRoundedRectangle (bar, 1.5f * u);
+    const auto text = block.withTrimmedLeft (16.0f * u);
     g.setColour (ui::mist);
-    g.drawText (c.title, juce::Rectangle<float> (r.getX() + 36.0f * u, r.getY() + 8.0f * u, tw, 28.0f * u), juce::Justification::centredLeft, false);
-    g.setColour (ui::haze.withAlpha (0.85f));
-    g.setFont (ui::fitFont (ui::Face::mono, 11.0f * u, r.getWidth() - tw - 110.0f * u, c.subtitle, false, 0.06f));
-    g.drawText (c.subtitle, juce::Rectangle<float> (r.getX() + 36.0f * u + tw, r.getY() + 8.0f * u, r.getWidth() - tw - 110.0f * u, 28.0f * u),
-                juce::Justification::centredLeft, false);
+    g.setFont (ui::fitFont (ui::Face::display, 22.0f * u, text.getWidth(), b.title, true, 0.08f));
+    g.drawText (b.title, text.withHeight (28.0f * u).withCentre ({ text.getCentreX(), r.getCentreY() - 10.0f * u }), juce::Justification::centredLeft, false);
+    g.setColour (ui::haze);
+    g.setFont (ui::fitFont (ui::Face::mono, 11.0f * u, text.getWidth(), b.subtitle, false, 0.08f));
+    g.drawText (b.subtitle, text.withHeight (16.0f * u).withCentre ({ text.getCentreX(), r.getCentreY() + 14.0f * u }), juce::Justification::centredLeft, false);
+    g.setColour (ui::line);
+    g.fillRect (juce::Rectangle<float> (r.getX() + kTitleW * u, r.getY() + 14.0f * u, 1.0f, r.getHeight() - 28.0f * u));
 }
 
 void FxView::paint (juce::Graphics& g)
@@ -559,11 +542,13 @@ void FxView::paint (juce::Graphics& g)
         g.setColour (ui::mist);
         g.drawText ("FX", titleArea.withX (titleArea.getX() + 8.0f * u).withWidth (tw), juce::Justification::centredLeft, false);
         g.setColour (ui::haze);
-        const juce::String h = "Vocal effects at the end of the chain: phone > doubler > chorus > flanger on the voice, then DELAY and REVERB as aux tracks (the voice stays at 100 %).  Esc = back";
+        const juce::String h = "End of the chain: doubler > phone > chorus > flanger on the voice, then DELAY and REVERB as aux tracks (the voice stays at 100 %).  Esc = back";
         const float hx = titleArea.getX() + 8.0f * u + tw + 10.0f * u;
         g.setFont (ui::fitFont (ui::Face::body, 13.0f * u, (float) exitButton.getX() - 16.0f * u - hx, h, false, 0.03f));
         g.drawText (h, juce::Rectangle<float> (hx, titleArea.getY(), (float) exitButton.getX() - 16.0f * u - hx, titleArea.getHeight()),
                     juce::Justification::centredLeft, false);
     }
-    for (auto* c : { &chorusCard, &flangerCard, &delayCard, &reverbCard, &doublerCard, &phoneCard }) paintCard (g, *c);
+    for (auto* b : { &fxBand, &delayBand, &reverbBand }) paintBand (g, *b);
+    g.setColour (ui::line);
+    for (const auto& d : dividers) g.fillRect (d);
 }

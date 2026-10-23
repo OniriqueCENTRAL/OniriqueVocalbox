@@ -1507,7 +1507,7 @@ SpectrumAnalyzer::~SpectrumAnalyzer() = default;
 void SpectrumAnalyzer::placeBubble()
 {
     const auto bd = band (selected);
-    const bool show = bd.on;
+    const bool show = bd.on && ! bubbleClosed;
     if (show != bubble.isVisible()) bubble.setVisible (show);
     if (! show) return;
     bubble.setBand (selected);
@@ -1766,6 +1766,7 @@ void SpectrumAnalyzer::setParam (const char* id, float v, bool gesture)
 void SpectrumAnalyzer::select (int b)
 {
     selected = juce::jlimit (0, kPeq - 1, b);
+    bubbleClosed = false;   // une bande choisie : sa bulle revient
     eqDirty = true;
     if (onSelect) onSelect (selected);
 }
@@ -1785,7 +1786,7 @@ void SpectrumAnalyzer::mouseDown (const juce::MouseEvent& e)
 {
     using namespace onirique;
     const int n = nodeAt (e.position);
-    if (n < 0) { if (onBackgroundClick) onBackgroundClick(); return; }
+    if (n < 0) { closeBubble(); if (onBackgroundClick) onBackgroundClick(); return; }
     select (n);
     if (e.mods.isPopupMenu()) { showBandMenu (*this, processor.apvts, n, e.getScreenPosition()); return; }
     dragNode = n;
@@ -4541,6 +4542,13 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
    #endif
 
     startTimerHz (60);
+}
+
+void OniriqueVocalBoxAudioProcessorEditor::mouseDown (const juce::MouseEvent&)
+{
+    // clic dans le vide (fond, carte) : la bulle de la bande de l'EQ se ferme, ici comme en plein écran
+    analyzer.closeBubble();
+    eqFull.analyzer.closeBubble();
 }
 
 OniriqueVocalBoxAudioProcessorEditor::~OniriqueVocalBoxAudioProcessorEditor()

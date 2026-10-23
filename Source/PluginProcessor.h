@@ -64,6 +64,7 @@ public:
     float getSuppressorReductionDb() const noexcept { return chain.getSuppressorReductionDb(); }
     float getSuppressorFloorDb() const noexcept { return chain.getSuppressorFloorDb(); }
     float getReverbTail() const noexcept { return chain.getReverbTail(); }
+    const onirique::mini::VoiceReverb& getReverbEngine() const noexcept { return chain.getReverbEngine(); }
     float getParallelDeEssDb() const noexcept { return chain.getParallelDeEssDb(); }
     float consumeInputLevel (int c) noexcept  { return chain.consumeInputLevel (c); }
 

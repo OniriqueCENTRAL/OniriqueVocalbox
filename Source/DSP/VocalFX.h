@@ -366,6 +366,7 @@ public:
     void prepare (double sampleRate) { engine.prepare (sampleRate); engine.set (toEngine (prm), true); }
     void set (const Params& p) noexcept { prm = p; engine.set (toEngine (p), false); }
     float getTailLevel() const noexcept { return engine.getTail(); }
+    const mini::VoiceReverb& getEngine() const noexcept { return engine; }   // son historique (voix, queue) pour l'affichage
     // piste auxiliaire : la voix (ch) entre dans la reverb, son retour s'ajoute dans wet (la voix reste à 100 %)
     void processSend (const float* const* ch, float* const* wet, int numCh, int n) noexcept
     {
@@ -443,6 +444,7 @@ public:
         }
     }
     float getReverbTail() const noexcept { return reverb.getTailLevel(); }
+    const mini::VoiceReverb& getReverbEngine() const noexcept { return reverb.getEngine(); }
 
 private:
     mini::Phone phone;
