@@ -102,7 +102,7 @@ private:
     std::atomic<float>* pPeqPower = nullptr;
     std::atomic<float>* pGate[7] {};     // on, seuil, range, attaque, hold, relâchement, hystérésis
     // NOISE SUPPRESSOR, écoute d'une bande de l'EQ, FX (voir kFxIds dans le .cpp)
-    static constexpr int kNumFx = 37;
+    static constexpr int kNumFx = 43;
 public:
     static constexpr int kNumFxParams = kNumFx;
 private:

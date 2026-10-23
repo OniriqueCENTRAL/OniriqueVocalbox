@@ -4016,7 +4016,7 @@ void ProcessingOrderBar::tick()
     changed |= ui::approach (gateLit, apvts.getRawParameterValue (ids::gateOn)->load() > 0.5f ? 1.0f : 0.0f, 0.15f);
     changed |= ui::approach (nsLit, apvts.getRawParameterValue (ids::nsAmount)->load() > 0.05f ? 1.0f : 0.0f, 0.15f);
     bool anyFx = false;
-    for (auto* id : { ids::chorusOn, ids::flangerOn, ids::delayOn, ids::reverbOn }) anyFx |= apvts.getRawParameterValue (id)->load() > 0.5f;
+    for (auto* id : { ids::phoneOn, ids::doublerOn, ids::chorusOn, ids::flangerOn, ids::delayOn, ids::reverbOn }) anyFx |= apvts.getRawParameterValue (id)->load() > 0.5f;
     changed |= ui::approach (fxLit, anyFx ? 1.0f : 0.0f, 0.15f);
     if (changed) repaint();
 }
@@ -4533,7 +4533,7 @@ void OniriqueVocalBoxAudioProcessorEditor::timerCallback()
    #endif
     {
         bool anyFx = false;
-        for (auto* id : { ids::chorusOn, ids::flangerOn, ids::delayOn, ids::reverbOn }) anyFx |= processor.apvts.getRawParameterValue (id)->load() > 0.5f;
+        for (auto* id : { ids::phoneOn, ids::doublerOn, ids::chorusOn, ids::flangerOn, ids::delayOn, ids::reverbOn }) anyFx |= processor.apvts.getRawParameterValue (id)->load() > 0.5f;
         fxButton.setLit (anyFx);   // le bouton FX s'allume quand un effet tourne
     }
 

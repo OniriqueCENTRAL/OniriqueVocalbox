@@ -112,13 +112,14 @@ void PillSlider::paint (juce::Graphics& g)
 void FxVisual::tick()
 {
     if (! isShowing()) return;
-    static const char* onIds[] { ids::chorusOn, ids::flangerOn, ids::delayOn, ids::reverbOn };
+    static const char* onIds[] { ids::chorusOn, ids::flangerOn, ids::delayOn, ids::reverbOn, ids::doublerOn, ids::phoneOn };
     const bool isOn = param (onIds[(int) kind]) > 0.5f;
     ui::approach (on, isOn ? 1.0f : 0.0f, 0.12f);
     float rate = 0.5f;
     if (kind == Kind::chorus) rate = param (ids::chorusRate);
     else if (kind == Kind::flanger) rate = param (ids::flangerRate);
     else if (kind == Kind::reverb) rate = 0.15f + 0.25f * param (ids::reverbModRate);
+    else if (kind == Kind::doubler) rate = 0.3f;
     phase += (double) rate / 60.0 * (0.35 + 0.65 * on);
     if (kind == Kind::reverb) ui::approach (level, juce::jlimit (0.0f, 1.0f, processor.getReverbTail() * 2.5f), 0.08f);
     repaint();
@@ -203,6 +204,55 @@ void FxVisual::paint (juce::Graphics& g)
             amp = k == 0 ? 0.85f : amp * fb;
         }
     }
+    else if (kind == Kind::doubler)
+    {
+        // la voix au centre (blanche), ses deux doubles de part et d'autre (rouges), un peu décalés, qui dérivent
+        const float amt = param (ids::doublerAmount) * 0.01f;
+        for (int v = 0; v < 3; ++v)
+        {
+            const float side = v == 0 ? 0.0f : (v == 1 ? -1.0f : 1.0f);
+            juce::Path p;
+            for (int i = 0; i <= 80; ++i)
+            {
+                const float t = (float) i / 80.0f;
+                const float drift = side * (0.02f + 0.03f * amt) * std::sin (ph * (v == 1 ? 0.9f : 1.3f) + (float) v);
+                const float env = std::sin (t * 3.14159f);
+                const float y = r.getCentreY() + side * r.getHeight() * 0.22f * (0.4f + 0.6f * amt)
+                              + r.getHeight() * 0.16f * env * std::sin ((t + drift) * tw * 3.0f);
+                if (i == 0) p.startNewSubPath (r.getX() + 6.0f * u, y); else p.lineTo (r.getX() + 6.0f * u + (r.getWidth() - 12.0f * u) * t, y);
+            }
+            const auto c = (v == 0 ? ui::bone : ui::ember).withAlpha (a * (v == 0 ? 0.9f : 0.35f + 0.5f * amt));
+            if (v > 0) ui::strokeGlow (g, p, ui::ember, 1.2f * u, 0.35f * on * amt);
+            g.setColour (c);
+            g.strokePath (p, juce::PathStrokeType (std::max (1.0f, (v == 0 ? 1.8f : 1.4f) * u), juce::PathStrokeType::curved));
+        }
+    }
+    else if (kind == Kind::phone)
+    {
+        // la bande qui reste : elle se resserre autour de 1.7 kHz quand le bouton monte (axe log 50 Hz - 20 kHz)
+        const float amt = param (ids::phoneAmount) * 0.01f * on;
+        const float lo = 120.0f + 400.0f * amt, hi = 9000.0f - 6000.0f * amt;
+        auto xOf = [&] (float hz) { return r.getX() + r.getWidth() * std::log (hz / 50.0f) / std::log (400.0f); };
+        juce::Path p;
+        for (int i = 0; i <= 120; ++i)
+        {
+            const float t = (float) i / 120.0f, hz = 50.0f * std::pow (400.0f, t);
+            const float hp = 1.0f / (1.0f + std::pow (lo / hz, 4.0f)), lp = 1.0f / (1.0f + std::pow (hz / hi, 4.0f));
+            const float bump = 1.0f + 0.6f * amt * std::exp (-std::pow (std::log (hz / 1700.0f) * 2.2f, 2.0f));
+            const float y = r.getBottom() - 6.0f * u - (r.getHeight() - 16.0f * u) * 0.75f * hp * lp * bump;
+            if (i == 0) p.startNewSubPath (r.getX(), y); else p.lineTo (r.getX() + r.getWidth() * t, y);
+        }
+        juce::Path fill (p);
+        fill.lineTo (r.getRight(), r.getBottom());
+        fill.lineTo (r.getX(), r.getBottom());
+        fill.closeSubPath();
+        g.setGradientFill (juce::ColourGradient (ui::ember.withAlpha (0.28f * a), 0.0f, r.getY(), ui::ember.withAlpha (0.0f), 0.0f, r.getBottom(), false));
+        g.fillPath (fill);
+        g.setColour (ui::ember.withAlpha (a));
+        g.strokePath (p, juce::PathStrokeType (std::max (1.0f, 1.5f * u), juce::PathStrokeType::curved));
+        g.setColour (ui::haze.withAlpha (0.5f * a));
+        for (float hz : { lo, hi }) g.fillRect (juce::Rectangle<float> (xOf (hz) - 0.5f * u, r.getY() + 6.0f * u, std::max (1.0f, u), r.getHeight() - 12.0f * u));
+    }
     else
     {
         // rubans de la reverb : leur ampleur suit la queue réelle (et l'allure : la taille, la décroissance, le mode)
@@ -256,7 +306,8 @@ FxView::FxView (OniriqueVocalBoxAudioProcessor& p, juce::LookAndFeel& lnf)
 
     struct PowerDef { PowerButton& b; const char* id; const char* name; };
     for (auto& d : { PowerDef { chorusPower, ids::chorusOn, "chorus" }, PowerDef { flangerPower, ids::flangerOn, "flanger" },
-                     PowerDef { delayPower, ids::delayOn, "delay" }, PowerDef { reverbPower, ids::reverbOn, "reverb" } })
+                     PowerDef { delayPower, ids::delayOn, "delay" }, PowerDef { reverbPower, ids::reverbOn, "reverb" },
+                     PowerDef { doublerPower, ids::doublerOn, "doubler" }, PowerDef { phonePower, ids::phoneOn, "phone effect" } })
     {
         addAndMakeVisible (d.b);
         d.b.setTooltip (juce::String ("Turn the ") + d.name + " on/off (click-free).");
@@ -266,9 +317,11 @@ FxView::FxView (OniriqueVocalBoxAudioProcessor& p, juce::LookAndFeel& lnf)
     chorusCard  = { "CHORUS", "3 voices  |  auto gain match", {}, &chorusPower };
     flangerCard = { "FLANGER", "jet sweep  |  auto gain match", {}, &flangerPower };
     delayCard   = { "DELAY", "aux track  |  tempo sync  |  ping-pong  |  ducking", {}, &delayPower };
-    reverbCard  = { "REVERB", "aux track  |  16-line network  |  5 modes  |  ducking", {}, &reverbPower };
+    reverbCard  = { "REVERB", "aux track  |  5 modes  |  clean  |  ducking", {}, &reverbPower };
+    doublerCard = { "DOUBLER", "double take  |  L / R", {}, &doublerPower };
+    phoneCard   = { "PHONE", "telephone voice", {}, &phonePower };
 
-    for (auto* v : { &chorusVis, &flangerVis, &delayVis, &reverbVis })
+    for (auto* v : { &chorusVis, &flangerVis, &delayVis, &reverbVis, &doublerVis, &phoneVis })
     {
         addAndMakeVisible (v);
         children.push_back (v);
@@ -312,6 +365,11 @@ FxView::FxView (OniriqueVocalBoxAudioProcessor& p, juce::LookAndFeel& lnf)
     revLow      = &slider (ids::reverbLowCut, "LOW CUT", "Removes the low end of the reverb: no mud under the voice.");
     revHigh     = &slider (ids::reverbHighCut, "HIGH CUT", "Darkens the tail so it doesn't fight the sibilance.");
     revDuck     = &slider (ids::reverbDucking, "DUCKING", "The reverb steps back while you sing and blooms in the gaps.");
+    revClean    = &slider (ids::reverbClean, "CLEAN", "Every new phrase starts clean: no sibilance in the reverb, less mud in the tail, and the old tail is cleared when you sing again.");
+    revWidth    = &slider (ids::reverbWidth, "WIDTH", "Stereo width of the tail (it never cancels in mono).");
+
+    doublerAmt = &slider (ids::doublerAmount, "AMOUNT", "Level of the two doubles (left and right). The lead voice stays in the centre, untouched.");
+    phoneAmt   = &slider (ids::phoneAmount, "AMOUNT", "From a full voice to a telephone: the band narrows and the small speaker bites. The level stays the same.");
 }
 
 FxView::~FxView() = default;
@@ -357,14 +415,22 @@ void FxView::resized()
 
     auto top = r.removeFromTop (300.0f * u);
     r.removeFromTop (14.0f * u);
-    const float gap = 14.0f * u, cw = (top.getWidth() - 2.0f * gap) / 3.0f;
+    // DOUBLER et PHONE (un seul bouton chacun) l'un sur l'autre, puis CHORUS, FLANGER et DELAY
+    const float gap = 14.0f * u, smallW = top.getWidth() * 0.19f, cw = (top.getWidth() - smallW - 3.0f * gap) / 3.0f;
+    {
+        auto col = top.removeFromLeft (smallW);
+        top.removeFromLeft (gap);
+        doublerCard.bounds = col.removeFromTop ((col.getHeight() - gap) * 0.5f);
+        col.removeFromTop (gap);
+        phoneCard.bounds = col;
+    }
     chorusCard.bounds  = top.removeFromLeft (cw); top.removeFromLeft (gap);
     flangerCard.bounds = top.removeFromLeft (cw); top.removeFromLeft (gap);
     delayCard.bounds   = top;
     reverbCard.bounds  = r;
 
     auto body = [u] (juce::Rectangle<float> b) { return b.withTrimmedTop (44.0f * u).reduced (16.0f * u, 0.0f).withTrimmedBottom (14.0f * u); };
-    for (auto* c : { &chorusCard, &flangerCard, &delayCard, &reverbCard })
+    for (auto* c : { &chorusCard, &flangerCard, &delayCard, &reverbCard, &doublerCard, &phoneCard })
         c->power->setBounds (juce::Rectangle<float> (32.0f * u, 32.0f * u).withCentre ({ c->bounds.getRight() - 24.0f * u, c->bounds.getY() + 22.0f * u }).toNearestInt());
 
     const float rowH = 32.0f * u, rowGap = 9.0f * u;
@@ -372,6 +438,13 @@ void FxView::resized()
     {
         for (auto* c : comps) { c->setBounds (area.removeFromTop (rowH).toNearestInt()); area.removeFromTop (rowGap); }
     };
+    for (auto [card, vis, amt] : { std::tuple<Card*, FxVisual*, PillSlider*> { &doublerCard, &doublerVis, doublerAmt },
+                                   std::tuple<Card*, FxVisual*, PillSlider*> { &phoneCard, &phoneVis, phoneAmt } })
+    {
+        auto b = body (card->bounds);
+        amt->setBounds (b.removeFromBottom (rowH).toNearestInt());
+        vis->setBounds (b.withTrimmedBottom (rowGap).toNearestInt());
+    }
     {
         auto b = body (chorusCard.bounds);
         auto vis = b.removeFromTop (b.getHeight() - 3.0f * (rowH + rowGap));
@@ -426,12 +499,13 @@ void FxView::resized()
         reverbMix.setMaxDiameter (D);
         reverbMix.setBounds (controls.withSizeKeepingCentre (std::min (controls.getWidth(), D * 1.6f), controls.getHeight()).toNearestInt());
 
-        const float bw = (bottomRow.getWidth() - 2.0f * 24.0f * u) / 3.0f;
-        revLow->setBounds (bottomRow.removeFromLeft (bw).withSizeKeepingCentre (bw, rowH).toNearestInt());
-        bottomRow.removeFromLeft (24.0f * u);
-        revDuck->setBounds (bottomRow.removeFromLeft (bw).withSizeKeepingCentre (bw, rowH).toNearestInt());
-        bottomRow.removeFromLeft (24.0f * u);
-        revHigh->setBounds (bottomRow.withSizeKeepingCentre (bw, rowH).toNearestInt());
+        // coupe-bas, CLEAN, DUCKING, WIDTH, coupe-haut
+        const float bgap = 18.0f * u, bw = (bottomRow.getWidth() - 4.0f * bgap) / 5.0f;
+        for (auto* s : { revLow, revClean, revDuck, revWidth, revHigh })
+        {
+            s->setBounds (bottomRow.removeFromLeft (bw).withSizeKeepingCentre (bw, rowH).toNearestInt());
+            bottomRow.removeFromLeft (bgap);
+        }
     }
 }
 
@@ -470,9 +544,9 @@ void FxView::paint (juce::Graphics& g)
     const float u = ui::editorScale (*this);
     const auto r = getLocalBounds().toFloat();
     g.fillAll (ui::night);   // opaque : rien du plugin n'est redessiné derrière la page
-    g.setGradientFill (juce::ColourGradient (ui::deep2, 0.0f, r.getY(), ui::night, 0.0f, r.getBottom(), false));
+    g.setColour (ui::deep.withAlpha (0.94f));   // verre sombre (DA de VOCAL MINI)
     g.fillRoundedRectangle (r, 16.0f * u);
-    g.setGradientFill (juce::ColourGradient (ui::ember.withAlpha (0.10f), r.getRight(), r.getY(), ui::ember.withAlpha (0.0f),
+    g.setGradientFill (juce::ColourGradient (ui::blood.withAlpha (0.35f), r.getRight(), r.getY(), ui::ember.withAlpha (0.0f),
                                              r.getRight() - r.getWidth() * 0.45f, r.getY() + r.getHeight() * 0.5f, true));
     g.fillRoundedRectangle (r, 16.0f * u);
     g.setColour (ui::line.interpolatedWith (ui::ember, 0.25f));
@@ -485,11 +559,11 @@ void FxView::paint (juce::Graphics& g)
         g.setColour (ui::mist);
         g.drawText ("FX", titleArea.withX (titleArea.getX() + 8.0f * u).withWidth (tw), juce::Justification::centredLeft, false);
         g.setColour (ui::haze);
-        const juce::String h = "Vocal effects at the end of the chain: chorus > flanger on the voice, then DELAY and REVERB as aux tracks (the voice stays at 100 %).  Esc = back";
+        const juce::String h = "Vocal effects at the end of the chain: phone > doubler > chorus > flanger on the voice, then DELAY and REVERB as aux tracks (the voice stays at 100 %).  Esc = back";
         const float hx = titleArea.getX() + 8.0f * u + tw + 10.0f * u;
         g.setFont (ui::fitFont (ui::Face::body, 13.0f * u, (float) exitButton.getX() - 16.0f * u - hx, h, false, 0.03f));
         g.drawText (h, juce::Rectangle<float> (hx, titleArea.getY(), (float) exitButton.getX() - 16.0f * u - hx, titleArea.getHeight()),
                     juce::Justification::centredLeft, false);
     }
-    for (auto* c : { &chorusCard, &flangerCard, &delayCard, &reverbCard }) paintCard (g, *c);
+    for (auto* c : { &chorusCard, &flangerCard, &delayCard, &reverbCard, &doublerCard, &phoneCard }) paintCard (g, *c);
 }

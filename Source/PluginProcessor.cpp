@@ -13,7 +13,8 @@ const char* const kFxIds[] {
     ids::delayOn, ids::delaySync, ids::delayTime, ids::delayNote, ids::delayFeedback, ids::delayMix, ids::delayPingPong,
     ids::delayLowCut, ids::delayHighCut, ids::delayDucking,
     ids::reverbOn, ids::reverbMode, ids::reverbPreDelay, ids::reverbDecay, ids::reverbSize, ids::reverbDiffusion,
-    ids::reverbModRate, ids::reverbModDepth, ids::reverbMix, ids::reverbLowCut, ids::reverbHighCut, ids::reverbDucking };
+    ids::reverbModRate, ids::reverbModDepth, ids::reverbMix, ids::reverbLowCut, ids::reverbHighCut, ids::reverbDucking,
+    ids::reverbWidth, ids::reverbClean, ids::phoneOn, ids::phoneAmount, ids::doublerOn, ids::doublerAmount };
 static_assert (sizeof (kFxIds) / sizeof (kFxIds[0]) == OniriqueVocalBoxAudioProcessor::kNumFxParams, "liste des réglages FX");
 } // namespace
 
@@ -42,6 +43,9 @@ void OniriqueVocalBoxAudioProcessor::readExtras (VocalChain::Params& p) const no
     auto& r = x.reverb;
     r.on = b(); r.mode = i(); r.preDelayMs = f(); r.decay = f(); r.size = f() * 0.01f; r.diffusion = f() * 0.01f;
     r.modRate = f(); r.modDepth = f() * 0.01f; r.mix = f() * 0.01f; r.lowCut = f(); r.highCut = f(); r.ducking = f() * 0.01f;
+    r.width = f() * 0.01f; r.clean = f() * 0.01f;
+    x.phoneOn = b(); x.phoneAmount = f() * 0.01f;
+    x.doublerOn = b(); x.doublerAmount = f() * 0.01f;
 }
 
 OniriqueVocalBoxAudioProcessor::OniriqueVocalBoxAudioProcessor()

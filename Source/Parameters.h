@@ -75,6 +75,9 @@ namespace ids
                                  *reverbDecay = "fxReverbDecay", *reverbSize = "fxReverbSize", *reverbDiffusion = "fxReverbDiffusion",
                                  *reverbModRate = "fxReverbModRate", *reverbModDepth = "fxReverbModDepth", *reverbMix = "fxReverbMix",
                                  *reverbLowCut = "fxReverbLowCut", *reverbHighCut = "fxReverbHighCut", *reverbDucking = "fxReverbDucking";
+    // FX venus de VOCAL MINI : PHONE, DOUBLER, et CLEAN / WIDTH de la REVERB
+    inline constexpr const char* phoneOn = "fxPhoneOn", *phoneAmount = "fxPhoneAmount", *doublerOn = "fxDoublerOn",
+                                 *doublerAmount = "fxDoublerAmount", *reverbWidth = "fxReverbWidth", *reverbClean = "fxReverbClean";
     // NOISE GATE (premier module, comme celui d'ONIRIQUE BROADCAST)
     inline constexpr const char* gateOn      = "gateOn";
     inline constexpr const char* gateThr     = "gateThreshold";
@@ -481,6 +484,13 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         addF (ids::reverbLowCut, "Reverb Low Cut", skewed (20.0f, 1000.0f, 1.0f, 200.0f), 180.0f, "Hz", hzT);
         addF (ids::reverbHighCut, "Reverb High Cut", skewed (1000.0f, 20000.0f, 1.0f, 7000.0f), 9000.0f, "Hz", hzT);
         addF (ids::reverbDucking, "Reverb Ducking", { 0.0f, 100.0f, 0.1f }, 0.0f, "%", pct);
+        addF (ids::reverbWidth, "Reverb Width", { 0.0f, 150.0f, 0.1f }, 100.0f, "%", pct);
+        addF (ids::reverbClean, "Reverb Clean", { 0.0f, 100.0f, 0.1f }, 30.0f, "%", pct);
+
+        addB (ids::phoneOn, "Phone On", false);
+        addF (ids::phoneAmount, "Phone Amount", { 0.0f, 100.0f, 0.1f }, 50.0f, "%", pct);
+        addB (ids::doublerOn, "Doubler On", false);
+        addF (ids::doublerAmount, "Doubler Amount", { 0.0f, 100.0f, 0.1f }, 50.0f, "%", pct);
     }
 
     // ---- NOISE GATE : coupé par défaut (les anciens projets ne changent pas) ; réglages d'usine du BROADCAST

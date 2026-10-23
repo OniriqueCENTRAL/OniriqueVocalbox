@@ -706,7 +706,7 @@ private:
 class FxVisual : public juce::Component, public Animated
 {
 public:
-    enum class Kind { chorus, flanger, delay, reverb };
+    enum class Kind { chorus, flanger, delay, reverb, doubler, phone };
     FxVisual (OniriqueVocalBoxAudioProcessor& p, Kind k) : processor (p), kind (k) { setInterceptsMouseClicks (false, false); }
     void paint (juce::Graphics&) override;
     void tick() override;
@@ -749,11 +749,12 @@ private:
     OniriqueVocalBoxAudioProcessor& processor;
     OverlayMotion motion;
     IconButton exitButton { IconButton::Icon::collapse };
-    PowerButton chorusPower, flangerPower, delayPower, reverbPower;
+    PowerButton chorusPower, flangerPower, delayPower, reverbPower, doublerPower, phonePower;
     std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>> attachments;
     std::vector<std::unique_ptr<PillSlider>> sliders;
     FxVisual chorusVis { processor, FxVisual::Kind::chorus }, flangerVis { processor, FxVisual::Kind::flanger },
-             delayVis { processor, FxVisual::Kind::delay }, reverbVis { processor, FxVisual::Kind::reverb };
+             delayVis { processor, FxVisual::Kind::delay }, reverbVis { processor, FxVisual::Kind::reverb },
+             doublerVis { processor, FxVisual::Kind::doubler }, phoneVis { processor, FxVisual::Kind::phone };
     PillToggle delaySync { "SYNC", PillToggle::Style::mini }, delayPing { "PING-PONG", PillToggle::Style::mini };
     DragValue delayNote;
     SegmentSelector reverbMode;
@@ -762,8 +763,9 @@ private:
     PillSlider *flangerRate = nullptr, *flangerDepth = nullptr, *flangerFb = nullptr, *flangerMix = nullptr;
     PillSlider *delayTime = nullptr, *delayFb = nullptr, *delayMix = nullptr, *delayLow = nullptr, *delayHigh = nullptr, *delayDuck = nullptr;
     PillSlider *revPre = nullptr, *revDecay = nullptr, *revSize = nullptr, *revDiff = nullptr, *revModRate = nullptr, *revModDepth = nullptr;
-    PillSlider *revLow = nullptr, *revHigh = nullptr, *revDuck = nullptr;
-    Card chorusCard, flangerCard, delayCard, reverbCard;
+    PillSlider *revLow = nullptr, *revHigh = nullptr, *revDuck = nullptr, *revWidth = nullptr, *revClean = nullptr;
+    PillSlider *doublerAmt = nullptr, *phoneAmt = nullptr;
+    Card chorusCard, flangerCard, delayCard, reverbCard, doublerCard, phoneCard;
     juce::Rectangle<float> titleArea;
     std::vector<Animated*> children;
 };
