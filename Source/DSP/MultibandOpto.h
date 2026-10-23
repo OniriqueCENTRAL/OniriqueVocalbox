@@ -148,7 +148,7 @@ public:
                 gr[s] += smoothC * (want - gr[s]);
                 peakGr[s] = std::max (peakGr[s], gr[s]);
 
-                g[b] = dbToGain (-gr[s]) * gainS[s].getNextValue() * soloS[s].getNextValue();
+                g[b] = dbToGain (-gr[s]) * gainS[s].getNextValue() * sCurve (soloS[s].getNextValue());
             }
 
             for (int c = 0; c < numCh; ++c)

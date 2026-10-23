@@ -26,11 +26,16 @@ namespace onirique
     MIX : STFT (trame ~21 ms, recouvrement 75 %, fenêtres racine de Hann), gains appliqués bin par bin.
           Latence = une trame, compensée par le DAW.
     LIVE : latence nulle. La même analyse tourne sur une copie du signal ; ses gains sont regroupés en 24 bandes
-          (1/3 d'octave environ) et appliqués au son par 24 cloches IIR à phase minimale, recalculées toutes les
+          (1/3 d'octave environ) et appliqués au son par 24 cloches IIR à phase minimale (un plateau grave et un plateau aigu aux
+          deux bouts : le bruit sous 60 Hz et au-dessus de 16 kHz descend aussi), recalculées toutes les
           32 échantillons. L'atténuation maximale est limitée à -18 dB (au-delà, des cloches qui se chevauchent
           ne suivent plus fidèlement la courbe voulue).
 
     Curseur à 0 : le module rend le signal d'origine (retardé de sa latence en MIX), en fondu de 30 ms.
+    L'analyse continue de tourner quand le module est coupé (le bruit reste estimé : à l'allumage, il agit tout de suite),
+    mais le son, lui, n'est plus touché du tout, et la synthèse ne tourne plus : coupé, le module ne coûte plus qu'une FFT
+    par trame. À l'allumage, la synthèse repart, le fondu attend qu'une trame complète soit reconstruite.
+    Les deux canaux passent dans une seule FFT complexe (L en partie réelle, R en partie imaginaire).
 */
 class NoiseSuppressor
 {
@@ -55,10 +60,13 @@ public:
         {
             inFifo[c].assign ((size_t) N, 0.0f);
             outAcc[c].assign ((size_t) (2 * N), 0.0f);
-            spec[c].assign ((size_t) (2 * N), 0.0f);
             dryDelay[c].prepare (live ? 0 : N - 1);
         }
         monoFrame.assign ((size_t) (2 * N), 0.0f);
+        zIn.assign ((size_t) N, {});
+        zOut.assign ((size_t) N, {});
+        synthOn = false;
+        warm = 0;
         for (auto* v : { &smoothP, &curMin, &noise, &prevGain, &prevGamma, &gainS, &gain, &lastP })
             v->assign ((size_t) bins, 0.0f);
         std::fill (gain.begin(), gain.end(), 1.0f);
@@ -99,12 +107,24 @@ public:
     {
         float redSum = 0.0f;
         int redN = 0;
+        // synthèse seulement quand le son est touché ; au réveil, le fondu attend une trame complète (N + hop échantillons)
+        const bool needSynth = ! live && (amount > 0.0005f || mix.isSmoothing() || mix.getCurrentValue() > 0.0f);
+        if (needSynth && ! synthOn)
+        {
+            for (auto& a : outAcc) std::fill (a.begin(), a.end(), 0.0f);
+            warm = N + hop;
+            const float tgt = mix.getTargetValue();   // le fondu repart de zéro
+            mix.setCurrentAndTargetValue (0.0f);
+            mix.setTargetValue (tgt);
+        }
+        synthOn = needSynth;
+        const int msk = N - 1, msk2 = 2 * N - 1;
         for (int i = 0; i < n; ++i)
         {
             // entrée de l'analyse (et de la STFT en MIX)
             for (int c = 0; c < numCh; ++c) inFifo[c][(size_t) fifoPos] = ch[c][i];
             if (numCh == 1) inFifo[1][(size_t) fifoPos] = ch[0][i];
-            fifoPos = (fifoPos + 1) % N;
+            fifoPos = (fifoPos + 1) & msk;
 
             if (++hopCount >= hop)
             {
@@ -113,7 +133,9 @@ public:
                 redSum += lastReductionDb; ++redN;
             }
 
-            const float m = mix.getNextValue();
+            float m = 0.0f;
+            if (warm > 0) --warm;
+            else          m = sCurve (mix.getNextValue());
             if (live)
             {
                 // cloches recalculées toutes les 32 échantillons, gains glissés vers la cible
@@ -137,7 +159,7 @@ public:
                     ch[c][i] = dry + m * (wet - dry);
                 }
                 if (numCh == 1) outAcc[1][(size_t) outPos] = 0.0f;
-                outPos = (outPos + 1) % (2 * N);
+                outPos = (outPos + 1) & msk2;
             }
         }
         if (redN > 0) reductionMeter.store (redSum / (float) redN, std::memory_order_relaxed);
@@ -154,30 +176,28 @@ private:
     void analyseFrame (int numCh) noexcept
     {
         ++frames;
-        // trames : les N derniers échantillons, fenêtrés ; mono pour l'analyse, chaque canal pour la synthèse (MIX)
-        const int chans = live ? 0 : 2;
-        for (int c = 0; c < chans; ++c)
+        // trame : les N derniers échantillons, fenêtrés ; L en partie réelle, R en partie imaginaire, une seule FFT complexe
+        // (une piste mono a sa copie dans inFifo[1])
+        const int msk = N - 1;
+        for (int k = 0; k < N; ++k)
         {
-            for (int k = 0; k < N; ++k) spec[c][(size_t) k] = inFifo[c][(size_t) ((fifoPos + k) % N)] * win[(size_t) k];
-            std::fill (spec[c].begin() + N, spec[c].end(), 0.0f);
-            fft->performRealOnlyForwardTransform (spec[c].data(), true);
+            const size_t idx = (size_t) ((fifoPos + k) & msk);
+            const float w = win[(size_t) k];
+            zIn[(size_t) k] = { inFifo[0][idx] * w, inFifo[1][idx] * w };
         }
+        fft->perform (zIn.data(), zOut.data(), false);
         juce::ignoreUnused (numCh);
 
-        // puissance mono par bin
+        // spectre mono (L + R) / 2 : L[k] = (Z[k] + conj Z[N-k]) / 2, R[k] = (Z[k] - conj Z[N-k]) / 2i
         float* mono = monoFrame.data();
-        if (live)
+        for (int k = 0; k < bins; ++k)
         {
-            for (int k = 0; k < N; ++k)
-            {
-                const size_t idx = (size_t) ((fifoPos + k) % N);
-                mono[k] = 0.5f * (inFifo[0][idx] + inFifo[1][idx]) * win[(size_t) k];
-            }
-            std::fill (monoFrame.begin() + N, monoFrame.end(), 0.0f);
-            fft->performRealOnlyForwardTransform (mono, true);
+            const auto a = zOut[(size_t) k], b = zOut[(size_t) ((N - k) & msk)];
+            const float lr = a.real() + b.real(), li = a.imag() - b.imag();   // 2 L[k]
+            const float rr = a.imag() + b.imag(), ri = b.real() - a.real();   // 2 R[k]
+            mono[2 * k]     = 0.25f * (lr + rr);
+            mono[2 * k + 1] = 0.25f * (li + ri);
         }
-        else
-            for (int k = 0; k < 2 * N; ++k) mono[k] = 0.5f * (spec[0][(size_t) k] + spec[1][(size_t) k]);
 
         const float norm = 1.0f / (float) N;
         const float att = 30.0f * std::pow (amount, 0.8f);                               // atténuation maximale (dB)
@@ -243,16 +263,24 @@ private:
         }
         lastReductionDb = amount > 0.0005f ? -10.0f * std::log10 (red / (wsum + 1.0e-20f) + 1.0e-9f) : 0.0f;
 
-        if (live) return;
+        if (live || ! synthOn) return;
 
-        // ---- MIX : gains appliqués, synthèse et recouvrement (somme des fenêtres racine de Hann² à 75 % = 2)
-        for (int c = 0; c < 2; ++c)
+        // ---- MIX : gains appliqués (même gain réel sur L et R : sur Z[k] et son miroir Z[N - k]), synthèse et
+        //      recouvrement (somme des fenêtres racine de Hann² à 75 % = 2) ; partie réelle -> L, imaginaire -> R
+        for (int k = 0; k < bins; ++k)
         {
-            float* s = spec[c].data();
-            for (int k = 0; k < bins; ++k) { s[2 * k] *= gain[(size_t) k]; s[2 * k + 1] *= gain[(size_t) k]; }
-            fft->performRealOnlyInverseTransform (s);
-            for (int k = 0; k < N; ++k)
-                outAcc[c][(size_t) ((outPos + k) % (2 * N))] += s[k] * win[(size_t) k] * 0.5f;
+            const float g = gain[(size_t) k];
+            zOut[(size_t) k] *= g;
+            if (k > 0 && k < N / 2) zOut[(size_t) (N - k)] *= g;
+        }
+        fft->perform (zOut.data(), zIn.data(), true);
+        const int msk2 = 2 * N - 1;
+        for (int k = 0; k < N; ++k)
+        {
+            const size_t idx = (size_t) ((outPos + k) & msk2);
+            const float w = win[(size_t) k] * 0.5f;
+            outAcc[0][idx] += zIn[(size_t) k].real() * w;
+            outAcc[1][idx] += zIn[(size_t) k].imag() * w;
         }
     }
 
@@ -264,7 +292,9 @@ private:
         for (int b = 0; b < kBands; ++b)
         {
             const double lo = bandHz[b] * std::pow (2.0, -1.0 / 6.0), hi = bandHz[b] * std::pow (2.0, 1.0 / 6.0);
-            const int k0 = juce::jlimit (1, bins - 1, (int) std::floor (lo / binHz)), k1 = juce::jlimit (k0, bins - 1, (int) std::ceil (hi / binHz));
+            // la première et la dernière bande s'étendent jusqu'au bout du spectre (plateaux) : rien n'échappe sous 60 Hz ni au-dessus de 16 kHz
+            const int k0 = b == 0 ? 1 : juce::jlimit (1, bins - 1, (int) std::floor (lo / binHz));
+            const int k1 = b == kBands - 1 ? bins - 1 : juce::jlimit (k0, bins - 1, (int) std::ceil (hi / binHz));
             float s = 0.0f;
             // gain de la bande = rapport d'énergie sortie / entrée : une harmonique de la voix (forte, gain ~1) domine sa
             // bande, la bande reste ouverte ; dans un silence, c'est le bruit qui compte, la bande descend
@@ -281,7 +311,10 @@ private:
             const float before = g;
             g = snap ? bandTargetDb[b] : g + 0.25f * (bandTargetDb[b] - g);
             if (snap || std::abs (g - before) > 0.02f || bandHz[b] >= 0.45 * fs)
-                bell[b].setCoeffs (bandHz[b] < 0.45 * fs ? BiquadCoeffs::peaking (fs, bandHz[b], 4.3, g) : BiquadCoeffs {});
+                bell[b].setCoeffs (bandHz[b] >= 0.45 * fs ? BiquadCoeffs {}
+                                   : b == 0 ? BiquadCoeffs::lowShelf (fs, bandHz[b] * 1.12, 0.7, g)
+                                   : b == kBands - 1 ? BiquadCoeffs::highShelf (fs, bandHz[b] * 0.89, 0.7, g)
+                                   : BiquadCoeffs::peaking (fs, bandHz[b], 4.3, g));
         }
     }
 
@@ -289,7 +322,10 @@ private:
     bool live = false;
     int order = 10, N = 1024, hop = 256, bins = 513;
     std::unique_ptr<juce::dsp::FFT> fft;
-    std::vector<float> win, inFifo[2], outAcc[2], spec[2], monoFrame;
+    std::vector<float> win, inFifo[2], outAcc[2], monoFrame;
+    std::vector<juce::dsp::Complex<float>> zIn, zOut;
+    bool synthOn = false;
+    int warm = 0;
     std::vector<float> smoothP, curMin, noise, prevGain, prevGamma, gainS, gain, lastP;
     std::array<std::vector<float>, kSub> subMin;
     int subIndex = 0, framesInSub = 0, framesPerSub = 35;

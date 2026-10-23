@@ -7,7 +7,7 @@
 #include "ParametricEQ.h"
 #include "ResoMultirate.h"
 #include "DeEsser.h"
-#include "PlosiveSuppressor.h"
+#include "DePlosive.h"
 #include "CompressorModule.h"
 #include "ParallelComp.h"
 #include "MultibandOpto.h"
@@ -95,7 +95,7 @@ public:
                 for (int c = 0; c < numCh; ++c) ch[c][i] = dry[c][(size_t) i];
                 continue;
             }
-            const float m = mix.getNextValue();
+            const float m = sCurve (mix.getNextValue());
             for (int c = 0; c < numCh; ++c)
                 ch[c][i] = dry[c][(size_t) i] + m * (ch[c][i] - dry[c][(size_t) i]);
         }
@@ -128,9 +128,9 @@ public:
 
     struct Params
     {
-        float inputDb = 0.0f, low = 0.0f, mud = 0.0f, high = 0.0f;
-        float lowFreqHz = 125.0f, highFreqHz = 10000.0f;
-        bool smartS = false;                            // détection intelligente des S liée au HIGH
+        float inputDb = 0.0f, low = 0.0f, mud = 0.0f;   // LOW, MUD : 0..10
+        float high = 0.0f, air = 0.0f;                   // HI, AIR (VOCAL MINI) : -10..+10
+        float lowFreqHz = 125.0f;
         bool lowCut = false;                            // passe-haut 85 Hz de l'EQ
         bool compOn = false, compMaster = true;          // compMaster : interrupteur général de la carte COMPRESSION
         bool parOn = false;                             // compression parallèle
@@ -168,28 +168,43 @@ public:
         bool autoGain = false, bypass = false;
     };
 
-    // live : latence nulle (pas de FFT dans RESONANCE, pas d'anticipation, pas de suréchantillonnage)
-    // oversamplingOrder : 0 = OFF, 1..3 = x2..x8 (mode MIX)
-    void prepare (double sampleRate, const Params& initial, bool live = false, int oversamplingOrder = 3)
+    // oversamplingOrder : 0 = OFF, 1..3 = x2..x8. Toujours en qualité maximale (FFT de RESONANCE, anticipations) :
+    // VOCALBOX n'a plus de mode LIVE à latence nulle.
+    void prepare (double sampleRate, const Params& initial, int oversamplingOrder = 1)
     {
         fs = sampleRate;
+        constexpr bool live = false;
 
         // ---- suréchantillonnage de TOUTE la chaîne de modules (EQ -> ... -> SATURATION) : 1 seul aller-retour
-        //      (FIR demi-bande à phase linéaire, latence entière). En LIVE : aucun (latence nulle).
-        osOrder = live ? 0 : juce::jlimit (0, 3, oversamplingOrder);
+        //      (FIR demi-bande à phase linéaire, latence entière)
+        osOrder = juce::jlimit (0, 3, oversamplingOrder);
         osFactor = 1 << osOrder;
-        os = std::make_unique<juce::dsp::Oversampling<float>> (4, (size_t) osOrder,
-                 juce::dsp::Oversampling<float>::filterHalfBandFIREquiripple, false, true);   // 2 canaux audio + 2 d'écoute
+        //      Filtres sur mesure, -110 dB (ceux de JUCE en « qualité standard » ne descendaient qu'à -60 / -70 dB : leur
+        //      ondulation laissait une trace à -60 dB dans la bande audible) : le premier étage, raide, garde toute la bande
+        //      jusqu'à 0.45 x la cadence de l'hôte ; les suivants n'ont qu'à rejeter les images lointaines.
+        os = std::make_unique<juce::dsp::Oversampling<float>> (4);   // 2 canaux audio + 2 d'écoute
+        if (osOrder == 0) os->addDummyOversamplingStage();
+        for (int s = 0; s < osOrder; ++s)
+            os->addOversamplingStage (juce::dsp::Oversampling<float>::filterHalfBandFIREquiripple,
+                                      s == 0 ? 0.05f : 0.20f, -110.0f, s == 0 ? 0.05f : 0.20f, -110.0f);
+        // latence entière EXACTE : celle des filtres, comptée à la cadence suréchantillonnée (toujours un nombre entier),
+        // complétée par un retard de quelques échantillons à cette cadence jusqu'au multiple du facteur suivant (la
+        // compensation « entière » de JUCE passait par un retard fractionnaire approché : un décalage de phase à -70 dB).
+        os->setUsingIntegerLatency (false);
         os->initProcessing ((size_t) kChunk);
+        const int osLatencyOS = juce::roundToInt (os->getLatencyInSamples() * osFactor);
+        osPad = (osFactor - osLatencyOS % osFactor) % osFactor;
+        for (auto& d : osPadDelay) d.prepare (osPad);
+        osLatencyHost = (osLatencyOS + osPad) / osFactor;
         const double fsOS = fs * osFactor;
         const int blockOS = kChunk * osFactor;
 
         eq.prepare (fsOS);
         peq.prepare (fsOS);
-        reso.prepare (fsOS, live, osFactor, blockOS);
+        reso.prepare (fsOS, osFactor, blockOS);
         deEsser.prepare (fsOS, live, osFactor);
         deEsser2.prepare (fsOS, live, osFactor);   // toujours dans la chaîne : la latence ne change pas avec le bouton +
-        plosive.prepare (fsOS);
+        plosive.prepare (fsOS, live, osFactor);   // anticipation en MIX (multiple du facteur : la latence reste entière)
         comp.prepare (fsOS, blockOS);
         parallel.prepare (fsOS, blockOS);
         multiband.prepare (fsOS);
@@ -215,7 +230,7 @@ public:
         // latence totale (à la cadence de l'hôte) : filtres de suréchantillonnage + modules (multiples du facteur)
         const int modulesOS = reso.getLatencySamples() + deessLatency() + sat.getLatencySamples();
         jassert (modulesOS % osFactor == 0);
-        latency = suppressor.getLatencySamples() + gate.getLatencySamples() + juce::roundToInt (os->getLatencyInSamples()) + modulesOS / osFactor;
+        latency = suppressor.getLatencySamples() + gate.getLatencySamples() + osLatencyHost + modulesOS / osFactor;
         for (auto& d : dryDelay) d.prepare (latency);
         // écoute RESONANCE : ce qui est retiré est retardé comme le reste de la chaîne (DE-ESSER + SATURATION)
         for (auto& d : listenDelay) d.prepare (deessLatency() + sat.getLatencySamples());
@@ -249,9 +264,9 @@ public:
             wetMix.setTargetValue (wm);
         }
 
-        eq.setTargets (p.low, p.mud, p.high, snap);
+        eq.setTargets (p.low, p.mud, snap);
+        eq.setShine (p.high, p.air, snap);
         eq.setLowFreq (p.lowFreqHz, snap);
-        eq.setHighFreq (p.highFreqHz, snap);
         eq.setLowCut (p.lowCut, snap);
         peq.setBands (p.peq, snap);
         comp.setMode (p.compMode, p.compOrder, snap);
@@ -268,12 +283,10 @@ public:
         multiband.setSolo (p.mbSolo, snap);
         listenMix.setTargetValue (p.resoListen && p.resoOn ? 1.0f : 0.0f);
         if (snap) listenMix.setCurrentAndTargetValue (p.resoListen && p.resoOn ? 1.0f : 0.0f);
-        plosive.setAmount (p.deessOn ? p.plosive * 0.01f : 0.0f, snap);
-        // SMART S appartient au HIGH de l'EQ mais tourne dans le moteur du de-esser : il reste actif
-        // même quand le module DE-ESSER est coupé (seule la bande utilisateur est alors neutralisée)
-        const bool smartOn = p.smartS && p.eqOn;
-        deEsser.setParams (p.deessFreq, p.deessOn ? p.deessAmt * 0.01f : 0.0f, smartOn ? p.high * 0.1f : 0.0f, snap);
-        deEsser2.setParams (p.deess2Freq, p.deessOn && p.deess2On ? p.deess2Amt * 0.01f : 0.0f, 0.0f, snap);
+        plosive.set (p.deessOn, p.plosive * 0.01f);
+        // (la garde de sifflantes des aigus est dans l'EQ ANALOG : celle de HI / AIR, comme dans VOCAL MINI)
+        deEsser.setParams (p.deessFreq, p.deessOn ? p.deessAmt * 0.01f : 0.0f, snap);
+        deEsser2.setParams (p.deess2Freq, p.deessOn && p.deess2On ? p.deess2Amt * 0.01f : 0.0f, snap);
         sat.setDrive (p.drive, snap);
         sat.setMode (p.satType, snap);
         gate.setParams (p.gateOn, p.gateThr, p.gateRange, p.gateAttack, p.gateHold, p.gateRelease, p.gateHyst);
@@ -291,7 +304,7 @@ public:
         parallel.setDeEsser (p.parDeessFreq, p.parDeessAmt * 0.01f, snap);
         if (snap) mbOutGain.setCurrentAndTargetValue (dbToGain (p.mbOutDb)); else mbOutGain.setTargetValue (dbToGain (p.mbOutDb));
         mbSw.set (p.mbOn && p.compMaster, snap);
-        deessSw.set (p.deessOn || smartOn, snap);   // les plosives suivent l'interrupteur DE-ESSER / PLOSIVES
+        deessSw.set (p.deessOn, snap);   // les plosives suivent l'interrupteur DE-ESSER / PLOSIVES
         satSw.set (p.satOn, snap);
         autoOn = p.autoGain;
     }
@@ -401,6 +414,12 @@ private:
         }
 
         // 5) retour à la cadence de l'hôte
+        if (osPad > 0)
+            for (int c = 0; c < (int) up.getNumChannels(); ++c)
+            {
+                float* s = up.getChannelPointer ((size_t) c);
+                for (int i = 0; i < nOS; ++i) s[i] = osPadDelay[c].process (s[i]);
+            }
         os->processSamplesDown (block);
 
         autoGain.analyseProcessed (ch, numCh, n);
@@ -428,9 +447,9 @@ private:
                 orderGain = std::min (1.0f, orderGain + orderStep);
 
             const float g = outGain.getNextValue();
-            const float m = wetMix.getNextValue() * orderGain;
-            const float lm = listenMix.getNextValue();   // écoute RESONANCE : on n'entend plus que ce qui est retiré
-            const float pl = peqListenMix.getNextValue(); // écoute d'une bande de l'EQ : on n'entend plus qu'elle
+            const float m = sCurve (wetMix.getNextValue()) * sCurve (orderGain);
+            const float lm = sCurve (listenMix.getNextValue());   // écoute RESONANCE : on n'entend plus que ce qui est retiré
+            const float pl = sCurve (peqListenMix.getNextValue()); // écoute d'une bande de l'EQ : on n'entend plus qu'elle
             for (int c = 0; c < numCh; ++c)
             {
                 float wet = ch[c][i] * g * (1.0f - lm) + removed[c][i] * lm;
@@ -454,7 +473,7 @@ private:
     ParallelComp parallel;
     MultibandOpto multiband;
     DeEsser deEsser, deEsser2;   // deEsser2 : second de-esser (bouton + de la carte)
-    int deessLatency() const noexcept { return deEsser.getLatencySamples() + deEsser2.getLatencySamples(); }
+    int deessLatency() const noexcept { return plosive.getLatencySamples() + deEsser.getLatencySamples() + deEsser2.getLatencySamples(); }
     SaturationLab sat;
     AutoGain autoGain;
     NoiseGate gate;
@@ -491,7 +510,8 @@ private:
     float dry[2][kChunk] {}, removed[2][kChunk] {}, monoSpare[kChunk] {};
     DelayLine listenDelay[2];
     std::unique_ptr<juce::dsp::Oversampling<float>> os;
-    int osOrder = 0, osFactor = 1;
+    int osOrder = 0, osFactor = 1, osPad = 0, osLatencyHost = 0;
+    DelayLine osPadDelay[4];   // complète la latence des filtres jusqu'à un nombre entier d'échantillons de l'hôte
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> listenMix;
 
     // ordre de traitement : appliqué quand la sortie a glissé vers le signal sec (aucun clic)
@@ -514,7 +534,7 @@ private:
     std::array<int, kOrderModules> order { 0, 1, 2, 3, 4, 5, 6 }, pendingOrder { 0, 1, 2, 3, 4, 5, 6 };
     float orderGain = 1.0f, orderStep = 0.001f;
     bool orderJustSwapped = false;
-    PlosiveSuppressor plosive;
+    mini::DePlosive plosive;   // les plosives (carte DE-ESSER / PLOSIVES), le moteur de VOCAL MINI
 
     static void storePeaks (std::atomic<float> (&dest)[2], float* const* ch, int numCh, int n) noexcept
     {

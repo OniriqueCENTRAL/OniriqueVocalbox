@@ -11,8 +11,8 @@ namespace onirique
     juste après INPUT, à la cadence de l'hôte.
 
     Ce qui le rend inaudible :
-    - Détecteur sur une chaîne latérale FILTRÉE (passe-haut 90 Hz + passe-bas 7 kHz) : le grondement, les
-      chocs de bureau, la ventilation et le souffle n'ouvrent pas le gate ; la voix, si.
+    - Détecteur sur une chaîne latérale FILTRÉE (passe-haut 80 Hz + passe-bas doux 10 kHz) : le grondement, les
+      chocs de bureau et la ventilation n'ouvrent pas le gate ; la voix et les sifflantes de fin de mot (« -s », « -ch »), si.
     - Détection RMS courte (3 ms) combinée à la crête : réagit au corps de la voix sans se laisser tromper
       par un clic isolé.
     - Anticipation de 1.5 ms (mode MIX) : l'audio est retardé, le détecteur non. Le gate est déjà ouvert quand la
@@ -45,8 +45,8 @@ public:
         fs = sampleRate;
         lookahead = live ? 0 : std::max (1, (int) std::lround (kLookaheadSec * fs));
         for (auto& d : delay) d.prepare (lookahead);
-        scHp.setCoeffs (BiquadCoeffs::highpass (fs, 90.0, 0.707));
-        scLp.setCoeffs (BiquadCoeffs::lowpass (fs, 7000.0, 0.707));
+        scHp.setCoeffs (BiquadCoeffs::highpass (fs, 80.0, 0.707));
+        scLp.setCoeffs (BiquadCoeffs::lowpass (fs, std::min (10000.0, 0.45 * fs), 0.6));   // doux : les « -s », « -ch » de fin de mot ouvrent
         rmsC = coef (3.0);
         peakRel = coef (40.0);
         linC = coef (1.0);
@@ -99,9 +99,10 @@ public:
 
             ms += rmsC * (sc * sc - ms);
             peak = sc > peak ? sc : peak + peakRel * (sc - peak);
-            // niveau : RMS ramené à la crête d'un sinus, la crête ne compte qu'à moitié (pas d'ouverture sur un clic)
+            // niveau : RMS ramené à la crête d'un sinus ; la crête compte peu (35 %) : ni un clic ni les pointes d'un bruit de
+            // fond ne rouvrent le gate (un souffle à -60 dBFS RMS se lit vers -57)
             const float rmsLvl = std::sqrt (2.0f * ms);
-            const float det = std::max (rmsLvl, 0.5f * peak);
+            const float det = std::max (rmsLvl, 0.35f * peak);
             const float lvl = det > 1.0e-6f ? gainToDb (det) : -120.0f;
             maxLvl = std::max (maxLvl, lvl);
 

@@ -1522,22 +1522,11 @@ void SpectrumAnalyzer::placeBubble()
     if (r.toNearestInt() != bubble.getBounds()) bubble.setBounds (r.toNearestInt());
 }
 
-// chaque point de l'écran couvre 1/6 d'octave : somme des bins de la bande (aigus), ou interpolation entre les deux
-// bins voisins quand la bande est plus étroite qu'un bin (graves) -> courbe lisse partout, sans escalier dans le bas
+// chaque point de l'écran : moyenne gaussienne de 1/12 d'octave des bins voisins (voir SpectrumSmoother.h)
 void SpectrumAnalyzer::buildMap (double fs)
 {
     mapFs = fs;
-    const double binHz = fs / kN;
-    for (int i = 0; i < kPts; ++i)
-    {
-        const double f = hzAt (i), lo = f * std::pow (2.0, -1.0 / 12.0), hi = f * std::pow (2.0, 1.0 / 12.0);
-        auto& pm = pmap[(size_t) i];
-        pm.width = (float) ((hi - lo) / binHz);
-        pm.interp = pm.width < 2.0f;
-        pm.pos = (float) (f / binHz);
-        pm.b0 = juce::jlimit (1, kN / 2, (int) std::ceil (lo / binHz));
-        pm.b1 = juce::jlimit (pm.b0, kN / 2, (int) std::floor (hi / binHz));
-    }
+    smoother.build (fs, kN, kPts);
 }
 
 bool SpectrumAnalyzer::analyse (onirique::SpectrumTap& tap, std::vector<float>& hist, int& writePos, std::array<float, kPts>& spec)
@@ -1561,25 +1550,14 @@ bool SpectrumAnalyzer::analyse (onirique::SpectrumTap& tap, std::vector<float>& 
         fftBuf[(size_t) k] = a * a;                // puissance
     }
 
+    std::array<float, kPts> level;
+    smoother.apply (fftBuf.data(), level);
     for (int i = 0; i < kPts; ++i)
     {
-        const auto& pm = pmap[(size_t) i];
-        double e = 0.0;
-        if (pm.interp)
-        {
-            const int k0 = juce::jlimit (1, kN / 2 - 1, (int) std::floor (pm.pos));
-            const float t = juce::jlimit (0.0f, 1.0f, pm.pos - (float) k0);
-            e = ((1.0f - t) * fftBuf[(size_t) k0] + t * fftBuf[(size_t) k0 + 1]) * std::max (1.0f, pm.width / 1.5f);
-        }
-        else
-        {
-            for (int b = pm.b0; b <= pm.b1; ++b) e += fftBuf[(size_t) b];
-            e /= 1.5;                              // Hann : largeur de bande équivalente 1.5 bin
-        }
-        const float db = (float) (10.0 * std::log10 (e + 1.0e-14));
+        const float db = level[(size_t) i];
         auto& s = spec[(size_t) i];
         const float before = s;
-        s += (db > s ? 0.84f : 0.17f) * (db - s);  // montée vive, retombée douce (~180 ms), à 30 analyses par seconde
+        s += (db > s ? 0.70f : 0.13f) * (db - s);  // montée vive, retombée douce (~250 ms), à 30 analyses par seconde
         moved |= std::abs (s - before) > 0.05f && std::max (s, before) > -105.0f;   // sous -105 dB : hors de l'affichage
     }
     return moved;
@@ -1619,13 +1597,13 @@ void SpectrumAnalyzer::tick()
 bool SpectrumAnalyzer::updateCurves (double fs)
 {
     using namespace onirique;
-    static constexpr float lowHz[] { 80.0f, 100.0f, 125.0f }, highHz[] { 8000.0f, 10000.0f, 20000.0f };
+    static constexpr float lowHz[] { 80.0f, 100.0f, 125.0f };
     bool moved = false;
     moved |= ui::approach (l, param (ids::low), 0.3f);
     moved |= ui::approach (m, param (ids::mud), 0.3f);
     moved |= ui::approach (h, param (ids::high), 0.3f);
     moved |= ui::approach (lf, lowHz[juce::jlimit (0, 2, juce::roundToInt (param (ids::lowFreq)))], 0.3f);
-    moved |= ui::approach (hf, highHz[juce::jlimit (0, 2, juce::roundToInt (param (ids::highFreq)))], 0.3f);
+    moved |= ui::approach (ai, param (ids::air), 0.3f);
     moved |= ui::approach (lc, param (ids::lowCut) > 0.5f ? 1.0f : 0.0f, 0.25f);
     const bool byp = param (ids::bypass) > 0.5f;
     moved |= ui::approach (eqAmt, param (ids::peqPower) > 0.5f && ! byp ? 1.0f : 0.0f, 0.2f);
@@ -1669,7 +1647,7 @@ bool SpectrumAnalyzer::updateCurves (double fs)
             maxC[b][k] = ParametricEQ::designStage (fs, x.type, x.freq, x.gainDb, x.q, x.slope, k);
         }
     }
-    const auto ak = VocalEQ::Curve::make (fs, l, m, h, lf, hf, lc);
+    const auto ak = VocalEQ::Curve::make (fs, l, m, h, ai, lf, lc);
     const auto& sb = bd[(size_t) selected];
     for (int i = 0; i < kPts; ++i)
     {
@@ -4224,6 +4202,62 @@ void GainReductionBar::tick()
 void GainReductionBar::paint (juce::Graphics& g)
 {
     const auto area = getLocalBounds().toFloat();
+    if (area.getWidth() > 2.0f * area.getHeight())
+    {
+        // à plat (carte PARALLEL) : « GR » et réduction max récente sur la première ligne, puis la barre qui s'allonge
+        // depuis 0 dB vers la droite, graduée dessous
+        const float u = area.getHeight() / 54.0f, es = ui::editorScale (*this);
+        auto r = area;
+        auto row = r.removeFromTop (20.0f * u);
+        const auto readout = row.removeFromRight (std::min (72.0f * u, row.getWidth() * 0.5f));
+        const auto title = row;
+        r.removeFromTop (5.0f * u);
+        const auto bar = r.removeFromTop (12.0f * u);
+        const auto scale = r;
+        auto xOf = [&] (float db) { return bar.getX() + juce::jlimit (0.0f, 1.0f, db / range) * bar.getWidth(); };
+
+        g.setColour (ui::haze);
+        g.setFont (ui::font (ui::Face::body, std::max (13.0f * u, 10.5f * es), true, 0.12f));
+        g.drawText ("GR", title, juce::Justification::centredLeft, false);
+
+        g.setFont (ui::font (ui::Face::mono, std::max (10.0f * u, 9.0f * es)));
+        for (int db : { 0, juce::roundToInt (range / 3.0f), juce::roundToInt (range * 2.0f / 3.0f), juce::roundToInt (range) })
+        {
+            const float x = xOf ((float) db);
+            g.setColour (ui::haze.withAlpha (0.75f));
+            g.fillRect (juce::Rectangle<float> (x, scale.getY() + 1.0f * u, 1.0f, 3.0f * u));
+            const auto t = db == 0 ? juce::String ("0") : "-" + juce::String (db);
+            // 0 calé à gauche de la barre, le dernier calé à droite : rien ne dépasse de la carte
+            const bool first = db == 0, last = db == juce::roundToInt (range);
+            const float lx = first ? x : (last ? x - 40.0f * u : x - 20.0f * u);
+            g.drawText (t, juce::Rectangle<float> (lx, scale.getY() + 4.0f * u, 40.0f * u, scale.getHeight() - 4.0f * u),
+                        first ? juce::Justification::centredLeft : last ? juce::Justification::centredRight : juce::Justification::centred, false);
+        }
+
+        g.setColour (juce::Colours::black.withAlpha (0.45f));
+        g.fillRoundedRectangle (bar, 3.0f * u);
+        g.setColour (ui::line);
+        g.drawRoundedRectangle (bar.reduced (0.5f), 3.0f * u, 1.0f);
+        if (gr > 0.02f)
+        {
+            const auto fill = bar.withRight (xOf (gr)).reduced (1.0f, 1.5f * u);
+            juce::Path p;
+            p.addRoundedRectangle (fill, 2.0f * u);
+            ui::strokeGlow (g, p, ui::ember, 1.0f * u, 0.5f);
+            g.setGradientFill (juce::ColourGradient (ui::bone, bar.getX(), 0.0f, ui::ember, bar.getX() + bar.getWidth() * 0.5f, 0.0f, false));
+            g.fillPath (p);
+        }
+
+        const juce::String txt = hold < 0.05f ? juce::String ("0.0") : "-" + juce::String (hold, 1);
+        g.setColour (juce::Colours::black.withAlpha (0.4f));
+        g.fillRoundedRectangle (readout, readout.getHeight() * 0.5f);
+        g.setColour (hold > 0.05f ? ui::ember.withAlpha (0.8f) : ui::line);
+        g.drawRoundedRectangle (readout.reduced (0.5f), readout.getHeight() * 0.5f, 1.0f);
+        g.setColour (ui::mist.withAlpha (active ? 1.0f : 0.5f));
+        g.setFont (ui::fitFont (ui::Face::mono, readout.getHeight() * 0.58f, readout.getWidth() - 8.0f * u, txt, true));
+        g.drawText (txt, readout, juce::Justification::centred, false);
+        return;
+    }
     const float u = area.getWidth() / 46.0f;
     const float es = ui::editorScale (*this);
     auto r = area;
@@ -4283,7 +4317,7 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
     setLookAndFeel (&lnf);   // menus (presets) et champs de texte dans le style du plugin
     setOpaque (true);
 
-    for (auto* k : { &lowKnob, &midKnob, &highKnob, &freqKnob, &amtKnob, &driveKnob, &inKnob, &outKnob,
+    for (auto* k : { &lowKnob, &midKnob, &highKnob, &airKnob, &freqKnob, &amtKnob, &driveKnob, &inKnob, &outKnob,
                      &resoAmtKnob, &resoLowFader, &resoMidFader, &resoHighFader,
                      &fetInKnob, &fetOutKnob, &fetAtkKnob, &fetRelKnob, &laGainKnob, &laPeakKnob,
                      &mbThr1, &mbThr2, &mbThr3, &mbThr4, &mbAttackKnob, &mbReleaseKnob, &mbOutKnob })
@@ -4291,11 +4325,11 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
         addAndMakeVisible (k);
         animated.push_back (k);
     }
-    for (auto* c : std::initializer_list<juce::Component*> { &lowFreq, &highFreq, &smartSButton, &lowCutButton, &satType, &resoDisplay, &resoLowHz, &resoMidHz, &resoHighHz,
+    for (auto* c : std::initializer_list<juce::Component*> { &lowFreq, &lowCutButton, &satType, &resoDisplay, &resoLowHz, &resoMidHz, &resoHighHz,
                                                              &compMode, &compOrder, &fetRatio, &laMode, &vu1176, &vuLA2A,
                                                              &compTabs, &mbDisplay, &mbPresets, &mbGain1, &mbGain2, &mbGain3, &mbGain4 })
         addAndMakeVisible (c);
-    for (auto* a : std::initializer_list<Animated*> { &lowFreq, &highFreq, &smartSButton, &lowCutButton, &satType, &resoDisplay, &resoLowHz, &resoMidHz, &resoHighHz,
+    for (auto* a : std::initializer_list<Animated*> { &lowFreq, &lowCutButton, &satType, &resoDisplay, &resoLowHz, &resoMidHz, &resoHighHz,
                                                       &compMode, &compOrder, &fetRatio, &laMode, &vu1176, &vuLA2A,
                                                       &compTabs, &mbDisplay, &mbPresets, &mbGain1, &mbGain2, &mbGain3, &mbGain4,
                                                       &autoButton, &bypassButton })
@@ -4335,9 +4369,6 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
     bypassButton.setTooltip ("Bypass the whole plugin (latency-compensated, click-free).");
     autoAttachment   = std::make_unique<ButtonAttachment> (processor.apvts, ids::autoGain, autoButton);
     bypassAttachment = std::make_unique<ButtonAttachment> (processor.apvts, ids::bypass, bypassButton);
-    smartSButton.setTooltip ("Smart S: intelligent sibilance detection linked to the HIGH knob. Off = pure, clean high boost; "
-                             "on = the S that the boost brings out are gently tamed.");
-    smartSAttachment = std::make_unique<ButtonAttachment> (processor.apvts, ids::smartS, smartSButton);
     lowCutButton.setTooltip ("Low cut: 85 Hz high-pass, 18 dB/oct. Removes rumble, plosives and handling noise.");
     lowCutAttachment = std::make_unique<ButtonAttachment> (processor.apvts, ids::lowCut, lowCutButton);
 
@@ -4408,10 +4439,10 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
     peqListenButton.setTooltip ("Band listen: when lit, click and hold a band's dot to hear only that band (the frequencies it acts on); release it to hear the whole voice again.");
     peqListenAtt = std::make_unique<ButtonAttachment> (processor.apvts, ids::peqListen, peqListenButton);
 
-    // MIX / LIVE, suréchantillonnage, plosives, écoute RESONANCE
-    for (auto* c : std::initializer_list<juce::Component*> { &modeSel, &osSel, &plosiveFader, &listenButton })
+    // suréchantillonnage, plosives, écoute RESONANCE
+    for (auto* c : std::initializer_list<juce::Component*> { &osSel, &plosiveFader, &listenButton })
         addAndMakeVisible (c);
-    for (auto* a : std::initializer_list<Animated*> { &modeSel, &osSel, &plosiveFader, &listenButton })
+    for (auto* a : std::initializer_list<Animated*> { &osSel, &plosiveFader, &listenButton })
         animated.push_back (a);
     osSel.setTitle ("OS", "Oversampling of the whole plugin (MIX mode only).");
     plosiveFader.activity = [this] { return processor.getPlosiveReductionDb(); };
@@ -4530,6 +4561,20 @@ void OniriqueVocalBoxAudioProcessorEditor::timerCallback()
         const int step = (frame / 45) % 4;
         if (step == 0) showEqFull (true); else if (step == 1) showEqFull (false); else if (step == 2) showFx (true); else showFx (false);
     }
+    // essai local : ONIRIQUE_UI_PNG=fichier.png rend toute l'interface (x2) par le moteur logiciel de JUCE, pour les aperçus
+    if (frame == 90)
+        if (const auto png = juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_PNG", {}); png.isNotEmpty())
+        {
+            juce::Image img (juce::Image::ARGB, getWidth() * 2, getHeight() * 2, true, juce::SoftwareImageType());
+            {
+                juce::Graphics g2 (img);
+                g2.addTransform (juce::AffineTransform::scale (2.0f));
+                paintEntireComponent (g2, true);
+            }
+            juce::File f (png);
+            f.deleteFile();
+            if (auto os = f.createOutputStream()) juce::PNGImageFormat().writeImageToStream (img, *os);
+        }
    #endif
     {
         bool anyFx = false;
@@ -4581,10 +4626,6 @@ void OniriqueVocalBoxAudioProcessorEditor::timerCallback()
         const bool dyn = processor.apvts.getRawParameterValue (ids::peqDyn[b])->load() > 0.5f && ParametricEQ::canBeDynamic (type);
         if (dyn != peqDynShown || ParametricEQ::isCut (type) != peqCutShown) selectPeqBand (b);
     }
-    // suréchantillonnage : verrouillé (grisé) en mode LIVE
-    osSel.setLocked (processor.apvts.getRawParameterValue (ids::liveMode)->load() > 0.5f, "MIX MODE ONLY",
-                     "Oversampling only works in MIX mode: LIVE runs without oversampling to stay at zero latency. "
-                     "Switch to MIX to use it.");
     vuLA2A.setActive (compPower.getToggleState() && cm != 0);
 
     // témoin OVER : sortie au-dessus de 0 dBFS, maintenu ~1.5 s, s'éteint en fondu
@@ -4652,8 +4693,7 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
     if (licenseOverlay != nullptr)
         licenseOverlay->fit (getLocalBounds(), u, juce::Rectangle<float> (badgeRight - badgeW, 22.0f, badgeW, 40.0f).toNearestInt());
     presetBar.setBounds (juce::Rectangle<float> (336.0f * u, 40.0f * u).withRightX ((badgeRight - badgeW - 12.0f) * u).withY (22.0f * u).toNearestInt());
-    modeSel.setBounds (juce::Rectangle<float> (110.0f * u, 40.0f * u).withRightX ((float) presetBar.getX() - 12.0f * u).withY (22.0f * u).toNearestInt());
-    osSel.setBounds (juce::Rectangle<float> (204.0f * u, 40.0f * u).withRightX ((float) modeSel.getX() - 10.0f * u).withY (22.0f * u).toNearestInt());   // suréchantillonnage, à côté de MIX / LIVE
+    osSel.setBounds (juce::Rectangle<float> (204.0f * u, 40.0f * u).withRightX ((float) presetBar.getX() - 12.0f * u).withY (22.0f * u).toNearestInt());   // suréchantillonnage, à gauche des presets
     // ordre de traitement, sous le titre, jusqu'au sélecteur de suréchantillonnage
     orderBar.setBounds (juce::Rectangle<float> (logoRect.getRight() + 16.0f * u, 55.0f * u, (float) osSel.getX() - 14.0f * u - (logoRect.getRight() + 16.0f * u), 19.0f * u).toNearestInt());
     // ligne du haut, entre le titre et le suréchantillonnage : le bouton de l'ASSISTANT
@@ -4803,39 +4843,38 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
         }
     }
     {
-        // PARALLEL : AMOUNT en haut ; dessous, AUTO à gauche et le mètre de réduction du bus écrasé à droite.
-        // AUTO décoché : THRESHOLD, ATTACK et RELEASE apparaissent sous le bouton AUTO.
+        // PARALLEL : AMOUNT en haut, AUTO dessous, puis le mètre de réduction du bus écrasé, à plat, sur toute la largeur.
+        //   AUTO : le DE-ESS du bus prend tout le reste (grand bouton, fréquence dessous) : rien de minuscule, pas de vide
+        //   AUTO décoché : grille 2 x 2 de vrais boutons (THRESHOLD | ATTACK, RELEASE | DE-ESS), fréquence du DE-ESS dessous
         auto pc = inner (sections[13].bounds);
-        pc.removeFromTop (8.0f * u);
-        // AUTO décoché : AMOUNT un peu plus petit et mètre plus étroit, pour que les trois réglages restent lisibles
+        pc.removeFromTop (6.0f * u);
         parManualShown = ! parAutoButton.getToggleState();
-        const float D = std::min (pc.getWidth() - 12.0f * u, parManualShown ? 92.0f * u : 118.0f * u);
+        const float D = std::min (pc.getWidth() - 12.0f * u, parManualShown ? 84.0f * u : 124.0f * u);
         parAmountKnob.setMaxDiameter (D);
         parAmountKnob.setBounds (pc.removeFromTop (1.47f * D + 24.0f * u).toNearestInt());
-        pc.removeFromTop (parManualShown ? 10.0f * u : 18.0f * u);
-        // DE-ESS du bus (en bas de la colonne) : intensité + fréquence
-        {
-            auto da = pc.removeFromBottom (parManualShown ? 112.0f * u : 128.0f * u);
-            parDeessFreqV.setBounds (da.removeFromBottom (24.0f * u).reduced (2.0f * u, 0.0f).toNearestInt());
-            da.removeFromBottom (4.0f * u);
-            parDeessKnob.setMaxDiameter (std::min (da.getWidth() - 10.0f * u, (da.getHeight() - 30.0f * u) / 1.47f));
-            parDeessKnob.setBounds (da.toNearestInt());
-            pc.removeFromBottom (8.0f * u);
-        }
-        const float meterW = parManualShown ? 48.0f * u : 58.0f * u;
-        const auto meterCol = pc.removeFromRight (meterW);
-        parGr.setBounds (meterCol.withSizeKeepingCentre (meterW, std::min (meterCol.getHeight() - 8.0f * u, 290.0f * u)).toNearestInt());
-        pc.removeFromRight (4.0f * u);
-        parAutoButton.setBounds (pc.removeFromTop (30.0f * u).toNearestInt());
-        pc.removeFromTop (8.0f * u);
+        pc.removeFromTop (parManualShown ? 6.0f * u : 12.0f * u);
+        parAutoButton.setBounds (pc.removeFromTop (36.0f * u).reduced (4.0f * u, 0.0f).toNearestInt());
+        pc.removeFromTop (parManualShown ? 8.0f * u : 14.0f * u);
+        parGr.setBounds (pc.removeFromTop (54.0f * u).reduced (4.0f * u, 0.0f).toNearestInt());
+        pc.removeFromTop (parManualShown ? 6.0f * u : 12.0f * u);
+        parDeessFreqV.setBounds (pc.removeFromBottom (26.0f * u).reduced (4.0f * u, 0.0f).toNearestInt());
+        pc.removeFromBottom (6.0f * u);
 
-        const float kh = pc.getHeight() / 3.0f;
-        const float kd = std::max (24.0f * u, std::min (pc.getWidth() - 6.0f * u, (kh - 26.0f * u) / 1.47f));
-        for (auto* k : { &parThreshKnob, &parAttackKnob, &parReleaseKnob })
+        if (! parManualShown)
         {
-            k->setMaxDiameter (kd);
-            k->setBounds (pc.removeFromTop (kh).toNearestInt());
-            k->setVisible (parManualShown);
+            const float dd = std::min ({ pc.getWidth() - 12.0f * u, 112.0f * u, (pc.getHeight() - 28.0f * u) / 1.47f });
+            parDeessKnob.setMaxDiameter (dd);
+            parDeessKnob.setBounds (pc.withSizeKeepingCentre (pc.getWidth(), std::min (pc.getHeight(), 1.47f * dd + 28.0f * u)).toNearestInt());
+        }
+        const float cw = pc.getWidth() * 0.5f, rh = pc.getHeight() * 0.5f;
+        const float kd = std::min (cw - 8.0f * u, (rh - 26.0f * u) / 1.47f);
+        KnobComponent* grid[] { &parThreshKnob, &parAttackKnob, &parReleaseKnob, &parDeessKnob };
+        for (int i = 0; i < 4; ++i)
+        {
+            if (i == 3 && ! parManualShown) break;   // AUTO : le DE-ESS est déjà placé en grand
+            grid[i]->setMaxDiameter (kd);
+            grid[i]->setBounds (juce::Rectangle<float> (pc.getX() + cw * (float) (i % 2), pc.getY() + rh * (float) (i / 2), cw, rh).toNearestInt());
+            if (i < 3) grid[i]->setVisible (parManualShown);
         }
     }
 
@@ -4866,7 +4905,7 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
 
     // ---- rangée du haut : bande de sélecteurs au-dessus des boutons (alignés dans les 3 modules)
     auto eq = inner (sections[0].bounds), de = inner (sections[1].bounds), sat = inner (sections[2].bounds);
-    // deux bandes : interrupteurs (LOW CUT, SMART S) puis sélecteurs de fréquence, juste au-dessus des boutons
+    // deux bandes : LOW CUT puis la fréquence du LOW, juste au-dessus des boutons
     const float stripH = 26.0f * u, stripGap = 6.0f * u;
     const auto eqToggles = eq.removeFromTop (stripH);
     eq.removeFromTop (stripGap);
@@ -4879,15 +4918,14 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
         place (plosiveFader, plos.withSizeKeepingCentre (plos.getWidth() - 8.0f * u, 30.0f * u));
     }
     sat.removeFromTop (stripH + stripGap);
-    place (lowCutButton, splitCols (eqToggles, 3, 0));                // LOW CUT 85 Hz
-    place (smartSButton, splitCols (eqToggles, 3, 2));                // SMART S
-    place (lowFreq,  splitCols (eqSelectors, 3, 0));                  // 80 / 100 / 125 Hz
-    place (highFreq, splitCols (eqSelectors, 3, 2));                  // 8K / 10K / 20K
+    place (lowCutButton, splitCols (eqToggles, 2, 0));                // LOW CUT 85 Hz
+    place (lowFreq,  splitCols (eqSelectors, 2, 0));                  // 80 / 100 / 125 Hz (le LOW)
     place (satType, sat.removeFromTop (stripH));                      // TUBE / ANALOG / TAPE
     sat.removeFromTop (stripGap);
-    place (lowKnob,   splitCols (eq, 3, 0));
-    place (midKnob,   splitCols (eq, 3, 1));
-    place (highKnob,  splitCols (eq, 3, 2));
+    place (lowKnob,   splitCols (eq, 4, 0));
+    place (midKnob,   splitCols (eq, 4, 1));
+    place (highKnob,  splitCols (eq, 4, 2));
+    place (airKnob,   splitCols (eq, 4, 3));
     {
         // en bas de la carte : le bouton + (second de-esser, REMOVE une fois ajouté). Le second de-esser prend une
         // seconde rangée, construite comme la première : FREQUENCY 2 | INTENSITY 2 | son propre mètre de réduction.
@@ -5320,7 +5358,7 @@ void OniriqueVocalBoxAudioProcessorEditor::paintVeils (juce::Graphics& g)
     for (const auto& s : sections)
     {
         if (s.hidden || (s.power == nullptr && ! s.sub) || s.veil < 0.002f) continue;
-        g.setColour (ui::deep.withAlpha (0.72f * s.veil));
+        g.setColour (ui::deep.withAlpha (0.64f * s.veil));   // coupé : estompé, mais ses réglages restent lisibles
         if (s.sub) g.fillRoundedRectangle (s.bounds, 12.0f * u);   // compresseur non utilisé dans le mode choisi
         else       g.fillRoundedRectangle (s.bounds.reduced (1.0f).withTrimmedTop (36.0f * u), 14.0f * u);
     }

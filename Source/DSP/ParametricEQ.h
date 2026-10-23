@@ -209,7 +209,7 @@ public:
             float shown = s.lg > -50.0f ? s.lg : 0.0f;
             for (int i = 0; i < n; ++i)
             {
-                const float f = s.f.getNextValue(), g = s.g.getNextValue(), q = s.q.getNextValue(), m = s.mix.getNextValue();
+                const float f = s.f.getNextValue(), g = s.g.getNextValue(), q = s.q.getNextValue(), m = sCurve (s.mix.getNextValue());
 
                 if (s.dyn)
                 {

@@ -192,7 +192,7 @@ public:
             float yl = xl + mix * (wl - xl), yr = xr + mix * (wr - xr);
             const float g = gm.next (0.5f * (xl * xl + xr * xr), 0.5f * (yl * yl + yr * yr));
             yl *= g; yr *= g;
-            const float s = sw.on.getNextValue();
+            const float s = sCurve (sw.on.getNextValue());
             ch[0][i] = xl + s * (yl - xl);
             if (numCh > 1) ch[1][i] = xr + s * (yr - xr);
             else ch[0][i] = xl + s * (0.5f * (yl + yr) - xl);
@@ -248,7 +248,7 @@ public:
                 y[c] = x[c] * (1.0f - 0.5f * mix) + r * (0.5f * mix);
             }
             const float g = gm.next (0.5f * (x[0] * x[0] + x[1] * x[1]), 0.5f * (y[0] * y[0] + y[1] * y[1]));
-            const float s = sw.on.getNextValue();
+            const float s = sCurve (sw.on.getNextValue());
             if (numCh > 1)
             {
                 ch[0][i] = x[0] + s * (y[0] * g - x[0]);
@@ -320,7 +320,7 @@ public:
                 line[0].push (xl + fb * sat (r[0]));
                 line[1].push (xr + fb * sat (r[1]));
             }
-            const float g = duck.next (0.5f * (xl + xr), duckDepth) * sendG * sw.on.getNextValue();
+            const float g = duck.next (0.5f * (xl + xr), duckDepth) * sendG * sCurve (sw.on.getNextValue());
             if (numCh > 1) { wet[0][i] += r[0] * g; wet[1][i] += r[1] * g; }
             else wet[0][i] += 0.5f * (r[0] + r[1]) * g;
         }

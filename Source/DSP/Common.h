@@ -26,6 +26,14 @@ inline float sanitize (float x, float lim = 32.0f) noexcept
 inline float dbToGain (float db) noexcept { return std::exp (db * 0.11512925465f); }
 inline float gainToDb (float g) noexcept  { return 8.68588963807f * std::log (g); }
 
+// fondu en S quintique : 0 -> 1 sans angle (dérivées première et seconde nulles aux deux bouts). Appliqué à un fondu linéaire
+// 0..1, il ne laisse aucune trace dans l'aigu (un fondu linéaire, avec ses deux angles, laissait un résidu vers -75 dB).
+inline float sCurve (float t) noexcept
+{
+    t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    return t * t * t * (t * (6.0f * t - 15.0f) + 10.0f);
+}
+
 // Ligne à retard simple (délai entier), allocation uniquement dans prepare().
 class DelayLine
 {

@@ -84,7 +84,7 @@ public:
     }
 
     // de-esser du bus : fréquence 3..10 kHz, intensité 0..1
-    void setDeEsser (float freqHz, float amount01, bool snap) noexcept { deess.setParams (freqHz, amount01, 0.0f, snap); deessOn = amount01 > 0.0005f; }
+    void setDeEsser (float freqHz, float amount01, bool snap) noexcept { deess.setParams (freqHz, amount01, snap); deessOn = amount01 > 0.0005f; }
     float getDeEssReductionDb() const noexcept { return deessOn ? deess.getReductionDb() : 0.0f; }
 
     float getGainReductionDb() const noexcept { return crush.getGainReductionDb(); }

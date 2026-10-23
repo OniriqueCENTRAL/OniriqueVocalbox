@@ -147,7 +147,7 @@ private:
         std::vector<juce::RangedAudioParameter*> v;
         for (auto* p : apvts.processor.getParameters())
             if (auto* r = dynamic_cast<juce::RangedAudioParameter*> (p))
-                if (const auto id = r->getParameterID(); id != ids::bypass && id != ids::liveMode && id != ids::oversampling && id != ids::resoListen
+                if (const auto id = r->getParameterID(); id != ids::bypass && id != ids::oversampling && id != ids::resoListen
                                                          && id != ids::peqListen && id != ids::peqListenBand
                                                          && ! id.startsWith ("mbSolo"))
                     v.push_back (r);   // réglages de session exclus : bypass, mode LIVE/MIX, suréchantillonnage, écoute
@@ -159,22 +159,22 @@ private:
     {
         static const std::vector<Factory> f {
             { "Init", {} },
-            { "Clean Pop Vocal", { { ids::lowCut, 1.0f }, { ids::low, 3.0f }, { ids::mud, 4.0f }, { ids::high, 5.0f }, { ids::highFreq, 1.0f },
-                                   { ids::smartS, 1.0f }, { ids::deessAmt, 30.0f }, { ids::resoAmt, 35.0f }, { ids::compOn, 1.0f },
+            { "Clean Pop Vocal", { { ids::lowCut, 1.0f }, { ids::low, 3.0f }, { ids::mud, 4.0f }, { ids::high, 3.0f }, { ids::air, 3.0f },
+                                   { ids::deessAmt, 30.0f }, { ids::resoAmt, 35.0f }, { ids::compOn, 1.0f },
                                    { ids::compMode, 2.0f }, { ids::fetIn, 6.0f }, { ids::fetAttack, 3.0f }, { ids::fetRelease, 5.0f },
                                    { ids::laPeak, 35.0f }, { ids::drive, 2.0f }, { ids::autoGain, 1.0f } } },
-            { "Rap Lead",        { { ids::lowCut, 1.0f }, { ids::low, 5.0f }, { ids::lowFreq, 1.0f }, { ids::mud, 5.0f }, { ids::high, 4.0f },
-                                   { ids::smartS, 1.0f }, { ids::deessAmt, 35.0f }, { ids::resoAmt, 40.0f }, { ids::compOn, 1.0f },
+            { "Rap Lead",        { { ids::lowCut, 1.0f }, { ids::low, 5.0f }, { ids::lowFreq, 1.0f }, { ids::mud, 5.0f }, { ids::high, 3.0f }, { ids::air, 2.0f },
+                                   { ids::deessAmt, 35.0f }, { ids::resoAmt, 40.0f }, { ids::compOn, 1.0f },
                                    { ids::compMode, 0.0f }, { ids::fetIn, 12.0f }, { ids::fetRatio, 1.0f }, { ids::fetAttack, 5.0f },
                                    { ids::fetRelease, 6.0f }, { ids::satType, 1.0f }, { ids::drive, 3.5f }, { ids::autoGain, 1.0f } } },
-            { "Airy Ballad",     { { ids::lowCut, 1.0f }, { ids::low, 2.0f }, { ids::mud, 3.0f }, { ids::high, 7.0f }, { ids::highFreq, 2.0f },
-                                   { ids::smartS, 1.0f }, { ids::deessAmt, 25.0f }, { ids::resoAmt, 30.0f }, { ids::compOn, 1.0f },
+            { "Airy Ballad",     { { ids::lowCut, 1.0f }, { ids::low, 2.0f }, { ids::mud, 3.0f }, { ids::high, 3.0f }, { ids::air, 6.0f },
+                                   { ids::deessAmt, 25.0f }, { ids::resoAmt, 30.0f }, { ids::compOn, 1.0f },
                                    { ids::compMode, 1.0f }, { ids::laPeak, 45.0f }, { ids::satType, 2.0f }, { ids::drive, 2.0f },
                                    { ids::autoGain, 1.0f } } },
-            { "Warm Tape Vocal", { { ids::low, 4.0f }, { ids::lowFreq, 2.0f }, { ids::mud, 3.0f }, { ids::high, 3.0f }, { ids::deessAmt, 20.0f },
+            { "Warm Tape Vocal", { { ids::low, 4.0f }, { ids::lowFreq, 2.0f }, { ids::mud, 3.0f }, { ids::high, 2.0f }, { ids::deessAmt, 20.0f },
                                    { ids::compOn, 1.0f }, { ids::compMode, 1.0f }, { ids::laPeak, 40.0f }, { ids::satType, 2.0f },
                                    { ids::drive, 5.0f }, { ids::autoGain, 1.0f } } },
-            { "Aggressive Rock", { { ids::lowCut, 1.0f }, { ids::low, 3.0f }, { ids::mud, 3.0f }, { ids::high, 5.0f }, { ids::smartS, 1.0f },
+            { "Aggressive Rock", { { ids::lowCut, 1.0f }, { ids::low, 3.0f }, { ids::mud, 3.0f }, { ids::high, 4.0f }, { ids::air, 2.0f },
                                    { ids::deessAmt, 30.0f }, { ids::compOn, 1.0f }, { ids::compMode, 2.0f }, { ids::fetIn, 14.0f },
                                    { ids::fetRatio, 4.0f }, { ids::fetAttack, 4.0f }, { ids::fetRelease, 6.0f }, { ids::laPeak, 30.0f },
                                    { ids::satType, 1.0f }, { ids::drive, 6.0f }, { ids::autoGain, 1.0f } } },

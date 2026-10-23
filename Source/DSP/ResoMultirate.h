@@ -14,7 +14,7 @@ namespace onirique
 
     Latence (à la cadence suréchantillonnée) : celle de RESONANCE x le facteur + celle des filtres, arrondie à un multiple
     du facteur (le reste de la chaîne compense toute latence entière de la cadence de l'hôte).
-    En LIVE ou sans suréchantillonnage : RESONANCE seule, rien ne change.
+    Sans suréchantillonnage : RESONANCE seule, rien ne change.
 */
 class ResoMultirate
 {
@@ -22,12 +22,12 @@ public:
     using Band = ResonanceSuppressor::Band;
     static constexpr int kNumBands = ResonanceSuppressor::kNumBands;
 
-    void prepare (double sampleRate, bool live, int factor, int maxBlock)
+    void prepare (double sampleRate, int factor, int maxBlock)
     {
-        k = live ? 1 : juce::jmax (1, factor);
+        k = juce::jmax (1, factor);
         stages = 0;
         while ((1 << stages) < k) ++stages;
-        core.prepare (sampleRate / k, live);
+        core.prepare (sampleRate / k);
         if (k == 1) { latency = core.getLatencySamples(); return; }
 
         // une demi-bande par étage ; la dernière (vers la cadence de l'hôte) est la plus raide

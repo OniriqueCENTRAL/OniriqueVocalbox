@@ -9,7 +9,8 @@ namespace ids
     inline constexpr const char* input     = "input";
     inline constexpr const char* low       = "low";
     inline constexpr const char* mud       = "mud";
-    inline constexpr const char* high      = "high";
+    inline constexpr const char* high      = "high";      // HI de l'EQ ANALOG (-10..+10, celui de VOCAL MINI)
+    inline constexpr const char* air       = "air";       // AIR de l'EQ ANALOG (-10..+10, celui de VOCAL MINI)
     inline constexpr const char* deessFreq = "deessFreq";
     inline constexpr const char* deessAmt  = "deessAmt";
     inline constexpr const char* drive     = "drive";
@@ -17,7 +18,6 @@ namespace ids
     inline constexpr const char* output    = "output";
     inline constexpr const char* autoGain  = "autoGain";
     inline constexpr const char* bypass    = "bypass";
-    inline constexpr const char* liveMode  = "liveMode";
     inline constexpr const char* oversampling = "oversampling";
     inline constexpr const char* plosive   = "plosive";
     inline constexpr const char* resoListen = "resoListen";
@@ -25,8 +25,6 @@ namespace ids
     inline constexpr const char* legacyChainOrder = "chainOrder";  // ancien ordre à 6 modules (projets < 1.1), converti au chargement
     inline constexpr const char* mbSolo[4] { "mbSolo1", "mbSolo2", "mbSolo3", "mbSolo4" };
     inline constexpr const char* lowFreq   = "lowFreq";
-    inline constexpr const char* highFreq  = "highFreq";
-    inline constexpr const char* smartS    = "smartS";
     inline constexpr const char* lowCut    = "lowCut";
     inline constexpr const char* compOn    = "compOn";
     inline constexpr const char* compMaster = "compMaster";
@@ -233,10 +231,16 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         NormalisableRange<float> (0.0f, 10.0f, 0.01f), 0.0f,
         Attr().withStringFromValueFunction (knobText)));
 
+    // HI et AIR : ceux de VOCAL MINI, bipolaires (les anciens réglages HIGH 0..10 deviennent des HI + 0..10)
+    auto bipolarText = [] (float v, int) { return (v > 0.04f ? "+" : "") + String (v, 1); };
     p.push_back (std::make_unique<AudioParameterFloat> (
-        ParameterID { ids::high, 1 }, "High / Air",
-        NormalisableRange<float> (0.0f, 10.0f, 0.01f), 0.0f,
-        Attr().withStringFromValueFunction (knobText)));
+        ParameterID { ids::high, 1 }, "Hi",
+        NormalisableRange<float> (-10.0f, 10.0f, 0.01f), 0.0f,
+        Attr().withStringFromValueFunction (bipolarText)));
+    p.push_back (std::make_unique<AudioParameterFloat> (
+        ParameterID { ids::air, 1 }, "Air",
+        NormalisableRange<float> (-10.0f, 10.0f, 0.01f), 0.0f,
+        Attr().withStringFromValueFunction (bipolarText)));
 
     NormalisableRange<float> freqRange (3000.0f, 10000.0f, 1.0f);
     freqRange.setSkewForCentre (5500.0f);
@@ -286,9 +290,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     p.push_back (std::make_unique<AudioParameterBool> (
         ParameterID { ids::bypass, 1 }, "Bypass", false));
 
-    // MIX (qualité maximale, latence compensée) / LIVE (latence nulle, pour s'enregistrer à travers le plugin)
-    p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { ids::liveMode, 1 }, "Mode", StringArray { "Mix", "Live" }, 0));
-    // suréchantillonnage de TOUTE la chaîne de modules (mode MIX uniquement ; forcé à OFF en LIVE)
+    // suréchantillonnage de TOUTE la chaîne de modules (le plugin tourne toujours en qualité maximale, latence compensée)
     p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { ids::oversampling, 1 }, "Oversampling",
                                                          StringArray { "Off", "2x", "4x", "8x" }, 1));   // 2x par défaut : 8x coûte ~5x plus de CPU
     p.push_back (std::make_unique<AudioParameterFloat> (
@@ -305,13 +307,6 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         ParameterID { ids::lowFreq, 1 }, "Low Freq",
         StringArray { "80 Hz", "100 Hz", "125 Hz" }, 2));          // 125 Hz = fréquence d'origine
 
-    // air du HIGH + détection intelligente des S (garde du de-esser pilotée par HIGH), désactivée :
-    // le HIGH seul donne un boost d'aigus parfaitement propre
-    p.push_back (std::make_unique<AudioParameterChoice> (
-        ParameterID { ids::highFreq, 1 }, "High Freq",
-        StringArray { "8K", "10K", "20K" }, 1));
-    p.push_back (std::make_unique<AudioParameterBool> (
-        ParameterID { ids::smartS, 1 }, "Smart S", false));
     p.push_back (std::make_unique<AudioParameterBool> (
         ParameterID { ids::lowCut, 1 }, "Low Cut 85 Hz", false));
 

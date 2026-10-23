@@ -14,13 +14,16 @@ namespace onirique
     dépassent du spectre environnant, au moment où elles apparaissent, sont réduites.
 
     Analyse / synthèse : FFT 2048 points (4096 / 8192 aux fréquences d'échantillonnage
-    supérieures, résolution ~23 Hz constante), fenêtre racine de Hann, recouvrement 75 %.
+    supérieures, résolution ~23 Hz constante), fenêtre racine de Hann, recouvrement 87.5 %
+    (la réduction évolue par pas de ~5 ms). Les deux canaux passent dans une seule FFT complexe (L en partie
+    réelle, R en partie imaginaire) : deux fois moins de calcul qu'avec une FFT réelle par canal.
     Reconstruction parfaite : avec AMOUNT à 0 le signal ressort identique, retardé de N
     échantillons (latence déclarée, ~43 ms à 48 kHz).
 
     Détection "intelligente", par trame, sur la somme L+R (même gain sur les deux canaux :
     l'image stéréo ne bouge pas) :
-      1. spectre en dB, normalisé pour qu'un sinus de crête A lise 20 log10 A (dBFS) ;
+      1. spectre en dB, normalisé pour qu'un sinus de crête A lise 20 log10 A (dBFS) ; chaque bin monte
+         aussitôt et redescend en ~20 ms : le souffle et les bruits ne déclenchent presque plus rien ;
       2. enveloppe des crêtes : maximum glissant (~1/24 d'octave, au moins 4 bins) qui passe par
          le sommet des harmoniques de la voix, puis moyenne glissante sur 2/3 d'octave
          (fenêtre proportionnelle à la fréquence), en deux passes robustes (crêtes écrêtées à
@@ -28,10 +31,10 @@ namespace onirique
          Les harmoniques normales de la voix sont donc à 0 dB d'excès : elles ne sont jamais
          aplaties, seule une crête qui dépasse ses voisines est visée ;
       3. excès = spectre - enveloppe. Au-delà de 2.5 dB (genou doux de 4 dB), l'excès est
-         retiré : la crête revient au niveau de son voisinage, le reste du spectre n'est pas
-         touché. Réduction max 20 dB, le tout x AMOUNT x sensibilité de la zone ;
-      4. lissage de la réduction en fréquence (1-2-1) puis dans le temps
-         (attaque 5 ms, relâchement 80 ms) : pas de "gargouillis" spectral ;
+         retiré (x 1.25) : la crête revient au niveau de son voisinage, le reste du spectre n'est
+         pas touché. Réduction max 20 dB, le tout x AMOUNT x sensibilité de la zone ;
+      4. lissage de la réduction en fréquence (triangle de ~1/70 d'octave, au moins 1-2-1) puis dans le
+         temps (attaque 5 ms, relâchement 80 ms) : pas de "gargouillis" spectral ;
       5. bins sous -80 dBFS ignorés (silences, souffle).
 
     Bandes de contrôle LOW / MID / HIGH : chacune cible une zone (fréquence centrale + largeur du
@@ -47,6 +50,7 @@ public:
     static constexpr int kBands = 96;
     static constexpr float kMinHz = 20.0f, kMaxHz = 20000.0f;
     static constexpr float kMaxRedDb = 20.0f;
+    static constexpr float kStrength = 1.25f;   // excès retiré x 1.25 : à AMOUNT égal, autant de résonance en moins qu'avant, moins de dégâts autour
 
     struct Meter
     {
@@ -54,29 +58,14 @@ public:
         std::array<std::atomic<float>, kBands> spectrumDb {};
     };
 
-    // live = true : mode LIVE, aucune latence (voir processLive)
-    void prepare (double sampleRate, bool liveMode = false)
+    void prepare (double sampleRate)
     {
         fs = sampleRate;
-        live = liveMode;
         // ~23 Hz de résolution à toutes les cadences (la chaîne peut tourner suréchantillonnée x2..x8)
         int order = juce::jlimit (11, 15, 11 + (int) std::ceil (std::log2 (std::max (1.0, fs / 50000.0))));
-        if (live) --order;                         // analyse plus courte : la détection réagit plus vite
         N = 1 << order;
         mask = N - 1;
-        hop = live ? N / 8 : N / 4;
-
-        // banc d'EQ dynamique du mode LIVE : 28 cloches de 100 Hz à 16 kHz (~1/3.7 d'octave), Q 4.5
-        const double ratio = std::pow (16000.0 / 100.0, 1.0 / (kDyn - 1));
-        for (int j = 0; j < kDyn; ++j)
-        {
-            dynHz[(size_t) j] = (float) std::min (100.0 * std::pow (ratio, j), 0.45 * fs);
-            dynFilter[(size_t) j].reset();
-            dynTarget[(size_t) j] = dynCur[(size_t) j] = dynLast[(size_t) j] = 0.0f;
-            dynFilter[(size_t) j].setCoeffs (BiquadCoeffs::peaking (fs, dynHz[(size_t) j], 4.5, 0.0));
-        }
-        dynSmooth = (float) (1.0 - std::exp (-1.0 / (0.003 * fs)));
-        dynCount = 0;
+        hop = N / 8;   // recouvrement 87.5 % : la réduction évolue par pas de ~5 ms, sans marches
         nb = N / 2 + 1;
         fft = std::make_unique<juce::dsp::FFT> (order);
 
@@ -88,15 +77,16 @@ public:
             wsum += window[(size_t) j];
         }
         powNorm = (float) (4.0 / (wsum * wsum));   // sinus d'amplitude A -> puissance A^2 sur son bin
-        olaScale = 0.5f;                           // somme des Hann à 75 % de recouvrement = 2
+        olaScale = 0.25f;                          // somme des Hann à 87.5 % de recouvrement = 4
 
         for (int c = 0; c < 2; ++c)
         {
             inBuf[c].assign ((size_t) N, 0.0f);
             outBuf[c].assign ((size_t) N, 0.0f);
-            spec[c].assign ((size_t) (2 * N), 0.0f);
         }
-        for (auto* v : { &db, &peak, &env, &clipped, &target, &tmp, &red, &weight })
+        zIn.assign ((size_t) N, {});
+        zOut.assign ((size_t) N, {});
+        for (auto* v : { &db, &pdet, &peak, &env, &clipped, &target, &tmp, &red, &weight })
             v->assign ((size_t) nb, 0.0f);
         prefix.assign ((size_t) nb + 1, 0.0);
 
@@ -105,9 +95,11 @@ public:
         winHi.assign ((size_t) nb, 0);
         const double r = std::pow (2.0, 1.0 / 3.0);
         maxHalf.assign ((size_t) nb, 0);
+        smHalf.assign ((size_t) nb, 1);
         for (int k = 0; k < nb; ++k)
         {
             maxHalf[(size_t) k] = std::max (4, (int) std::lround (k * 0.03));   // ~1/24 d'octave, au moins 4 bins
+            smHalf[(size_t) k] = std::max (1, (int) std::lround (k * 0.01));    // lissage des réductions : ~1/70 d'octave, au moins 1 bin
 
             winLo[(size_t) k] = std::max (0, std::min (k - 3, (int) std::floor (k / r)));
             winHi[(size_t) k] = std::min (nb - 1, std::max (k + 3, (int) std::ceil (k * r)));
@@ -144,6 +136,7 @@ public:
         const double hopSec = (double) hop / fs;
         atk = (float) (1.0 - std::exp (-hopSec / 0.005));
         rel = (float) (1.0 - std::exp (-hopSec / 0.080));
+        detRel = (float) (1.0 - std::exp (-hopSec / 0.020));
 
         weightsDirty = true;
         reset();
@@ -157,6 +150,7 @@ public:
             std::fill (outBuf[c].begin(), outBuf[c].end(), 0.0f);
         }
         std::fill (red.begin(), red.end(), 0.0f);
+        std::fill (pdet.begin(), pdet.end(), 0.0f);
         pos = 0;
         hopCount = 0;
         for (int b = 0; b < kBands; ++b)
@@ -166,7 +160,7 @@ public:
         }
     }
 
-    int getLatencySamples() const noexcept { return live ? 0 : N; }
+    int getLatencySamples() const noexcept { return N; }
 
     // Bande de contrôle : zone ciblée (centre en Hz, largeur du plateau en octaves) et sensibilité 0..1
     struct Band
@@ -210,8 +204,6 @@ public:
 
     void process (float* const* ch, int numCh, int n) noexcept
     {
-        if (live) { processLive (ch, numCh, n); return; }
-
         for (int i = 0; i < n; ++i)
         {
             for (int c = 0; c < numCh; ++c)
@@ -233,36 +225,6 @@ public:
     const Meter& getMeter() const noexcept { return meter; }
 
 private:
-    static constexpr int kDyn = 28;
-
-    /*  Mode LIVE, latence nulle : la même analyse spectrale tourne sur le signal entrant, mais le son
-        ne passe plus par la FFT. Les réductions calculées pilotent 28 cloches dynamiques (minimum de
-        phase) appliquées directement au signal : rien n'est retardé. Un peu moins chirurgical que le
-        mode MIX (une cloche couvre ~1/4 d'octave) et la détection a quelques ms de retard. */
-    void processLive (float* const* ch, int numCh, int n) noexcept
-    {
-        for (int i = 0; i < n; ++i)
-        {
-            for (int c = 0; c < numCh; ++c) inBuf[c][(size_t) pos] = ch[c][i];
-            pos = (pos + 1) & mask;
-            if (++hopCount >= hop) { hopCount = 0; processFrame (numCh); }
-
-            const bool recalc = --dynCount <= 0;
-            if (recalc) dynCount = 32;
-            for (int j = 0; j < kDyn; ++j)
-            {
-                const auto s = (size_t) j;
-                dynCur[s] += dynSmooth * (dynTarget[s] - dynCur[s]);
-                if (recalc && std::abs (dynCur[s] - dynLast[s]) > 0.02f)
-                {
-                    dynFilter[s].setCoeffs (BiquadCoeffs::peaking (fs, dynHz[s], 4.5, -dynCur[s]));
-                    dynLast[s] = dynCur[s];
-                }
-                for (int c = 0; c < numCh; ++c) ch[c][i] = dynFilter[s].process (ch[c][i], c);
-            }
-        }
-    }
-
     void updateWeights() noexcept
     {
         const double df = fs / N;
@@ -286,26 +248,28 @@ private:
     {
         if (weightsDirty) updateWeights();
 
-        // ---- analyse (pos = échantillon le plus ancien de la trame)
-        for (int c = 0; c < numCh; ++c)
+        // ---- analyse (pos = échantillon le plus ancien de la trame) : L en partie réelle, R en partie imaginaire, une seule
+        //      FFT complexe pour les deux canaux. Z[k] = L[k] + i R[k] et |L[k]|^2 + |R[k]|^2 = (|Z[k]|^2 + |Z[N-k]|^2) / 2
+        const float* inL = inBuf[0].data();
+        const float* inR = inBuf[numCh > 1 ? 1 : 0].data();
+        const float im = numCh > 1 ? 1.0f : 0.0f;
+        for (int j = 0; j < N; ++j)
         {
-            float* s = spec[c].data();
-            for (int j = 0; j < N; ++j)
-                s[j] = inBuf[c][(size_t) ((pos + j) & mask)] * window[(size_t) j];
-            std::fill (s + N, s + 2 * N, 0.0f);
-            fft->performRealOnlyForwardTransform (s, true);
+            const int q = (pos + j) & mask;
+            const float w = window[(size_t) j];
+            zIn[(size_t) j] = { inL[q] * w, im * inR[q] * w };
         }
+        fft->perform (zIn.data(), zOut.data(), false);
 
-        const float invCh = 1.0f / (float) numCh;
+        const float pScale = 0.5f / (float) numCh * powNorm;
         for (int k = 0; k < nu; ++k)
         {
-            float p = 0.0f;
-            for (int c = 0; c < numCh; ++c)
-            {
-                const float re = spec[c][(size_t) (2 * k)], im = spec[c][(size_t) (2 * k + 1)];
-                p += re * re + im * im;
-            }
-            db[(size_t) k] = 4.342944819f * std::log (p * invCh * powNorm + 1.0e-14f);
+            const auto a = zOut[(size_t) k], b = zOut[(size_t) ((N - k) & mask)];
+            const float p = (a.real() * a.real() + a.imag() * a.imag() + b.real() * b.real() + b.imag() * b.imag()) * pScale;
+            // détection : la crête monte tout de suite, redescend en ~20 ms (moins de fausses alertes sur le souffle)
+            float& d = pdet[(size_t) k];
+            d = p > d ? p : d + detRel * (p - d);
+            db[(size_t) k] = 4.342944819f * std::log (d + 1.0e-14f);
         }
 
         // ---- enveloppe des crêtes (maximum glissant : elle passe par le sommet des harmoniques),
@@ -339,59 +303,47 @@ private:
             {
                 const float x = db[(size_t) k] - env[(size_t) k] - 2.5f;
                 const float knee = x <= -2.0f ? 0.0f : (x < 2.0f ? (x + 2.0f) * (x + 2.0f) * 0.125f : x);
-                t = std::min (kMaxRedDb, knee) * amount * weight[(size_t) k];
+                t = std::min (kMaxRedDb, kStrength * knee) * amount * weight[(size_t) k];
             }
             target[(size_t) k] = t;
         }
 
-        tmp[0] = target[0];
-        tmp[(size_t) nu - 1] = target[(size_t) nu - 1];
-        for (int k = 1; k < nu - 1; ++k)
-            tmp[(size_t) k] = 0.25f * target[(size_t) k - 1] + 0.5f * target[(size_t) k] + 0.25f * target[(size_t) k + 1];
+        // lissage des réductions en fréquence : triangle de +/- smHalf bins
+        for (int k = 0; k < nu; ++k)
+        {
+            const int h = smHalf[(size_t) k];
+            float acc = (float) (h + 1) * target[(size_t) k];
+            for (int j = 1; j <= h; ++j)
+                acc += (float) (h + 1 - j) * (target[(size_t) std::max (0, k - j)] + target[(size_t) std::min (nu - 1, k + j)]);
+            tmp[(size_t) k] = acc / (float) ((h + 1) * (h + 1));
+        }
         target.swap (tmp);
 
         // ---- lissage temporel + application du gain
-        if (live)
-        {
-            // mode LIVE : la réduction de chaque cloche = la plus forte réduction dans sa zone
-            const double df = fs / N;
-            for (int k = 0; k < nu; ++k)
-            {
-                float& r = red[(size_t) k];
-                const float t = target[(size_t) k];
-                r += (t > r ? atk : rel) * (t - r);
-            }
-            const double half = std::pow (16000.0 / 100.0, 0.5 / (kDyn - 1));
-            for (int j = 0; j < kDyn; ++j)
-            {
-                const int a = juce::jlimit (0, nu - 1, (int) std::floor (dynHz[(size_t) j] / half / df));
-                const int z = juce::jlimit (a, nu - 1, (int) std::ceil (dynHz[(size_t) j] * half / df));
-                float mx = 0.0f;
-                for (int k = a; k <= z; ++k) mx = std::max (mx, red[(size_t) k]);
-                dynTarget[(size_t) j] = mx;
-            }
-        }
-
-        for (int k = 0; k < nu && ! live; ++k)   // au-dessus de la zone utile : aucune réduction (gain 1)
+        for (int k = 0; k < nu; ++k)   // au-dessus de la zone utile : aucune réduction (gain 1)
         {
             float& r = red[(size_t) k];
             const float t = target[(size_t) k];
             r += (t > r ? atk : rel) * (t - r);
-            const float g = r > 1.0e-4f ? dbToGain (-r) : 1.0f;
-            for (int c = 0; c < numCh; ++c)
+            if (r > 1.0e-4f)
             {
-                spec[c][(size_t) (2 * k)] *= g;
-                spec[c][(size_t) (2 * k + 1)] *= g;
+                // même gain réel sur L et R : il s'applique tel quel à Z[k] et à son miroir Z[N - k]
+                const float g = dbToGain (-r);
+                zOut[(size_t) k] *= g;
+                if (k > 0 && k < N / 2) zOut[(size_t) (N - k)] *= g;
             }
         }
 
-        // ---- synthèse, recouvrement-addition (lu N échantillons plus tard) ; pas en mode LIVE
-        for (int c = 0; c < numCh && ! live; ++c)
+        // ---- synthèse, recouvrement-addition (lu N échantillons plus tard) : partie réelle -> L, imaginaire -> R
+        fft->perform (zOut.data(), zIn.data(), true);
+        float* outL = outBuf[0].data();
+        float* outR = outBuf[1].data();
+        for (int j = 0; j < N; ++j)
         {
-            float* s = spec[c].data();
-            fft->performRealOnlyInverseTransform (s);
-            for (int j = 0; j < N; ++j)
-                outBuf[c][(size_t) ((pos + j) & mask)] += s[j] * window[(size_t) j] * olaScale;
+            const int q = (pos + j) & mask;
+            const float w = window[(size_t) j] * olaScale;
+            outL[q] += zIn[(size_t) j].real() * w;
+            if (numCh > 1) outR[q] += zIn[(size_t) j].imag() * w;
         }
 
         // ---- mesure pour l'interface
@@ -412,21 +364,16 @@ private:
     int N = 2048, mask = 2047, hop = 512, nb = 1025, nu = 1025, pos = 0, hopCount = 0, kLo = 1, kHi = 1;   // nu : bins utiles
     std::vector<int> dq;   // file du maximum glissant
     std::unique_ptr<juce::dsp::FFT> fft;
-    std::vector<float> window, inBuf[2], outBuf[2], spec[2];
-    std::vector<float> db, peak, env, clipped, target, tmp, red, weight;
+    std::vector<float> window, inBuf[2], outBuf[2];
+    std::vector<juce::dsp::Complex<float>> zIn, zOut;
+    std::vector<float> db, pdet, peak, env, clipped, target, tmp, red, weight;
     std::vector<double> prefix;
-    std::vector<int> winLo, winHi, maxHalf;
+    std::vector<int> winLo, winHi, maxHalf, smHalf;
     std::array<int, kBands> bandLo {}, bandHi {};
-    float powNorm = 1.0f, olaScale = 0.5f, atk = 0.0f, rel = 0.0f;
+    float powNorm = 1.0f, olaScale = 0.25f, atk = 0.0f, rel = 0.0f, detRel = 1.0f;
     float amount = 0.0f;
     std::array<Band, kNumBands> bands {};
     bool weightsDirty = true;
     Meter meter;
-
-    bool live = false;
-    std::array<Biquad, kDyn> dynFilter;
-    std::array<float, kDyn> dynHz {}, dynTarget {}, dynCur {}, dynLast {};
-    float dynSmooth = 0.01f;
-    int dynCount = 0;
 };
 } // namespace onirique

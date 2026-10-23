@@ -63,8 +63,7 @@ OniriqueVocalBoxAudioProcessor::OniriqueVocalBoxAudioProcessor()
     pDrive     = apvts.getRawParameterValue (ids::drive);
     pSatType   = apvts.getRawParameterValue (ids::satType);
     pLowFreq   = apvts.getRawParameterValue (ids::lowFreq);
-    pHighFreq  = apvts.getRawParameterValue (ids::highFreq);
-    pSmartS    = apvts.getRawParameterValue (ids::smartS);
+    pAir       = apvts.getRawParameterValue (ids::air);
     pLowCut    = apvts.getRawParameterValue (ids::lowCut);
     pMbOn      = apvts.getRawParameterValue (ids::mbOn);
     pCompMaster = apvts.getRawParameterValue (ids::compMaster);
@@ -119,13 +118,11 @@ OniriqueVocalBoxAudioProcessor::OniriqueVocalBoxAudioProcessor()
     pOutput    = apvts.getRawParameterValue (ids::output);
     pAutoGain  = apvts.getRawParameterValue (ids::autoGain);
     pBypass    = apvts.getRawParameterValue (ids::bypass);
-    pLive         = apvts.getRawParameterValue (ids::liveMode);
     pOversampling = apvts.getRawParameterValue (ids::oversampling);
     pPlosive      = apvts.getRawParameterValue (ids::plosive);
     pResoListen   = apvts.getRawParameterValue (ids::resoListen);
     pChainOrder   = apvts.getRawParameterValue (ids::chainOrder);
     for (int b = 0; b < 4; ++b) pMbSolo[b] = apvts.getRawParameterValue (ids::mbSolo[b]);
-    apvts.addParameterListener (ids::liveMode, this);
     apvts.addParameterListener (ids::oversampling, this);
 }
 
@@ -142,9 +139,7 @@ VocalChain::Params OniriqueVocalBoxAudioProcessor::readParams() const noexcept
     p.satType   = juce::roundToInt (pSatType->load());
     static constexpr float lowFreqs[] { 80.0f, 100.0f, 125.0f };
     p.lowFreqHz = lowFreqs[juce::jlimit (0, 2, juce::roundToInt (pLowFreq->load()))];
-    static constexpr float highFreqs[] { 8000.0f, 10000.0f, 20000.0f };
-    p.highFreqHz = highFreqs[juce::jlimit (0, 2, juce::roundToInt (pHighFreq->load()))];
-    p.smartS    = pSmartS->load() > 0.5f;
+    p.air       = pAir->load();
     p.lowCut    = pLowCut->load() > 0.5f;
     p.mbOn      = pMbOn->load() > 0.5f;
     p.compMaster = pCompMaster->load() > 0.5f;
@@ -223,28 +218,24 @@ bool OniriqueVocalBoxAudioProcessor::isBusesLayoutSupported (const BusesLayout& 
 OniriqueVocalBoxAudioProcessor::~OniriqueVocalBoxAudioProcessor()
 {
     cancelPendingUpdate();
-    apvts.removeParameterListener (onirique::ids::liveMode, this);
     apvts.removeParameterListener (onirique::ids::oversampling, this);
 }
 
 // (re)construit la chaîne selon MIX / LIVE et le suréchantillonnage, et annonce la latence au DAW
 void OniriqueVocalBoxAudioProcessor::configureChain (double sampleRate)
 {
-    liveNow = pLive->load() > 0.5f;
     osNow = juce::jlimit (0, 3, juce::roundToInt (pOversampling->load()));
-    chain.prepare (sampleRate, readParams(), liveNow, osNow);
+    chain.prepare (sampleRate, readParams(), osNow);
     setLatencySamples (chain.getLatencySamples());
 }
 
 void OniriqueVocalBoxAudioProcessor::handleAsyncUpdate()
 {
-    const bool live = pLive->load() > 0.5f;
     const int os = juce::jlimit (0, 3, juce::roundToInt (pOversampling->load()));
-    if (currentRate <= 0.0 || (live == liveNow && (os == osNow || live)))
+    if (currentRate <= 0.0 || os == osNow)
     {
-        liveNow = live;
         osNow = os;
-        return;   // rien qui change le traitement (en LIVE, le suréchantillonnage est de toute façon coupé)
+        return;   // rien qui change le traitement
     }
     suspendProcessing (true);    // le thread audio attend la fin de la reconfiguration (allocation hors temps réel)
     configureChain (currentRate);

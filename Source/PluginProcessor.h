@@ -17,7 +17,6 @@ public:
     OniriqueVocalBoxAudioProcessor();
     ~OniriqueVocalBoxAudioProcessor() override;
 
-    bool isLiveMode() const noexcept { return liveNow; }
     int getOversamplingOrder() const noexcept { return osNow; }
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
@@ -84,8 +83,7 @@ private:
     std::atomic<float>* pDrive = nullptr;
     std::atomic<float>* pSatType = nullptr;
     std::atomic<float>* pLowFreq = nullptr;
-    std::atomic<float>* pHighFreq = nullptr;
-    std::atomic<float>* pSmartS = nullptr;
+    std::atomic<float>* pAir = nullptr;
     std::atomic<float>* pLowCut = nullptr;
     std::atomic<float>* pMbOn = nullptr;
     std::atomic<float>* pCompMaster = nullptr;
@@ -126,7 +124,6 @@ private:
     std::atomic<float>* pOutput = nullptr;
     std::atomic<float>* pAutoGain = nullptr;
     std::atomic<float>* pBypass = nullptr;
-    std::atomic<float>* pLive = nullptr;
     std::atomic<float>* pOversampling = nullptr;
     std::atomic<float>* pPlosive = nullptr;
     std::atomic<float>* pResoListen = nullptr;
@@ -138,7 +135,6 @@ private:
     void parameterChanged (const juce::String&, float) override { triggerAsyncUpdate(); }
     void handleAsyncUpdate() override;
     void configureChain (double sampleRate);
-    bool liveNow = false;
     int osNow = 3;
     double currentRate = 0.0;
 

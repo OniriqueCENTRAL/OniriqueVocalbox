@@ -71,8 +71,8 @@ public:
         // mélanges solo/duo calculés une fois par bloc (partagés par les deux paires pendant un fondu)
         for (int i = 0; i < n; ++i)
         {
-            fetM[(size_t) i] = fetMix.getNextValue();
-            optoM[(size_t) i] = optoMix.getNextValue();
+            fetM[(size_t) i] = sCurve (fetMix.getNextValue());
+            optoM[(size_t) i] = sCurve (optoMix.getNextValue());
         }
 
         if (! fading && pendingOptoFirst != isOptoFirst)
@@ -113,18 +113,25 @@ public:
     }
 
 private:
-    struct Pair { FetCompressor fet; OptoCompressor opto; };
+    struct Pair { FetCompressor fet; OptoCompressor opto; bool fetAsleep = false, optoAsleep = false; };
 
     void runChain (Pair& p, bool optoFirst, float* const* ch, int numCh, int n) noexcept
     {
-        if (optoFirst) { runStage (p.opto, optoM, ch, numCh, n); runStage (p.fet, fetM, ch, numCh, n); }
-        else           { runStage (p.fet, fetM, ch, numCh, n);   runStage (p.opto, optoM, ch, numCh, n); }
+        if (optoFirst) { runStage (p.opto, p.optoAsleep, optoM, ch, numCh, n); runStage (p.fet, p.fetAsleep, fetM, ch, numCh, n); }
+        else           { runStage (p.fet, p.fetAsleep, fetM, ch, numCh, n);   runStage (p.opto, p.optoAsleep, optoM, ch, numCh, n); }
     }
 
-    // chaque compresseur traite une copie ; son mélange (0..1) décide de sa présence (solo / duo)
+    // chaque compresseur traite une copie ; son mélange (0..1) décide de sa présence (solo / duo). Absent sur tout le bloc
+    // (1176 seul ou LA-2A seul), il ne calcule rien ; il repart de zéro à son retour, pendant que son fondu monte
     template <typename Comp>
-    void runStage (Comp& comp, const std::vector<float>& mix, float* const* ch, int numCh, int n) noexcept
+    void runStage (Comp& comp, bool& asleep, const std::vector<float>& mix, float* const* ch, int numCh, int n) noexcept
     {
+        if (mix[0] <= 0.0f && mix[(size_t) n - 1] <= 0.0f)
+        {
+            if (! asleep) { comp.reset(); asleep = true; }   // il s'endort à zéro (mètre compris) et repartira de là
+            return;
+        }
+        asleep = false;
         float* t[2] { tmp[0].data(), tmp[1].data() };
         for (int c = 0; c < numCh; ++c) std::copy (ch[c], ch[c] + n, t[c]);
         comp.process (t, numCh, n);

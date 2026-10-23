@@ -3,6 +3,7 @@
 #include "License/LicenseOverlay.h"
 #include "PluginProcessor.h"
 #include "MultibandPresets.h"
+#include "SpectrumSmoother.h"
 
 #include <array>
 #include <map>
@@ -18,7 +19,7 @@ inline const juce::Colour blood  { 0xff3D0910 };   // rouge sombre (dégradés, 
 inline const juce::Colour deep   { 0xff121012 };   // charbon très sombre (panneaux)
 inline const juce::Colour deep2  { 0xff1C1517 };   // charbon chaud (menus, info-bulles, panneaux ouverts)
 inline const juce::Colour mist   { 0xffF2ECEC };   // blanc cassé (textes)
-inline const juce::Colour haze   { 0xff978C8F };   // gris doux (informations secondaires)
+inline const juce::Colour haze   { 0xffAEA3A6 };   // gris doux (informations secondaires) : assez clair pour se lire au premier regard
 inline const juce::Colour ember  { 0xffE5384A };   // rouge ONIRIQUE (accent)
 inline const juce::Colour lilac  { 0xffFFB3BC };   // rose pâle (queues de reverb, reflets, extrémités d'arcs)
 inline const juce::Colour bone   { 0xffFFF4F5 };   // blanc le plus clair (aiguilles, crêtes)
@@ -549,10 +550,9 @@ public:
     static void showBandMenu (juce::Component& target, juce::AudioProcessorValueTreeState&, int band, juce::Point<int> screenPos);
 
 private:
-    static constexpr int kOrder = 13, kN = 1 << kOrder, kPts = 320, kPeq = onirique::ParametricEQ::kBands;
+    static constexpr int kOrder = 13, kN = 1 << kOrder, kPts = 384, kPeq = onirique::ParametricEQ::kBands;
     static constexpr float kEqRange = 20.0f;
 
-    struct PointMap { int b0 = 1, b1 = 1; float pos = 1.0f, width = 1.0f; bool interp = true; };
     void buildMap (double fs);
     bool analyse (onirique::SpectrumTap&, std::vector<float>& hist, int& writePos, std::array<float, kPts>& spec);   // true : le spectre a bougé
     int tickCount = 0;
@@ -580,7 +580,7 @@ private:
     bool active = true;
     juce::dsp::FFT fft { kOrder };
     std::vector<float> window, histIn, histOut, scratch, fftBuf;
-    std::array<PointMap, kPts> pmap {};
+    onirique::ui::SpectrumSmoother smoother;   // lissage gaussien des spectres, poids calculés une fois
     double mapFs = 0.0;
     int writeIn = 0, writeOut = 0;
     float windowGain = 1.0f;
@@ -588,7 +588,7 @@ private:
     std::array<float, kPeq * 8 + 2> lastSig {};
     juce::Image gridLayer, eqLayer;   // calques : grille (taille) et courbes d'EQ (réglages) ; seuls les spectres sont redessinés à chaque image
     bool eqDirty = true;
-    float l = 0.0f, m = 0.0f, h = 0.0f, lf = 125.0f, hf = 10000.0f, lc = 0.0f, eqAmt = 1.0f, analogAmt = 1.0f;
+    float l = 0.0f, m = 0.0f, h = 0.0f, ai = 0.0f, lf = 125.0f, lc = 0.0f, eqAmt = 1.0f, analogAmt = 1.0f;
     bool anyDyn = false;
     int selected = 2, hoverNode = -1, dragNode = -1;
     float nodeGlow[kPeq] {}, liveGain[kPeq] {};
@@ -1067,15 +1067,14 @@ private:
                                 "LOW centred on 125 Hz (original): warmth and body." } };
     KnobComponent midKnob   { processor.apvts, onirique::ids::mud,       "MID",       "0",   "10",   Layout::textBelow,
                               "Mud cleaner: clears the 300 Hz zone without thinning the voice. Double-click to reset.", lnf };
-    KnobComponent highKnob  { processor.apvts, onirique::ids::high,      "HIGH",      "0",   "10",   Layout::textBelow,
-                              "Air and clarity on the selected frequency. Clean boost; turn SMART S on to tame the sibilance it brings out. Double-click to reset.", lnf };
-    SegmentSelector highFreq { processor.apvts, onirique::ids::highFreq, { "8K", "10K", "20K" },
-                              { "HIGH air from 8 kHz: presence and brightness.",
-                                "HIGH air from 10 kHz: open, airy top.",
-                                "HIGH air at 20 kHz: very wide 'air band' shelf, the silkiest top end." } };
-    PillToggle smartSButton { "SMART S", PillToggle::Style::mini };
+    KnobComponent highKnob  { processor.apvts, onirique::ids::high,      "HI",        "-10", "+10",  Layout::textBelow,
+                              "HI: up = presence and an open, smooth top (the harsh 2.5-4 kHz zone is never pushed hard); down = removes "
+                              "harshness and softens the top. Added highs step back during an S. Double-click to reset.", lnf, true };
+    KnobComponent airKnob   { processor.apvts, onirique::ids::air,       "AIR",       "-10", "+10",  Layout::textBelow,
+                              "AIR: up = a very wide shelf at 12 kHz plus real harmonics of the voice above 6.5 kHz: silky brightness, "
+                              "never sibilant; down = a rounder, darker, vintage top. Added air steps back during an S. Double-click to reset.", lnf, true };
     PillToggle lowCutButton { "LOW CUT", PillToggle::Style::mini };
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> smartSAttachment, lowCutAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> lowCutAttachment;
     KnobComponent freqKnob  { processor.apvts, onirique::ids::deessFreq, "FREQUENCY", "3k",  "10k",  Layout::textBelow,
                               "De-esser frequency, 3 to 10 kHz (default 4000 Hz). Double-click to reset.", lnf };
     KnobComponent amtKnob   { processor.apvts, onirique::ids::deessAmt,  "INTENSITY", "0",   "100",  Layout::textBelow,
@@ -1087,11 +1086,7 @@ private:
                                 "Analog: class A + transformers, 1073-style. Thick lows, forward mids, rounded top.",
                                 "Tape: softened highs and peaks, slow tape compression, head bump." } };
 
-    // ---- MIX / LIVE (en-tête), suréchantillonnage (SATURATION), plosives (DE-ESSER), écoute RESONANCE
-    SegmentSelector modeSel { processor.apvts, onirique::ids::liveMode, { "MIX", "LIVE" },
-                              { "MIX: full quality. All the processing, latency compensated by your DAW (~44 ms).",
-                                "LIVE: zero latency, to record yourself through the plugin. Resonance switches to a "
-                                "real-time dynamic EQ, no oversampling, no look-ahead." } };
+    // ---- suréchantillonnage (en-tête), plosives (DE-ESSER), écoute RESONANCE
     SegmentSelector osSel   { processor.apvts, onirique::ids::oversampling, { "OFF", "2X", "4X", "8X" },
                               { "Oversampling off: lowest CPU.",
                                 "Whole plugin oversampled x2 (default): cleaner compressors, de-esser and saturation.",
@@ -1238,8 +1233,8 @@ private:
     // ---- NOISE SUPPRESSOR (un seul curseur, avant le gate) : plus il monte, plus le bruit de fond descend
     KnobComponent nsFader { processor.apvts, onirique::ids::nsAmount, "SUPPRESS", "", "", Layout::fader,
                             "Noise suppressor: raise it to remove the background noise (hiss, room, fans, hum). It keeps the voice "
-                            "untouched and follows the noise by itself, no LEARN needed. MIX: spectral (one frame of latency, compensated); "
-                            "LIVE: zero latency. Double-click to reset.", lnf };
+                            "untouched and follows the noise by itself, no LEARN needed (spectral, one frame of latency, compensated by your DAW). "
+                            "Double-click to reset.", lnf };
     GainReductionBar nsGr { [this] { return processor.getSuppressorReductionDb(); },
                             "How much background noise the suppressor is removing right now (dB).", 30.0f };
 

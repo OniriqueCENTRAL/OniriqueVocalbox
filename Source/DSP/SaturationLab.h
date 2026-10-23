@@ -82,7 +82,7 @@ public:
         const float inc = 1.0f / (float) fadeLen;
         for (int i = 0; i < n; ++i)
         {
-            const float t = std::min (1.0f, (float) (fadePos + i + 1) * inc);
+            const float t = sCurve ((float) (fadePos + i + 1) * inc);
             for (int c = 0; c < numCh; ++c)
                 ch[c][i] = old[c][i] + t * (ch[c][i] - old[c][i]);
         }
