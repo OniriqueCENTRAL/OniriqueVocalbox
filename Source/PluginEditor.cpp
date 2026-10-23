@@ -2,6 +2,7 @@
 #include "OniriqueKnob.h"
 #include "OniriqueWindowSize.h"
 #include <BinaryData.h>
+#include <OniriqueLicenseData.h>
 #include <array>
 #include <map>
 
@@ -44,10 +45,45 @@ void drawValuePill (juce::Graphics& g, juce::Rectangle<float> r, const juce::Str
 } // namespace
 
 //==============================================================================
+namespace
+{
+// les polices de la charte, partagées par les interfaces ouvertes (thread de l'interface uniquement) : créées à
+// l'ouverture de la première, détruites à la fermeture de la dernière. Seuls un compteur et un pointeur brut sont
+// statiques : rien n'est détruit au déchargement du plugin.
+struct Faces
+{
+    juce::Typeface::Ptr display, body, mono, monoBold;
+};
+Faces* faces = nullptr;
+int faceUsers = 0;
+} // namespace
+
+ui::FontScope::FontScope()
+{
+    if (faceUsers++ == 0)
+    {
+        faces = new Faces();
+        faces->display = juce::Typeface::createSystemTypefaceFor (OniriqueLicenseData::Unbounded800_ttf, OniriqueLicenseData::Unbounded800_ttfSize);
+        faces->body = juce::Typeface::createSystemTypefaceFor (OniriqueLicenseData::HankenGrotesk600_ttf, OniriqueLicenseData::HankenGrotesk600_ttfSize);
+        faces->mono = juce::Typeface::createSystemTypefaceFor (OniriqueLicenseData::JetBrainsMono500_ttf, OniriqueLicenseData::JetBrainsMono500_ttfSize);
+        faces->monoBold = juce::Typeface::createSystemTypefaceFor (OniriqueLicenseData::JetBrainsMono600_ttf, OniriqueLicenseData::JetBrainsMono600_ttfSize);
+    }
+}
+
+ui::FontScope::~FontScope()
+{
+    if (--faceUsers == 0) { delete faces; faces = nullptr; }
+}
+
 juce::Font ui::font (Face f, float h, bool bold, float kerning)
 {
-    static const char* names[] { "Bahnschrift", "Segoe UI", "Cascadia Mono" };
-    juce::Font fnt (juce::FontOptions (names[(int) f], std::max (4.0f, h), bold ? juce::Font::bold : juce::Font::plain));
+    h = std::max (4.0f, h);
+    const juce::Typeface::Ptr tf = faces == nullptr ? nullptr
+                                 : f == Face::display ? faces->display : f == Face::body ? faces->body : (bold ? faces->monoBold : faces->mono);
+    // Unbounded est très large : un peu plus petit que la hauteur demandée, pour garder les mêmes encombrements
+    juce::Font fnt = tf != nullptr ? juce::Font (juce::FontOptions (tf).withHeight (f == Face::display ? h * 0.86f : h))
+                                   : juce::Font (juce::FontOptions (f == Face::display ? "Bahnschrift" : f == Face::body ? "Segoe UI" : "Cascadia Mono",
+                                                                    h, bold ? juce::Font::bold : juce::Font::plain));
     if (kerning != 0.0f) fnt.setExtraKerningFactor (kerning);
     return fnt;
 }
@@ -5105,13 +5141,10 @@ void OniriqueVocalBoxAudioProcessorEditor::paintHeader (juce::Graphics& g)
         const float w2 = ui::textWidth (f2, "VOCALBOX") + 2.0f;
         const float y = 16.0f * u, hh = 36.0f * u;
         g.setFont (f1);
-        g.setColour (ui::ember.withAlpha (0.35f));
-        g.drawText ("ONIRIQUE", juce::Rectangle<float> (x, y + 1.0f * u, w1, hh), juce::Justification::centredLeft, false);
         g.setColour (ui::mist);
         g.drawText ("ONIRIQUE", juce::Rectangle<float> (x, y, w1, hh), juce::Justification::centredLeft, false);
-        g.setFont (f2);
-        g.setColour (ui::haze);
-        g.drawText ("VOCALBOX", juce::Rectangle<float> (x + w1 + 10.0f * u, y, w2, hh), juce::Justification::centredLeft, false);
+        g.setColour (ui::ember);
+        g.drawText ("VOCALBOX", juce::Rectangle<float> (x + w1 + 10.0f * u, y, w2 + 20.0f * u, hh), juce::Justification::centredLeft, false);
 
     }
 
@@ -5213,12 +5246,19 @@ void OniriqueVocalBoxAudioProcessorEditor::paintBackdrop (juce::Graphics& g)
     const float u = scale();
     const float W = (float) getWidth(), H = (float) getHeight();
 
+    // DA PRO SERIES : noir profond, lueurs rouges très discrètes, grain fin
     g.fillAll (ui::night);
-    g.setGradientFill (juce::ColourGradient (ui::blood.withAlpha (0.85f), 0.0f, 0.0f, ui::night.withAlpha (0.0f), 0.0f, H * 0.62f, false));
+    g.setGradientFill (juce::ColourGradient (ui::blood.withAlpha (0.55f), W * 0.22f, H * 0.45f, ui::night.withAlpha (0.0f), W * 0.22f + W * 0.6f, H * 0.45f, true));
     g.fillRect (getLocalBounds());
-    g.setGradientFill (juce::ColourGradient (ui::ember.withAlpha (0.20f), W * 0.74f, -40.0f * u,
-                                             ui::ember.withAlpha (0.0f), W * 0.74f + W * 0.42f, -40.0f * u, true));
+    g.setGradientFill (juce::ColourGradient (ui::blood.withAlpha (0.22f), W * 0.92f, H * 1.05f, ui::night.withAlpha (0.0f), W * 0.92f - W * 0.45f, H * 1.05f, true));
     g.fillRect (getLocalBounds());
+    juce::Random rnd (21);
+    for (int i = 0; i < 140; ++i)
+    {
+        const float x = rnd.nextFloat() * W, y = rnd.nextFloat() * H, s = (0.5f + 1.2f * rnd.nextFloat() * rnd.nextFloat()) * u;
+        g.setColour (ui::mist.withAlpha (0.03f + 0.07f * rnd.nextFloat()));
+        g.fillEllipse (x, y, s, s);
+    }
 }
 
 // ---- cartes : verre sombre, filet fin, ombre portée, titre (le point braise est dessiné à part, il suit le module)
@@ -5252,21 +5292,22 @@ void OniriqueVocalBoxAudioProcessorEditor::paintCards (juce::Graphics& g)
             continue;
         }
 
-        const float rad = 16.0f * u;
+        // verre sombre (DA PRO SERIES) : charbon, reflet rose pâle très léger en haut, filet fin
+        const float rad = 12.0f * u;
         juce::Path card;
         card.addRoundedRectangle (r, rad);
         juce::DropShadow (juce::Colours::black.withAlpha (0.55f), juce::roundToInt (28.0f * u), { 0, juce::roundToInt (12.0f * u) })
             .drawForPath (g, card);
-        g.setGradientFill (juce::ColourGradient (ui::deep2.withAlpha (0.94f), 0.0f, r.getY(), ui::deep.withAlpha (0.96f), 0.0f, r.getBottom(), false));
+        g.setColour (ui::deep.withAlpha (0.94f));
+        g.fillPath (card);
+        g.setGradientFill (juce::ColourGradient (ui::lilac.withAlpha (0.035f), 0.0f, r.getY(), ui::lilac.withAlpha (0.0f), 0.0f, r.getY() + r.getHeight() * 0.7f, false));
         g.fillPath (card);
         g.setColour (ui::line);
         g.strokePath (card, juce::PathStrokeType (std::max (1.0f, 1.0f * u)));
-        g.setColour (juce::Colours::white.withAlpha (0.045f));
-        g.drawHorizontalLine (juce::roundToInt (r.getY() + 1.5f * u), r.getX() + rad, r.getRight() - rad);
 
         const float maxW = r.getWidth() - (s.power != nullptr ? 90.0f : 60.0f) * u;
-        g.setColour (ui::mist.withAlpha (0.92f));
-        g.setFont (ui::fitFont (ui::Face::body, 13.0f * u, maxW, s.title, true, 0.18f));
+        g.setColour (ui::mist);
+        g.setFont (ui::fitFont (ui::Face::display, 12.5f * u, maxW, s.title, true, 0.06f));
         g.drawText (s.title, juce::Rectangle<float> (r.getX() + 32.0f * u, r.getY() + 8.0f * u, maxW, 22.0f * u),
                     juce::Justification::centredLeft, false);
     }

@@ -3,16 +3,17 @@
 #include <juce_graphics/juce_graphics.h>
 
 //==============================================================================
-//  Le potard ONIRIQUE, le même dans tous les plugins de la marque.
+//  Le potard ONIRIQUE « RONCE », le même dans tous les plugins de la marque (inspiré du logo).
 //
-//  - Une couronne de graduations, qui s'allument de l'origine jusqu'à la valeur (depuis le milieu pour un
-//    réglage bipolaire) : la position se lit d'un coup d'œil, même de loin.
-//  - Un corps sombre, biseauté, au bord finement strié, éclairé d'en haut à gauche.
-//  - Une aiguille effilée, de la couleur du réglage vers l'os pâle, et l'étoile à quatre branches
-//    d'ONIRIQUE à sa pointe ; la même étoile, gravée, au cœur du potard.
+//  - Une piste fine ; l'arc de valeur, rouge, pousse des épines comme une ronce (une vers l'extérieur, une vers
+//    l'intérieur, en alternance) : celles qui sont allumées vont jusqu'à la valeur, plus vives près d'elle (depuis le
+//    milieu pour un réglage bipolaire). Les autres restent en trait pâle.
+//  - Un corps noir, éclairé d'en haut à gauche, qui porte un anneau de métal liquide blanc, irrégulier et épineux,
+//    avec sa lueur ; l'anneau tourne avec le réglage.
+//  - L'aiguille : une épine rouge qui part de l'anneau vers le centre. Le centre reste vierge.
 //
-//  Ce fichier se copie tel quel dans Source/ui/ de chaque plugin ONIRIQUE, et ne se modifie qu'ici
-//  (plugin-ui/ du dépôt ONIRIQUE CENTRAL). Les plugins des partenaires (ABRASION, RELIC) gardent leur propre style.
+//  Ce fichier se copie tel quel dans chaque plugin ONIRIQUE, et ne se modifie qu'ici (plugin-ui/ du dépôt ONIRIQUE
+//  CENTRAL). Les plugins des partenaires (ABRASION, RELIC) gardent leur propre style.
 //
 //      onirique::ui::drawKnob (g, zone, position, angleDebut, angleFin, accent, bipolaire, survolé);
 //==============================================================================
@@ -33,124 +34,152 @@ inline juce::Path knobStar (juce::Point<float> c, float r)
     return p;
 }
 
+namespace knobdetail
+{
+/** Une épine : un trapèze effilé le long du rayon d'angle `a`, de r1 (largeur w1) à r2 (largeur w2). */
+inline void addThorn (juce::Path& p, juce::Point<float> c, float a, float r1, float r2, float w1, float w2)
+{
+    const float sx = std::sin (a), cy = std::cos (a);
+    const auto at = [&] (float r, float side) { return juce::Point<float> (c.x + r * sx + side * cy, c.y - r * cy + side * sx); };
+    p.startNewSubPath (at (r1, w1 * 0.5f));
+    p.lineTo (at (r2, w2 * 0.5f));
+    p.lineTo (at (r2, -w2 * 0.5f));
+    p.lineTo (at (r1, -w1 * 0.5f));
+    p.closeSubPath();
+}
+
+/** Plusieurs passes de plus en plus larges et transparentes : la lueur d'un trait ou d'un contour. */
+inline void glowStroke (juce::Graphics& g, const juce::Path& p, juce::Colour c, float width, float intensity)
+{
+    if (intensity <= 0.003f || p.isEmpty()) return;
+    for (int i = 3; i >= 1; --i)
+    {
+        g.setColour (c.withAlpha (intensity * 0.16f / (float) i));
+        g.strokePath (p, juce::PathStrokeType (width * (1.0f + 1.6f * (float) i), juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    }
+}
+} // namespace knobdetail
+
 /** Dessine le potard dans `area` (un carré y est pris, centré). `position` : 0 à 1. Les angles sont ceux de JUCE
-    (radians, 0 en haut, sens des aiguilles d'une montre). */
+    (radians, 0 en haut, sens des aiguilles d'une montre). Toutes les mesures sont données pour un potard de 240 px. */
 inline void drawKnob (juce::Graphics& g, juce::Rectangle<float> area, float position, float startAngle, float endAngle,
                       juce::Colour accent, bool bipolar, bool hover)
 {
     using namespace juce;
+    using knobdetail::addThorn;
 
     const auto size = jmin (area.getWidth(), area.getHeight());
     if (size < 8.0f)
         return;
 
-    const auto centre = area.getCentre();
-    const float R = size * 0.5f - 1.0f;
+    const auto c = area.getCentre();
+    const float s = size / 240.0f;
     const float angle = startAngle + jlimit (0.0f, 1.0f, position) * (endAngle - startAngle);
-    const auto at = [centre] (float a, float r) { return Point<float> (centre.x + r * std::sin (a), centre.y - r * std::cos (a)); };
-
-    const auto bone = Colour (0xffffecee), hot = accent.brighter (0.35f);
     const float origin = bipolar ? (startAngle + endAngle) * 0.5f : startAngle;
     const float lo = jmin (origin, angle), hi = jmax (origin, angle);
+    const bool any = hi - lo > 0.001f;
+    const bool down = bipolar && angle < origin;
+    const auto hot = accent.interpolatedWith (Colours::white, 0.38f);
+    const auto pale = Colour (0xffFFD2D6), silver = Colour (0xffF2E2E4);
     const bool small = size < 62.0f;
+    const float glowAmt = hover ? 1.0f : 0.7f;
 
-    // Graduations : 40 intervalles (20 sur un petit potard), un trait majeur tous les cinq.
-    const int count = small ? 20 : 40;
-    const float tickLong = jmax (4.0f, size * 0.075f), tickShort = tickLong * 0.62f;
+    // ---- la piste, puis l'arc allumé et sa lueur
+    const float rA = 98.0f * s, arcW = jmax (1.2f, 2.6f * s);
+    Path track;
+    track.addCentredArc (c.x, c.y, rA, rA, 0.0f, startAngle, endAngle, true);
+    g.setColour (pale.withAlpha (0.08f));
+    g.strokePath (track, PathStrokeType (jmax (1.0f, 2.0f * s), PathStrokeType::curved, PathStrokeType::rounded));
+
+    Path lit;
+    if (any)
+    {
+        lit.addCentredArc (c.x, c.y, rA, rA, 0.0f, lo, hi, true);
+        knobdetail::glowStroke (g, lit, accent, arcW, glowAmt);
+    }
+
+    // ---- les épines de la ronce : une sur deux vers l'extérieur, les autres vers l'intérieur
+    const int count = small ? 10 : 20;
+    Path off, on, near;
     for (int i = 0; i <= count; ++i)
     {
         const float a = startAngle + (float) i / (float) count * (endAngle - startAngle);
-        const bool major = i % 5 == 0;
-        const bool lit = hi - lo > 0.001f && a >= lo - 1.0e-4f && a <= hi + 1.0e-4f;
-        Line<float> tick (at (a, R - (major ? tickLong : tickShort)), at (a, R));
-
-        if (lit)
-        {
-            // Plus vif près de l'aiguille, plus doux vers l'origine.
-            const float t = (a - lo) / jmax (1.0e-4f, hi - lo);
-            const float near = bipolar && angle < origin ? 1.0f - t : t;
-            g.setColour (accent.withAlpha (0.18f));
-            g.drawLine (tick, major ? 4.6f : 3.6f);
-            g.setColour ((near > 0.85f ? hot : accent).withAlpha (0.55f + 0.45f * near));
-            g.drawLine (tick, major ? 2.0f : 1.5f);
-        }
-        else
-        {
-            g.setColour (Colour (0xffffd2d6).withAlpha (major ? 0.30f : 0.13f));
-            g.drawLine (tick, major ? 1.5f : 1.0f);
-        }
+        const bool outward = i % 2 == 0;
+        const bool isLit = any && a >= lo - 1.0e-4f && a <= hi + 1.0e-4f;
+        const float closeness = (down ? (hi - a) : (a - lo)) / jmax (1.0e-4f, hi - lo);
+        Path& dst = ! isLit ? off : (closeness > 0.8f ? near : on);
+        if (outward) addThorn (dst, c, a, 99.0f * s, 112.0f * s, jmax (1.6f, 4.0f * s), 0.25f * s);
+        else         addThorn (dst, c, a, 97.0f * s, 88.0f * s, jmax (1.3f, 3.2f * s), 0.25f * s);
     }
-
-    // Le corps : une ombre portée, un biseau éclairé d'en haut, puis la face.
-    const float body = R - tickLong - jmax (3.0f, size * 0.035f);
-    g.setColour (Colours::black.withAlpha (0.55f));
-    g.fillEllipse (Rectangle<float> (2.0f * (body + 1.0f), 2.0f * (body + 1.0f)).withCentre (centre.translated (0.0f, 2.0f)));
-
-    g.setGradientFill (ColourGradient (Colour (0xff5a3439), centre.x, centre.y - body, Colour (0xff070304), centre.x, centre.y + body, false));
-    g.fillEllipse (Rectangle<float> (2.0f * body, 2.0f * body).withCentre (centre));
-
-    const float face = body - jmax (2.0f, size * 0.027f);
-    const auto faceBounds = Rectangle<float> (2.0f * face, 2.0f * face).withCentre (centre);
-    ColourGradient shade (Colour (0xff3b2226), centre.x - face * 0.35f, centre.y - face * 0.45f,
-                          Colour (0xff0b0506), centre.x + face * 0.65f, centre.y + face * 0.55f, true);
-    shade.addColour (0.55, Colour (0xff170a0c));
-    g.setGradientFill (shade);
-    g.fillEllipse (faceBounds);
-
-    // Le bord de la face, finement strié : plus clair en haut à gauche.
-    if (! small)
+    g.setColour (pale.withAlpha (0.14f));
+    g.fillPath (off);
+    if (any)
     {
-        for (int i = 0; i < 48; ++i)
+        knobdetail::glowStroke (g, on, accent, 1.2f * s, glowAmt * 0.8f);
+        knobdetail::glowStroke (g, near, accent, 1.2f * s, glowAmt);
+        g.setColour (accent);
+        g.strokePath (lit, PathStrokeType (arcW, PathStrokeType::curved, PathStrokeType::rounded));
+        g.fillPath (on);
+        g.setColour (hot);
+        g.fillPath (near);
+    }
+
+    // ---- le corps : ombre portée, disque noir éclairé d'en haut à gauche
+    const float rB = 72.0f * s;
+    {
+        const auto sc = c.translated (0.0f, 6.0f * s);
+        ColourGradient shadow (Colours::black.withAlpha (0.6f), sc.x, sc.y, Colours::black.withAlpha (0.0f), sc.x + rB * 1.22f, sc.y, true);
+        g.setGradientFill (shadow);
+        g.fillEllipse (Rectangle<float> (2.44f * rB, 2.44f * rB).withCentre (sc));
+    }
+    const auto body = Rectangle<float> (2.0f * rB, 2.0f * rB).withCentre (c);
+    ColourGradient face (Colour (0xff24110f), c.x - rB * 0.16f, c.y - rB * 0.40f, Colour (0xff070304), c.x + rB * 0.75f, c.y + rB * 0.85f, true);
+    face.addColour (0.55, Colour (0xff10070a));
+    g.setGradientFill (face);
+    g.fillEllipse (body);
+    g.setColour (Colours::black.withAlpha (0.8f));
+    g.drawEllipse (body, jmax (1.0f, s));
+
+    // ---- l'anneau de métal liquide (il tourne avec le réglage), ses épines et sa lueur blanche
+    Path ring;
+    {
+        const int n = small ? 48 : 96;
+        for (int pass = 0; pass < 2; ++pass)
         {
-            const float a = (float) i / 48.0f * MathConstants<float>::twoPi;
-            const float light = jmax (0.0f, -std::cos (a + 0.6f));
-            g.setColour (Colour (0xffffdce0).withAlpha (0.05f + 0.05f * light));
-            g.drawLine (Line<float> (at (a, face - jmax (2.5f, face * 0.07f)), at (a, face - 0.8f)), 1.0f);
+            for (int k = 0; k <= n; ++k)
+            {
+                const float th = (float) k / (float) n * MathConstants<float>::twoPi;
+                const float r = pass == 0 ? 64.0f + 1.6f * std::sin (4.0f * th + 0.5f) + 1.0f * std::sin (9.0f * th)
+                                          : 60.0f + 1.2f * std::sin (1.0f - 6.0f * th);
+                const float t = angle + (pass == 0 ? th : -th);
+                const Point<float> p (c.x + r * s * std::sin (t), c.y - r * s * std::cos (t));
+                if (k == 0) ring.startNewSubPath (p); else ring.lineTo (p);
+            }
+            ring.closeSubPath();
+        }
+        ring.setUsingNonZeroWinding (false);
+    }
+    Path vineThorns;
+    {
+        const float at[] { 45.0f, 100.0f, 160.0f, 215.0f, 280.0f, 330.0f };
+        for (int i = 0; i < 6; ++i)
+        {
+            const float a = angle + degreesToRadians (at[i]);
+            if (i % 2 == 1) addThorn (vineThorns, c, a, 64.0f * s, 73.0f * s, 3.2f * s, 0.25f * s);
+            else            addThorn (vineThorns, c, a, 61.0f * s, 53.0f * s, 3.0f * s, 0.25f * s);
         }
     }
-    g.setColour (Colour (0xffffd2d6).withAlpha (0.10f));
-    g.drawEllipse (faceBounds, 1.0f);
+    knobdetail::glowStroke (g, ring, Colours::white, 3.0f * s, hover ? 0.55f : 0.4f);
+    g.setColour (silver);
+    g.fillPath (ring);
+    g.fillPath (vineThorns);
 
-    // Le reflet, un voile clair qui s'efface vers le centre.
-    {
-        Graphics::ScopedSaveState state (g);
-        Path clip;
-        clip.addEllipse (faceBounds.reduced (1.0f));
-        g.reduceClipRegion (clip);
-        g.setGradientFill (ColourGradient (Colour (0xffffe1e4).withAlpha (hover ? 0.14f : 0.10f), centre.x - face, centre.y - face,
-                                           Colour (0x00ffe1e4), centre.x + face * 0.2f, centre.y + face * 0.2f, false));
-        g.fillRect (faceBounds);
-    }
-
-    // L'aiguille : une lame effilée, de la couleur du réglage vers l'os, avec sa lueur.
-    const float half = jmax (1.4f, face * 0.05f);
-    const auto tip = at (angle, face - jmax (3.0f, face * 0.09f));
-    const auto base = at (angle, face * 0.30f);
-    const auto side = at (angle - MathConstants<float>::halfPi, half) - centre;
-    Path blade;
-    blade.startNewSubPath (tip);
-    blade.lineTo (base + side);
-    blade.lineTo (base - side);
-    blade.closeSubPath();
-
-    DropShadow (accent.withAlpha (0.85f), jmax (4, roundToInt (face * (hover ? 0.22f : 0.16f))), {}).drawForPath (g, blade);
-    g.setGradientFill (ColourGradient (accent.withAlpha (0.4f), base, bone, tip, false));
-    g.fillPath (blade);
-
-    // L'étoile à la pointe, puis le cœur gravé.
-    const float starRadius = jmax (2.6f, face * 0.11f);
-    const auto spark = knobStar (tip, starRadius);
-    DropShadow (hot, jmax (3, roundToInt (starRadius * 2.2f)), {}).drawForPath (g, spark);
-    g.setColour (Colour (0xfffff4f5));
-    g.fillPath (spark);
-
-    const float core = face * 0.2f;
-    g.setColour (Colour (0xff0a0405));
-    g.fillEllipse (Rectangle<float> (2.0f * core, 2.0f * core).withCentre (centre));
-    g.setColour (Colour (0xffffd2d6).withAlpha (0.12f));
-    g.drawEllipse (Rectangle<float> (2.0f * core, 2.0f * core).withCentre (centre), 1.0f);
-    g.setColour (accent.withAlpha (0.55f));
-    g.fillPath (knobStar (centre, core * 0.66f));
+    // ---- l'aiguille : une épine rouge de l'anneau vers le centre
+    Path needle;
+    addThorn (needle, c, angle, 60.0f * s, 30.0f * s, jmax (1.8f, 4.2f * s), 0.3f * s);
+    knobdetail::glowStroke (g, needle, accent, 2.0f * s, glowAmt);
+    g.setColour (hot);
+    g.fillPath (needle);
 }
 
 } // namespace onirique::ui
