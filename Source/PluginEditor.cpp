@@ -746,7 +746,7 @@ juce::Rectangle<float> SegmentSelector::segmentArea() const noexcept
     auto r = getLocalBounds().toFloat().reduced (1.0f);
     if (title.isNotEmpty())
     {
-        const auto f = ui::font (ui::Face::mono, r.getHeight() * 0.40f, true, 0.08f);
+        const auto f = ui::font (ui::Face::body, r.getHeight() * 0.46f, true, 0.10f);
         r.removeFromLeft (ui::textWidth (f, title) + r.getHeight() * 0.9f);
     }
     return r;
@@ -824,8 +824,8 @@ void SegmentSelector::paint (juce::Graphics& g)
 
     if (title.isNotEmpty())
     {
-        g.setColour (ui::haze.withMultipliedAlpha (dim));
-        g.setFont (ui::font (ui::Face::mono, r.getHeight() * 0.40f, true, 0.08f));
+        g.setColour (ui::mist.withMultipliedAlpha (dim));   // titre (LOW, OS) aussi lisible que les choix
+        g.setFont (ui::font (ui::Face::body, r.getHeight() * 0.46f, true, 0.10f));
         g.drawText (title, juce::Rectangle<float> (r.getX(), r.getY(), a.getX() - r.getX(), r.getHeight()), juce::Justification::centred, false);
     }
 
@@ -2291,17 +2291,17 @@ void SpectrumAnalyzer::paint (juce::Graphics& g)
     g.drawImageTransformed (gridLayer, toLogical);
 
     {
-        // ---- spectres : entrée (voile discret), sortie (dégradé os + trait net)
+        // ---- spectres : entrée (trait discret), sortie (dégradé os + trait net)
         const auto plot = plotArea();
         const float u = unit();
         juce::Graphics::ScopedSaveState ss (g);
         g.reduceClipRegion (plot.toNearestInt());
         std::array<float, kPts> yIn, yOut;
         for (int i = 0; i < kPts; ++i) { yIn[(size_t) i] = ySpec (specIn[(size_t) i]); yOut[(size_t) i] = ySpec (specOut[(size_t) i]); }
-        g.setGradientFill (juce::ColourGradient (ui::haze.withAlpha (0.16f), 0.0f, plot.getY(), ui::haze.withAlpha (0.0f), 0.0f, plot.getBottom(), false));
-        g.fillPath (smoothPath (yIn, true, plot.getBottom()));
-        g.setColour (ui::haze.withAlpha (0.42f));
-        g.strokePath (smoothPath (yIn, false, 0.0f), juce::PathStrokeType (std::max (1.0f, 1.0f * u)));
+        // entrée : un simple trait discret, sans surface ; seule la sortie est remplie (deux surfaces l'une sur l'autre
+        // brouillaient la lecture dès qu'une voix passait)
+        g.setColour (ui::haze.withAlpha (0.30f));
+        g.strokePath (smoothPath (yIn, false, 0.0f), juce::PathStrokeType (std::max (1.0f, 1.0f * u), juce::PathStrokeType::curved));
 
         juce::ColourGradient og (ui::bone.withAlpha (0.34f), 0.0f, plot.getY(), ui::bone.withAlpha (0.02f), 0.0f, plot.getBottom(), false);
         og.addColour (0.55, ui::bone.withAlpha (0.12f));
@@ -4444,7 +4444,8 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
         addAndMakeVisible (c);
     for (auto* a : std::initializer_list<Animated*> { &osSel, &plosiveFader, &listenButton })
         animated.push_back (a);
-    osSel.setTitle ("OS", "Oversampling of the whole plugin (MIX mode only).");
+    osSel.setTitle ("OS", "Oversampling of the whole plugin.");
+    lowFreq.setTitle ("LOW", "Centre frequency of the LOW knob (80, 100 or 125 Hz). It does not change LOW CUT, which stays at 85 Hz.");
     plosiveFader.activity = [this] { return processor.getPlosiveReductionDb(); };
     listenButton.setTooltip ("Listen: hear only what the resonance suppressor removes (to check it never eats the voice).");
     listenAttachment = std::make_unique<ButtonAttachment> (processor.apvts, ids::resoListen, listenButton);
@@ -4905,12 +4906,12 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
 
     // ---- rangée du haut : bande de sélecteurs au-dessus des boutons (alignés dans les 3 modules)
     auto eq = inner (sections[0].bounds), de = inner (sections[1].bounds), sat = inner (sections[2].bounds);
-    // deux bandes : LOW CUT puis la fréquence du LOW, juste au-dessus des boutons
+    // une seule ligne, centrée dans la hauteur de deux bandes (les boutons restent alignés sur les cartes voisines) :
+    // à gauche, au-dessus du bouton LOW, sa fréquence (« LOW 80 | 100 | 125 ») ; à droite, LOW CUT. Posée sous LOW CUT,
+    // la fréquence du LOW avait l'air d'être celle du LOW CUT.
     const float stripH = 26.0f * u, stripGap = 6.0f * u;
-    const auto eqToggles = eq.removeFromTop (stripH);
-    eq.removeFromTop (stripGap);
-    const auto eqSelectors = eq.removeFromTop (stripH);
-    eq.removeFromTop (stripGap);
+    const auto eqTop = eq.removeFromTop (2.0f * stripH + 2.0f * stripGap);
+    const auto eqRow = eqTop.withSizeKeepingCentre (eqTop.getWidth(), stripH).translated (0.0f, -0.5f * stripGap);
     {
         // DE-ESSER / PLOSIVES : curseur PLOSIVES dans la bande au-dessus des boutons
         // second de-esser ajouté : une seule bande, pour laisser la hauteur aux deux rangées de boutons
@@ -4918,8 +4919,8 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
         place (plosiveFader, plos.withSizeKeepingCentre (plos.getWidth() - 8.0f * u, 30.0f * u));
     }
     sat.removeFromTop (stripH + stripGap);
-    place (lowCutButton, splitCols (eqToggles, 2, 0));                // LOW CUT 85 Hz
-    place (lowFreq,  splitCols (eqSelectors, 2, 0));                  // 80 / 100 / 125 Hz (le LOW)
+    place (lowFreq, eqRow.withWidth (eqRow.getWidth() * 0.56f).reduced (4.0f * u, 0.0f));               // LOW 80 / 100 / 125 Hz
+    place (lowCutButton, eqRow.withTrimmedLeft (eqRow.getWidth() * 0.60f).reduced (4.0f * u, 0.0f));    // LOW CUT 85 Hz
     place (satType, sat.removeFromTop (stripH));                      // TUBE / ANALOG / TAPE
     sat.removeFromTop (stripGap);
     place (lowKnob,   splitCols (eq, 4, 0));
