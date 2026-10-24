@@ -1482,6 +1482,8 @@ SpectrumAnalyzer::SpectrumAnalyzer (OniriqueVocalBoxAudioProcessor& p, bool full
 {
     addChildComponent (bubble);
     bubble.onRemoved = [this] { if (onBackgroundClick) onBackgroundClick(); };
+    bubble.xOfHz = [this] (float hz) { return xOf (hz); };
+    bubble.hzOfX = [this] (float x) { return hzOf (x); };
     window.resize ((size_t) kN);
     double sum = 0.0;
     for (int i = 0; i < kN; ++i)
@@ -2825,9 +2827,34 @@ void BandBubble::mouseDown (const juce::MouseEvent& e)
     }
 }
 
+void BandBubble::mouseDrag (const juce::MouseEvent& e)
+{
+    // casque tenu et souris déplacée : la bande suit la souris en fréquence, on l'entend seule pendant tout le geste
+    if (! listening || xOfHz == nullptr || hzOfX == nullptr) return;
+    auto* p = apvts.getParameter (ids::peqFreq[band]);
+    if (p == nullptr) return;
+    if (! sweeping)
+    {
+        if (e.getDistanceFromDragStart() < 3) return;
+        sweeping = true;
+        sweepStartX = xOfHz (get (ids::peqFreq[band]));
+        p->beginChangeGesture();
+        setMouseCursor (juce::MouseCursor::LeftRightResizeCursor);
+    }
+    const float hz = hzOfX (sweepStartX + (float) e.getDistanceFromDragStartX());
+    p->setValueNotifyingHost (p->convertTo0to1 (hz));
+}
+
 void BandBubble::mouseUp (const juce::MouseEvent&)
 {
     if (! listening) return;
+    if (sweeping)
+    {
+        if (auto* p = apvts.getParameter (ids::peqFreq[band])) p->endChangeGesture();
+        sweeping = false;
+        setMouseCursor (juce::MouseCursor::PointingHandCursor);
+    }
+
     hold.store (false);
     set (ids::peqListen, listenWas ? 1.0f : 0.0f);
     listening = false;

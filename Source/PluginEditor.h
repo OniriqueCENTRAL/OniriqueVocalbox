@@ -444,6 +444,8 @@ public:
     void setBand (int b) { if (b != band) { band = b; shownText.clear(); repaint(); } }
     void setPointsDown (bool down) { if (down != pointsDown) { pointsDown = down; resized(); repaint(); } }
     std::function<void()> onRemoved;   // bande retirée (x) : le panneau se ferme
+    // échelle des fréquences de l'analyseur (x dans l'analyseur) : le casque tenu promène la bande en fréquence
+    std::function<float (float)> xOfHz, hzOfX;
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -451,6 +453,7 @@ public:
     void mouseMove (const juce::MouseEvent&) override;
     void mouseExit (const juce::MouseEvent&) override { hover = -1; repaint(); }
     void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;
 
 private:
@@ -463,6 +466,8 @@ private:
     std::atomic<bool>& hold;
     int band = 2, hover = -1;
     bool pointsDown = true, listening = false, listenWas = false;
+    bool sweeping = false;
+    float sweepStartX = 0.0f;
     juce::String shownText;
     juce::Rectangle<float> box, zPower, zListen, zClose, zUp, zDown, zType;
 };
