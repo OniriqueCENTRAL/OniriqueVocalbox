@@ -1298,17 +1298,6 @@ public:
         g.setColour (colours::rose.withAlpha (0.1f));
         g.fillRect (r.withTop (r.getBottom() - 1.0f));
 
-        // Le trait de lumière au pied.
-        const auto streak = Rectangle<float> (getWidth() * 0.45f, (float) getHeight() - 1.5f, jmin (260.0f, getWidth() * 0.3f), 2.0f);
-        ColourGradient light (colours::emberLit.withAlpha (0.0f), streak.getX(), 0.0f, colours::bone.withAlpha (0.0f), streak.getRight(), 0.0f, false);
-        light.addColour (0.6, colours::emberLit);
-        light.addColour (0.86, colours::bone);
-        g.setGradientFill (light);
-        g.fillRoundedRectangle (streak, 1.0f);
-        light.multiplyOpacity (0.3f);
-        g.setGradientFill (light);
-        g.fillRoundedRectangle (streak.expanded (0.0f, 3.0f), 3.0f);
-
         paintBrand (g);
 
         for (auto well : { navWell, inWell, slotWell })
