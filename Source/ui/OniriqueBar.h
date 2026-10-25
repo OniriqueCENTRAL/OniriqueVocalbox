@@ -21,6 +21,8 @@
 //      resized()    : bar.setPillWidth (licenseOverlay->pillWidth()); bar.place (scale, getLocalBounds());
 //                     licenseOverlay->fit (getLocalBounds(), scale, bar.getPillArea(), Justification::centredRight);
 //      bar.setBrand (largeur, dessin) : le titre du plugin (son logo, son nom) à la place de « ONIRIQUE » + nom.
+//      bar.setWithoutBrand() : sans marque (le nom est déjà sur la façade) ; étroite, la barre tient sur une rangée.
+//      bar.setWithoutZoom() : dans une application (pas un plugin), le menu ⋯ ne propose pas la taille de la fenêtre.
 //==============================================================================
 namespace onirique::nuit
 {
@@ -1047,7 +1049,19 @@ public:
         repaint();
     }
 
-    int idealHeight() const   { return 6 + (clipboard ? 5 : 3) * 33 + 11 + 70 + 6; }
+    int idealHeight() const   { return 6 + (clipboard ? 5 : 3) * 33 + (withZoom ? 11 + 70 : 0) + 6; }
+
+    /** Sans la taille de la fenêtre (une application, qui a la sienne). */
+    void setZoomVisible (bool shouldShow)
+    {
+        withZoom = shouldShow;
+
+        for (auto& zoom : zooms)
+            zoom.setVisible (withZoom);
+
+        resized();
+        repaint();
+    }
 
     void paint (Graphics& g) override
     {
@@ -1056,6 +1070,9 @@ public:
         g.fillRoundedRectangle (r, 14.0f);
         g.setColour (colours::rose.withAlpha (0.14f));
         g.drawRoundedRectangle (r.reduced (0.5f), 14.0f, 1.0f);
+
+        if (! withZoom)
+            return;
 
         g.setColour (colours::rose.withAlpha (0.1f));
         g.fillRect (separator.toFloat());
@@ -1111,7 +1128,7 @@ private:
 
     PresetBank& bank;
     Fonts fonts;
-    bool clipboard;
+    bool clipboard, withZoom = true;
 
     MenuItem copySlot { "Copy A to B", Icon::copy }, copySettings { "Copy Settings", Icon::copy },
              pasteSettings { "Paste Settings", Icon::paste }, importPresets { String::fromUTF8 ("Import Presets…"), Icon::import },
@@ -1227,10 +1244,24 @@ public:
     /** La zone de la marque, en points (pour la redessiner seule quand elle s'anime). */
     Rectangle<int> getBrandArea() const   { return brandArea; }
 
+    /** Sans marque ni titre (le plugin écrit déjà son nom ailleurs) : étroite, la barre tient alors sur une seule
+        rangée, ⋯ au bout. */
+    void setWithoutBrand()
+    {
+        noBrand = true;
+        resized();
+    }
+
+    /** Dans une application plutôt qu'un plugin : la fenêtre a sa propre taille, le menu ⋯ ne la propose pas. */
+    void setWithoutZoom()   { menu.setZoomVisible (false); layoutPanels(); }
+
+    /** La hauteur de cette barre, en points : celle de heightFor(), une seule rangée sans marque. */
+    int getBarHeight() const   { return twoRows() ? heightFor (width) : 50; }
+
     /** Dans resized() du plugin : la barre en haut à ce zoom, la feuille de ses panneaux sur toute la fenêtre. */
     void place (float scale, Rectangle<int> editorBounds)
     {
-        setBounds (0, 0, width, heightFor (width));
+        setBounds (0, 0, width, getBarHeight());
         setTransform (AffineTransform::scale (scale));
         sheet.setBounds (0, 0, width, roundToInt ((float) editorBounds.getHeight() / scale));
         sheet.setTransform (AffineTransform::scale (scale));
@@ -1291,14 +1322,18 @@ public:
     {
         constexpr int pad = 14, gap = 8, h = 30;
         const auto rowOf = [&] (int centre) { return Rectangle<int> (pad, centre - h / 2, width - 2 * pad, h); };
-        auto top = rowOf (compact ? 21 : 25);
-        auto row = compact ? rowOf (63) : top;
+        auto top = rowOf (twoRows() ? 21 : 25);
+        auto row = twoRows() ? rowOf (63) : top;
 
         // À droite de la première rangée : ⋯, et la place de la pastille.
         more.setBounds (top.removeFromRight (h));
         top.removeFromRight (gap);
         pillArea = top.removeFromRight (pillWidth);
         brandArea = top.withWidth (brandWidth());
+
+        // Étroite et sans marque : une seule rangée, qui laisse le bout à ⋯ et à la pastille.
+        if (compact && ! twoRows())
+            row.removeFromRight (h + gap + pillWidth + (pillWidth > 0 ? gap : 0));
 
         if (! compact)
             row.removeFromLeft (brandArea.getWidth() + 18);
@@ -1386,7 +1421,7 @@ private:
 
     void layoutPanels()
     {
-        const auto barHeight = heightFor (width);
+        const auto barHeight = getBarHeight();
         const auto below = sheet.getLocalBounds().withTrimmedTop (barHeight).reduced (8);
 
         // Le navigateur part du champ du preset, aussi large qu'il le faut sans dépasser.
@@ -1412,8 +1447,13 @@ private:
         refresh();
     }
 
+    bool twoRows() const   { return compact && ! noBrand; }
+
     int brandWidth() const
     {
+        if (noBrand)
+            return 0;
+
         if (brandPainter)
             return customBrandWidth;
 
@@ -1424,6 +1464,9 @@ private:
 
     void paintBrand (Graphics& g)
     {
+        if (noBrand)
+            return;
+
         if (brandPainter)
         {
             brandPainter (g, brandArea.toFloat());
@@ -1507,6 +1550,7 @@ private:
 
     Rectangle<int> brandArea, navWell, inWell, slotWell, clipWell, pillArea;
     int pillWidth = 0, ticks = 0, customBrandWidth = 0;
+    bool noBrand = false;
     std::function<void (Graphics&, Rectangle<float>)> brandPainter;
     String shownName;
 
