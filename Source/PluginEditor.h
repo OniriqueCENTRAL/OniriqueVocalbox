@@ -4,6 +4,7 @@
 #include "PluginProcessor.h"
 #include "MultibandPresets.h"
 #include "SpectrumSmoother.h"
+#include "ui/OniriqueBar.h"
 
 #include <array>
 #include <map>
@@ -765,36 +766,6 @@ private:
     std::vector<Animated*> children;
 };
 
-// Barre de presets (en-tête) : précédent / nom (menu) / suivant + SAVE (champ de nom intégré).
-class PresetBar : public juce::Component, public Animated
-{
-public:
-    explicit PresetBar (onirique::PresetManager&);
-
-    void paint (juce::Graphics&) override;
-    void resized() override;
-    void tick() override;
-    void mouseDown (const juce::MouseEvent&) override;
-    void mouseMove (const juce::MouseEvent&) override;
-    void mouseExit (const juce::MouseEvent&) override;
-
-private:
-    enum Zone { none = -1, prev, name, next, save };
-    Zone zoneAt (juce::Point<float>) const noexcept;
-    void showMenu();
-    void startSave();
-    void endSave (bool commit);
-
-    onirique::PresetManager& pm;
-    juce::TextEditor editor;
-    juce::Rectangle<float> zones[4];
-    juce::String shownName;
-    bool modified = false;
-    Zone hover = none;
-    float glow[4] {};
-    int frame = 0;
-};
-
 // Onglets de la carte COMPRESSION (1176 / LA-2A | MULTIBAND) : pastille qui glisse, LED = module allumé.
 class TabBar : public juce::Component, public Animated
 {
@@ -1011,12 +982,12 @@ private:
     bool lit = false;
 };
 
-class OniriqueVocalBoxAudioProcessorEditor : public juce::AudioProcessorEditor,
-                                             private juce::Timer
+class VocalBoxView : public juce::Component,
+                     private juce::Timer
 {
 public:
-    explicit OniriqueVocalBoxAudioProcessorEditor (OniriqueVocalBoxAudioProcessor&);
-    ~OniriqueVocalBoxAudioProcessorEditor() override;
+    explicit VocalBoxView (OniriqueVocalBoxAudioProcessor&);
+    ~VocalBoxView() override;
 
     void paint (juce::Graphics&) override;
     void paintVeils (juce::Graphics&);   // voiles des modules coupés, dessinés par la couche "veils"
@@ -1041,7 +1012,6 @@ private:
     void timerCallback() override;
     float scale() const noexcept { return (float) getWidth() / 2208.0f; }
     void paintHeader (juce::Graphics&);
-    void paintStar (juce::Graphics&, juce::Point<float> c, float r, float alpha);
     // fond et cartes ne bougent pas : dessinés une fois (à la résolution réelle de l'écran) dans deux images,
     // recopiées à chaque image ; seuls l'en-tête animé, les points des cartes et le témoin OVER sont redessinés
     void paintBackdrop (juce::Graphics&);
@@ -1170,7 +1140,6 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> peqListenAtt;
     bool peqDynShown = false;
     FxButton fxButton;
-    PresetBar presetBar { processor.presets };
     ProcessingOrderBar orderBar { processor.apvts };
     // ---- PARALLEL : compression parallèle (1176 écrasé remis dans la voix)
     KnobComponent parAmountKnob { processor.apvts, onirique::ids::parAmount, "AMOUNT", "0", "100", Layout::textBelow,
@@ -1220,8 +1189,7 @@ private:
                               "Output level in dB. Double-click to reset to 0 dB.", lnf, true };
 
     PillToggle autoButton   { "AUTO GAIN", PillToggle::Style::big };
-    PillToggle bypassButton { "BYPASS", PillToggle::Style::small };
-    std::unique_ptr<ButtonAttachment> autoAttachment, bypassAttachment;
+    std::unique_ptr<ButtonAttachment> autoAttachment;
 
     PowerButton eqPower, resoPower, cardPower, compPower, mbPower, parPower, deessPower, satPower, peqPower, gatePower;
     std::unique_ptr<ButtonAttachment> eqPowerAtt, resoPowerAtt, cardPowerAtt, compPowerAtt, mbPowerAtt, parPowerAtt, deessPowerAtt, satPowerAtt, peqPowerAtt, gatePowerAtt;
@@ -1258,15 +1226,12 @@ private:
 
     std::vector<Animated*> animated;
     std::vector<Section> sections;
-    juce::Image logo, logoScaled, logoGlow;
     juce::Image backdropLayer, cardsLayer;   // vidées au redimensionnement
     float layersScale = 0.0f;
-    juce::Rectangle<float> logoRect, signalRect, overRect;
+    juce::Rectangle<float> signalRect, overRect;
     juce::Rectangle<float> lastStreak;   // impulsion de la ligne de signal à l'image précédente (zone à effacer)
-    std::vector<std::pair<juce::Point<float>, float>> stars;   // position, taille
     double clock = 0.0;
     int overHold = 0, frame = 0;
-    bool restoringSize = true;   // pendant la construction : ne pas écraser la taille mémorisée
 
     // Couche transparente au-dessus des modules (mais sous les menus, qui s'ouvrent après) pour les voiles
     // des modules coupés ; elle laisse passer tous les clics.
@@ -1278,7 +1243,31 @@ private:
     } veils;
     float overGlow = 0.0f;
 
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (VocalBoxView)
+};
+
+// La fenêtre du plugin : la barre du haut des plugins ONIRIQUE (le titre, les presets, IN, A/B, copier / coller, la
+// licence, la taille de la fenêtre), et l'interface dessous. Les deux se zooment ensemble.
+class OniriqueVocalBoxAudioProcessorEditor : public juce::AudioProcessorEditor, private juce::Timer
+{
+public:
+    explicit OniriqueVocalBoxAudioProcessorEditor (OniriqueVocalBoxAudioProcessor&);
+    ~OniriqueVocalBoxAudioProcessorEditor() override;
+
+    void paint (juce::Graphics&) override {}
+    void resized() override;
+
+private:
+    void timerCallback() override;
+    float titleWidth() const;
+    void paintTitle (juce::Graphics&, juce::Rectangle<float> area) const;   // le titre, dans la barre (en points)
+
+    OniriqueVocalBoxAudioProcessor& processor;
+    VocalBoxView view;
+    onirique::nuit::Bar bar;
+    juce::Image logo, logoGlow;   // le logo du titre et sa lueur, qui respire
     std::unique_ptr<onirique::license::Overlay> licenseOverlay;
+    bool restoringSize = true;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OniriqueVocalBoxAudioProcessorEditor)
 };

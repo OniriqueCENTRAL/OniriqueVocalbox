@@ -7,7 +7,7 @@
 #include "Parameters.h"
 #include "DSP/VocalChain.h"
 #include "DSP/SpectrumTap.h"
-#include "PresetManager.h"
+#include "StockPresets.h"
 
 class OniriqueVocalBoxAudioProcessor : public juce::AudioProcessor,
                                        private juce::AudioProcessorValueTreeState::Listener,
@@ -46,7 +46,9 @@ public:
     void setStateInformation (const void* data, int sizeInBytes) override;
 
     juce::AudioProcessorValueTreeState apvts;
-    onirique::PresetManager presets { apvts };
+    /** Les presets d'usine et ceux de l'utilisateur, la comparaison A/B : ce que montre la barre du haut. */
+    onirique::PresetBank presets { apvts, "VocalBox", onirique::vocalbox::stockPresets(), onirique::vocalbox::tagNames(),
+                                   onirique::vocalbox::notStored() };
     onirique::SpectrumTap inputTap, outputTap;   // analyseur : entrée et sortie du plugin (mono)
 
     // lus par l'éditeur (thread GUI) : crête de sortie depuis le dernier appel, correction d'Auto Gain

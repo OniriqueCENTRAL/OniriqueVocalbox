@@ -124,6 +124,9 @@ OniriqueVocalBoxAudioProcessor::OniriqueVocalBoxAudioProcessor()
     pChainOrder   = apvts.getRawParameterValue (ids::chainOrder);
     for (int b = 0; b < 4; ++b) pMbSolo[b] = apvts.getRawParameterValue (ids::mbSolo[b]);
     apvts.addParameterListener (ids::oversampling, this);
+
+    apvts.state.setProperty ("preset", "Init", nullptr);   // l'état de départ : les valeurs par défaut
+    vocalbox::importOldUserPresets (presets);
 }
 
 VocalChain::Params OniriqueVocalBoxAudioProcessor::readParams() const noexcept
@@ -294,7 +297,9 @@ juce::AudioProcessorEditor* OniriqueVocalBoxAudioProcessor::createEditor()
 
 void OniriqueVocalBoxAudioProcessor::getStateInformation (juce::MemoryBlock& dest)
 {
-    if (auto xml = apvts.copyState().createXml())
+    auto state = apvts.copyState();
+    presets.writeState (state);   // le côté A/B écouté, et l'autre
+    if (auto xml = state.createXml())
         copyXmlToBinary (*xml, dest);
 }
 
@@ -325,8 +330,12 @@ void OniriqueVocalBoxAudioProcessor::setStateInformation (const void* data, int 
                     e->setAttribute ("id", ids::peqPower);
                     e->setAttribute ("value", eq->getDoubleAttribute ("value"));
                 }
-            apvts.replaceState (juce::ValueTree::fromXml (*xml));
-            presets.takeSnapshot();   // l'état rechargé sert de référence pour l'indicateur "modifié"
+            auto state = juce::ValueTree::fromXml (*xml);
+            // un projet enregistré avec l'ancienne barre : le nom de son preset suit
+            if (! state.hasProperty ("preset") && state.hasProperty ("presetName"))
+                state.setProperty ("preset", state["presetName"], nullptr);
+            presets.readState (state);
+            apvts.replaceState (state);
         }
 }
 
