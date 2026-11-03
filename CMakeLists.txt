@@ -54,6 +54,7 @@ target_sources(OniriqueVocalBox PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp
     Source/ModulePanels.cpp
+    Source/ModuleScreens.cpp
     Source/Widgets.cpp)
 
 # logo du site (sigil blanc), intégré au binaire

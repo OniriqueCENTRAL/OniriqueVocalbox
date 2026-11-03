@@ -94,7 +94,7 @@ void StarKnob::paint (juce::Graphics& g)
     {
         const auto lr = getLocalBounds().toFloat().withBottom (k.getY());
         g.setColour (ui::mist.withAlpha (0.85f * alpha));
-        g.setFont (ui::fitFont (ui::Face::mono, std::max (8.0f, std::min (13.0f * u + 2.0f, lr.getHeight() * 0.8f)), lr.getWidth(), label));
+        g.setFont (ui::font (ui::Face::mono, 11.0f * ui::unitOf (*this)));
         g.drawText (label, lr, juce::Justification::centred, false);
     }
 
@@ -140,7 +140,7 @@ void StarKnob::paint (juce::Graphics& g)
         const auto vr = getLocalBounds().toFloat().withTop (k.getBottom());
         const auto text = param->getCurrentValueAsText();
         g.setColour (ui::bone.withAlpha (alpha));
-        g.setFont (ui::fitFont (ui::Face::mono, std::max (8.0f, std::min (14.0f * u + 2.0f, vr.getHeight() * 0.8f)), vr.getWidth(), text));
+        g.setFont (ui::font (ui::Face::mono, 13.0f * ui::unitOf (*this)));
         g.drawText (text, vr, juce::Justification::centred, false);
     }
 }
@@ -214,7 +214,7 @@ void GlassToggle::paint (juce::Graphics& g)
         g.drawRoundedRectangle (r.reduced (0.5f), rad, 1.0f);
     }
     g.setColour (ui::mist.withAlpha (0.65f + 0.35f * std::max (lit, hot)));
-    g.setFont (ui::fitFont (ui::Face::mono, r.getHeight() * 0.36f, r.getWidth() * 0.86f, label));
+    g.setFont (ui::font (ui::Face::mono, 11.0f * u));
     g.drawText (label, r, juce::Justification::centred, false);
 }
 
@@ -236,7 +236,7 @@ GlassTabs::GlassTabs (juce::AudioProcessorValueTreeState& s, const juce::String&
 float GlassTabs::idealWidth (float h) const
 {
     float w = 0.0f;
-    const auto f = ui::font (ui::Face::mono, h * 0.34f);
+    const auto f = ui::font (ui::Face::mono, 11.0f * ui::unitOf (*this));
     for (auto& l : labels) w += ui::textWidth (f, l) + h * 0.9f;
     return w + h * 0.25f;
 }
@@ -267,11 +267,15 @@ void GlassTabs::paint (juce::Graphics& g)
     g.fillRoundedRectangle (pill, rad * 0.8f);
     g.setColour (juce::Colour (0xffff7887).withAlpha (0.5f));
     g.drawRoundedRectangle (pill.reduced (0.5f), rad * 0.8f, 1.0f);
+    float scale = 1.0f;
+    for (int i = 0; i < n; ++i)
+        scale = std::min (scale, w * 0.9f / std::max (1.0f, ui::textWidth (ui::font (ui::Face::mono, 11.0f * u), labels[i])));
+    const auto tabFont = ui::font (ui::Face::mono, 11.0f * u * scale);
     for (int i = 0; i < n; ++i)
     {
         const auto sr = seg ((float) i);
         g.setColour (i == selected ? ui::bone : (i == hover ? ui::mist : ui::haze));
-        g.setFont (ui::fitFont (ui::Face::mono, r.getHeight() * 0.34f, sr.getWidth() * 0.9f, labels[i]));
+        g.setFont (tabFont);
         g.drawText (labels[i], sr, juce::Justification::centred, false);
     }
 }
@@ -279,7 +283,10 @@ void GlassTabs::paint (juce::Graphics& g)
 void GlassTabs::mouseDown (const juce::MouseEvent& e)
 {
     const int i = at (e.position.x);
-    if (i != selected) attachment->setValueAsCompleteGesture ((float) i);
+    if (i == selected) return;
+    if (attachment != nullptr) attachment->setValueAsCompleteGesture ((float) i);
+    else { selected = i; repaint(); }
+    if (onChange) onChange (i);
 }
 
 void GlassTabs::mouseMove (const juce::MouseEvent& e)
@@ -376,7 +383,7 @@ private:
 };
 } // namespace
 
-std::unique_ptr<ModulePanel> createModulePanel (OniriqueVocalBoxAudioProcessor& p, int code)
+std::unique_ptr<ModulePanel> createGenericPanel (OniriqueVocalBoxAudioProcessor& p, int code)
 {
     if (! modules::valid (code)) return nullptr;
     return std::make_unique<GenericPanel> (p, code);

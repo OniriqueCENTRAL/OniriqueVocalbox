@@ -76,6 +76,11 @@ class GlassTabs : public juce::Component, public Animated
 {
 public:
     GlassTabs (juce::AudioProcessorValueTreeState&, const juce::String& paramId, const juce::StringArray& labels);
+    // sans réglage : un choix de l'interface (la bande affichée du MULTIBAND...)
+    explicit GlassTabs (const juce::StringArray& labels) : labels (labels) { setMouseCursor (juce::MouseCursor::PointingHandCursor); }
+    std::function<void (int)> onChange;
+    void setSelected (int i) { if (i != selected) { selected = i; repaint(); } }
+    int getSelected() const noexcept { return selected; }
     void paint (juce::Graphics&) override;
     void tick() override;
     void mouseDown (const juce::MouseEvent&) override;
@@ -102,7 +107,9 @@ public:
     void tick() override { for (auto* a : anim) a->tick(); }
     const int code, type, inst;
 
-protected:
+    // pour composer un écran (ModuleScreens.cpp)
+    void keep (std::unique_ptr<juce::Component> c) { owned.push_back (std::move (c)); }   // gardé, pas affiché (il vit dans un cadre)
+    void addAnim (Animated* a) { anim.push_back (a); }
     juce::String P (const char* id) const { return onirique::ids::inst (id, inst); }
     float value (const char* id) const { return processor.apvts.getRawParameterValue (P (id))->load(); }
     StarKnob& knob (const char* id, const juce::String& label);
@@ -125,4 +132,5 @@ protected:
     std::vector<std::unique_ptr<juce::Component>> owned;
 };
 
-std::unique_ptr<ModulePanel> createModulePanel (OniriqueVocalBoxAudioProcessor&, int code);
+std::unique_ptr<ModulePanel> createModulePanel (OniriqueVocalBoxAudioProcessor&, int code);   // l'écran du module (ModuleScreens.cpp)
+std::unique_ptr<ModulePanel> createGenericPanel (OniriqueVocalBoxAudioProcessor&, int code);  // tous ses réglages en potards

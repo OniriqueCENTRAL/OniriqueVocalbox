@@ -138,7 +138,7 @@ private:
     std::unique_ptr<ModulePanel> panel;
     GainStrip inStrip, outStrip;
     AutoGainSwitch autoGain;
-    SegmentSelector oversampling;
+    GlassTabs oversampling;
     ModulePicker picker;
     juce::TooltipWindow tooltips { this, 600 };
     int selected = 0;

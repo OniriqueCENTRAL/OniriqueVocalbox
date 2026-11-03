@@ -8,6 +8,16 @@ namespace
 {
 constexpr float kPi = juce::MathConstants<float>::pi;
 
+// majuscules, accents compris (toUpperCase laisse les lettres accentuées en minuscule)
+juce::String upper (juce::String s)
+{
+    s = s.toUpperCase();
+    for (auto [a, b] : { std::pair { "é", "É" }, std::pair { "è", "È" }, std::pair { "ê", "Ê" }, std::pair { "à", "À" }, std::pair { "ç", "Ç" },
+                         std::pair { "î", "Î" }, std::pair { "ô", "Ô" }, std::pair { "û", "Û" }, std::pair { "â", "Â" } })
+        s = s.replace (juce::String::fromUTF8 (a), juce::String::fromUTF8 (b));
+    return s;
+}
+
 // la fenêtre : la barre du haut (en points, 1900 à la taille par défaut), l'interface dessous (en unités de 1600 x 780)
 constexpr float kBaseW = 1600.0f, kBaseH = 780.0f;
 constexpr float kBarUnits = 1900.0f, kBarH = 50.0f;   // nuit::Bar::heightFor (1900)
@@ -178,6 +188,22 @@ void ChainStrip::paint (juce::Graphics& g)
         g.strokePath (p, juce::PathStrokeType (1.6f * u, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
 
+    // les noms des carrés : une seule taille pour tous, celle qui fait tenir le plus long
+    auto tileName = [&] (int code)
+    {
+        int count = 0, nth = 0;
+        for (const auto& o : tiles) if (modules::typeOf (o.code) == modules::typeOf (code)) { ++count; if (o.code == code) nth = count; }
+        return juce::String (modules::info (modules::typeOf (code)).shortName) + (count > 1 ? " " + juce::String (nth) : juce::String());
+    };
+    float nameScale = 1.0f;
+    {
+        const auto f = ui::font (ui::Face::display, 13.0f * u, true);
+        const float room = tileW() - 24.0f * u;
+        for (const auto& t : tiles) nameScale = std::min (nameScale, room / std::max (1.0f, ui::textWidth (f, tileName (t.code))));
+    }
+    const auto nameFont = ui::font (ui::Face::display, 13.0f * u * nameScale, true);
+    const auto groupFont = ui::font (ui::Face::mono, 9.0f * u * std::min (1.0f, (tileW() - 24.0f * u) / std::max (1.0f, ui::textWidth (ui::font (ui::Face::mono, 9.0f * u), "DYNAMIQUE"))));
+
     auto paintTile = [&] (const Tile& t, bool lifted)
     {
         auto r = tileRect (t.x);
@@ -253,17 +279,15 @@ void ChainStrip::paint (juce::Graphics& g)
         }
 
         // pictogramme, nom (avec son numéro s'il y a plusieurs exemplaires), groupe
-        int count = 0, nth = 0;
-        for (const auto& o : tiles) if (modules::typeOf (o.code) == type) { ++count; if (o.code == t.code) nth = count; }
-        const auto name = juce::String (inf.shortName) + (count > 1 ? " " + juce::String (nth) : juce::String());
+        const auto name = tileName (t.code);
         const auto bottom = r.withTrimmedTop (r.getHeight() * 0.42f).reduced (12.0f * u, 10.0f * u);
-        ui::drawModuleIcon (g, type, juce::Rectangle<float> (16.0f * u, 16.0f * u).withPosition (bottom.getX(), bottom.getY() + 2.0f * u),
-                            juce::Colour (0xffff8e9a).withAlpha (dim), 1.8f * u);
+        ui::drawModuleIcon (g, type, juce::Rectangle<float> (16.0f * u, 16.0f * u).withPosition (led.getRight() + 9.0f * u, led.getCentreY() - 8.0f * u),
+                            juce::Colour (0xffff8e9a).withAlpha (dim * (lifted ? 1.0f : 1.0f - t.hover)), 1.8f * u);
         g.setColour (ui::bone.withAlpha (dim));
-        g.setFont (ui::fitFont (ui::Face::display, 13.0f * u, bottom.getWidth() - 22.0f * u, name, true));
-        g.drawText (name, bottom.withTrimmedLeft (22.0f * u).withHeight (20.0f * u), juce::Justification::centredLeft, false);
+        g.setFont (nameFont);
+        g.drawText (name, bottom.withHeight (20.0f * u), juce::Justification::centredLeft, false);
         g.setColour (ui::haze.withAlpha (dim));
-        g.setFont (ui::fitFont (ui::Face::mono, 9.0f * u, bottom.getWidth(), modules::groupName (inf.group)));
+        g.setFont (groupFont);
         g.drawText (modules::groupName (inf.group), bottom.withTrimmedTop (24.0f * u).withHeight (14.0f * u), juce::Justification::centredLeft, false);
     };
 
@@ -302,7 +326,7 @@ void ChainStrip::paint (juce::Graphics& g)
     {
         g.setColour (ui::haze);
         g.setFont (ui::font (ui::Face::mono, 12.0f * u));
-        g.drawText ("CLIQUE SUR + POUR AJOUTER UN MODULE A LA CHAINE", pr.withX (pr.getRight() + 20.0f * u).withWidth (700.0f * u),
+        g.drawText (juce::String::fromUTF8 ("CLIQUE SUR + POUR AJOUTER UN MODULE À LA CHAÎNE"), pr.withX (pr.getRight() + 20.0f * u).withWidth (700.0f * u),
                     juce::Justification::centredLeft, false);
     }
 }
@@ -438,7 +462,7 @@ void ModulePicker::paint (juce::Graphics& g)
     g.fillAll();
     g.setOpacity (shown);
     const auto c = card();
-    g.setColour (juce::Colour (0xff180c0f).withAlpha (0.97f * shown));
+    g.setColour (juce::Colour (0xff180c0f).withAlpha (shown));
     g.fillRoundedRectangle (c, 30.0f * u);
     ui::drawGlass (g, c, 30.0f * u, u, 0.15f);
 
@@ -447,7 +471,7 @@ void ModulePicker::paint (juce::Graphics& g)
     g.drawText ("AJOUTER UN MODULE", c.reduced (28.0f * u).withHeight (40.0f * u), juce::Justification::centredLeft, false);
     g.setColour (ui::haze.withAlpha (shown));
     g.setFont (ui::font (ui::Face::mono, 10.0f * u));
-    g.drawText ("JUSQU'A TROIS FOIS CHAQUE MODULE  ·  ECHAP POUR FERMER", c.reduced (28.0f * u).withHeight (40.0f * u),
+    g.drawText (juce::String::fromUTF8 ("JUSQU'À TROIS FOIS CHAQUE MODULE  ·  ÉCHAP POUR FERMER"), c.reduced (28.0f * u).withHeight (40.0f * u),
                 juce::Justification::centredRight, false);
 
     const auto inner = c.reduced (28.0f * u).withTrimmedTop (56.0f * u);
@@ -458,6 +482,10 @@ void ModulePicker::paint (juce::Graphics& g)
         g.drawText (modules::groupName (gi), inner.withY (inner.getY() + inner.getHeight() / 4.0f * (float) gi).withHeight (20.0f * u),
                     juce::Justification::centredLeft, false);
     }
+    float nameScale = 1.0f;
+    for (int t = 0; t < modules::numTypes; ++t)
+        nameScale = std::min (nameScale, (itemRect (t).getWidth() - 74.0f * u) / std::max (1.0f, ui::textWidth (ui::font (ui::Face::display, 13.0f * u, true), modules::info (t).name)));
+    const auto nameFont = ui::font (ui::Face::display, 13.0f * u * nameScale, true);
     for (int t = 0; t < modules::numTypes; ++t)
     {
         const auto r = itemRect (t);
@@ -479,11 +507,11 @@ void ModulePicker::paint (juce::Graphics& g)
         ui::drawModuleIcon (g, t, ic.reduced (11.0f * u), juce::Colour (0xffffd6db).interpolatedWith (ui::bone, hg).withAlpha (a), 1.8f * u);
         const auto tr = r.withTrimmedLeft (68.0f * u).reduced (0.0f, 8.0f * u);
         g.setColour (ui::bone.withAlpha (a));
-        g.setFont (ui::fitFont (ui::Face::display, 13.0f * u, tr.getWidth() - 6.0f * u, inf.name, true));
+        g.setFont (nameFont);
         g.drawText (inf.name, tr.withHeight (tr.getHeight() * 0.5f), juce::Justification::bottomLeft, false);
         g.setColour (juce::Colour (0xffcdb8bb).withAlpha (a));
         g.setFont (ui::font (ui::Face::body, 11.5f * u));
-        g.drawFittedText (free ? inf.desc : "Trois exemplaires déjà dans la chaîne", tr.withTrimmedTop (tr.getHeight() * 0.5f + 2.0f * u).toNearestInt(),
+        g.drawFittedText (juce::String::fromUTF8 (free ? inf.desc : "Trois exemplaires déjà dans la chaîne"), tr.withTrimmedTop (tr.getHeight() * 0.5f + 2.0f * u).toNearestInt(),
                           juce::Justification::topLeft, 2, 0.9f);
     }
 }
@@ -638,8 +666,7 @@ VocalBoxView::VocalBoxView (OniriqueVocalBoxAudioProcessor& p)
       inStrip (p, ids::input, "IN", [&p] (int c) { return p.consumeInputLevel (c); }),
       outStrip (p, ids::output, "OUT", [&p] (int c) { return p.consumeOutputLevel (c); }),
       autoGain (p),
-      oversampling (p.apvts, ids::oversampling, { "OFF", "2x", "4x", "8x" },
-                    { "No oversampling: lowest CPU.", "2x oversampling (default).", "4x oversampling.", "8x oversampling: highest CPU." }),
+      oversampling (p.apvts, ids::oversampling, { "OS OFF", "OS 2x", "OS 4x", "OS 8x" }),
       picker (p)
 {
     setLookAndFeel (&lnf);
@@ -648,7 +675,6 @@ VocalBoxView::VocalBoxView (OniriqueVocalBoxAudioProcessor& p)
     addAndMakeVisible (inStrip);
     addAndMakeVisible (outStrip);
     addAndMakeVisible (autoGain);
-    oversampling.setTitle ("OS", "Oversampling of the whole chain (more = smoother saturation and compression, more CPU).");
     addAndMakeVisible (oversampling);
     addChildComponent (picker);
 
@@ -663,6 +689,11 @@ VocalBoxView::VocalBoxView (OniriqueVocalBoxAudioProcessor& p)
 
     const auto chain = p.getChain();
     select (processor.apvts.state.getProperty ("selectedModule", chain[0]));
+   #if ONIRIQUE_UI_TEST
+    // essais locaux : ONIRIQUE_UI_MODULE=<code> ouvre ce module, ONIRIQUE_UI_PICKER=1 ouvre le +
+    if (const auto m = juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_MODULE", {}); m.isNotEmpty()) select (m.getIntValue());
+    if (juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_PICKER", {}).isNotEmpty()) picker.open();
+   #endif
     startTimerHz (60);
 }
 
@@ -795,7 +826,7 @@ void VocalBoxView::paint (juce::Graphics& g)
     {
         g.setColour (ui::haze);
         g.setFont (ui::font (ui::Face::display, 18.0f * u));
-        g.drawText ("La chaîne est vide : ajoute un module avec le +", a, juce::Justification::centred, false);
+        g.drawText (juce::String::fromUTF8 ("La chaîne est vide : ajoute un module avec le +"), a, juce::Justification::centred, false);
         return;
     }
     const auto& inf = modules::info (modules::typeOf (selected));
@@ -816,7 +847,7 @@ void VocalBoxView::paint (juce::Graphics& g)
     g.drawText (name, head.withTrimmedLeft (22.0f * u).withWidth (nw), juce::Justification::centredLeft, false);
     g.setColour (ui::haze);
     g.setFont (ui::font (ui::Face::mono, 10.0f * u));
-    g.drawText (juce::String (inf.desc).toUpperCase(), head.withTrimmedLeft (22.0f * u + nw + 14.0f * u), juce::Justification::centredLeft, false);
+    g.drawText (upper (juce::String::fromUTF8 (inf.desc)), head.withTrimmedLeft (22.0f * u + nw + 14.0f * u), juce::Justification::centredLeft, false);
 
     // power du module
     const auto pr = headerPower();
