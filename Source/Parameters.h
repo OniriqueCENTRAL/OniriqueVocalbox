@@ -108,6 +108,21 @@ namespace ids
     inline constexpr const char* resoOn    = "resoOn";
     inline constexpr const char* deessOn   = "deessOn";
     inline constexpr const char* satOn     = "satOn";
+    // ---- chaîne modulaire (refonte) : interrupteurs des modules qui n'en avaient pas, réglages ajoutés à la SATURATION,
+    //      et les 16 emplacements de la chaîne (0 = vide, sinon le code du module : voir Modules.h)
+    inline constexpr const char* nsOn      = "nsOn";
+    inline constexpr const char* plosOn    = "plosOn";
+    inline constexpr const char* fetOn     = "fetOn";
+    inline constexpr const char* optoOn    = "optoOn";
+    inline constexpr const char* satMix    = "satMix";
+    inline constexpr const char* satOutput = "satOutput";
+    inline constexpr const char* satTone   = "satTone";
+    inline constexpr const char* satWarmth = "satWarmth";
+    inline constexpr const char* satAir    = "satAir";
+    inline constexpr const char* slot[16] { "slot1", "slot2", "slot3", "slot4", "slot5", "slot6", "slot7", "slot8",
+                                            "slot9", "slot10", "slot11", "slot12", "slot13", "slot14", "slot15", "slot16" };
+    // identifiant d'un réglage pour l'exemplaire k (0 = le premier, qui garde l'identifiant d'origine)
+    inline juce::String inst (const char* id, int k) { return k == 0 ? juce::String (id) : juce::String (id) + "_" + juce::String (k + 1); }
 }
 
 // ---- ordre de traitement des 7 modules : EQ (paramétrique), RESONANCE, COMP, MULTIBAND, EQ ANALOG, DE-ESSER, SATURATION.
@@ -202,12 +217,24 @@ inline juce::String orderText (int index)
     return s.joinIntoString (" > ");
 }
 
-inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
+constexpr int kInstances = 3;   // exemplaires d'un même module dans la chaîne
+constexpr int kSlots = 16;      // emplacements de la chaîne
+
+// un réglage de module, pour l'exemplaire k : le premier garde son identifiant et son nom d'origine (les anciens projets et
+// presets retrouvent leur son), les suivants prennent « _2 », « _3 » (et « 2 », « 3 » dans le nom)
+template <typename T, typename... Args>
+std::unique_ptr<T> mkParam (int k, const juce::ParameterID& id, const juce::String& name, Args&&... args)
+{
+    if (k == 0) return std::make_unique<T> (id, name, std::forward<Args> (args)...);
+    return std::make_unique<T> (juce::ParameterID { ids::inst (id.getParamID().toRawUTF8(), k), id.getVersionHint() },
+                                name + " " + juce::String (k + 1), std::forward<Args> (args)...);
+}
+
+// k = 0 : les réglages généraux et le premier exemplaire de chaque module ; k > 0 : l'exemplaire k + 1 de chaque module
+inline void addParams (std::vector<std::unique_ptr<juce::RangedAudioParameter>>& p, int k)
 {
     using namespace juce;
     using Attr = AudioParameterFloatAttributes;
-
-    std::vector<std::unique_ptr<RangedAudioParameter>> p;
 
     auto dbText = [] (float v, int)
     {
@@ -216,112 +243,112 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     };
     auto knobText = [] (float v, int) { return String (v, 1); };
 
-    p.push_back (std::make_unique<AudioParameterFloat> (
+    if (k == 0) p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::input, 1 }, "Input",
         NormalisableRange<float> (-24.0f, 24.0f, 0.1f), 0.0f,
         Attr().withLabel ("dB").withStringFromValueFunction (dbText)));
 
-    p.push_back (std::make_unique<AudioParameterFloat> (
+    p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::low, 1 }, "Low",
         NormalisableRange<float> (0.0f, 10.0f, 0.01f), 0.0f,
         Attr().withStringFromValueFunction (knobText)));
 
-    p.push_back (std::make_unique<AudioParameterFloat> (
+    p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::mud, 1 }, "Mud Cleaner",
         NormalisableRange<float> (0.0f, 10.0f, 0.01f), 0.0f,
         Attr().withStringFromValueFunction (knobText)));
 
     // HI et AIR : ceux de VOCAL MINI, bipolaires (les anciens réglages HIGH 0..10 deviennent des HI + 0..10)
     auto bipolarText = [] (float v, int) { return (v > 0.04f ? "+" : "") + String (v, 1); };
-    p.push_back (std::make_unique<AudioParameterFloat> (
+    p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::high, 1 }, "Hi",
         NormalisableRange<float> (-10.0f, 10.0f, 0.01f), 0.0f,
         Attr().withStringFromValueFunction (bipolarText)));
-    p.push_back (std::make_unique<AudioParameterFloat> (
+    p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::air, 1 }, "Air",
         NormalisableRange<float> (-10.0f, 10.0f, 0.01f), 0.0f,
         Attr().withStringFromValueFunction (bipolarText)));
 
     NormalisableRange<float> freqRange (3000.0f, 10000.0f, 1.0f);
     freqRange.setSkewForCentre (5500.0f);
-    p.push_back (std::make_unique<AudioParameterFloat> (
+    p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::deessFreq, 1 }, "De-Ess Freq",
         freqRange, 4000.0f,
         Attr().withLabel ("Hz").withStringFromValueFunction ([] (float v, int)
                                                              { return String (juce::roundToInt (v)) + " Hz"; })));
 
-    p.push_back (std::make_unique<AudioParameterFloat> (
+    p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::deessAmt, 1 }, "De-Ess Amount",
         NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f,
         Attr().withLabel ("%").withStringFromValueFunction ([] (float v, int)
                                                             { return String (juce::roundToInt (v)) + " %"; })));
 
     // second de-esser : ajouté par le bouton + de la carte, plus haut dans les aigus par défaut
-    p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::deess2On, 1 }, "De-Esser 2 On", false));
-    p.push_back (std::make_unique<AudioParameterFloat> (
+    if (k == 0) p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::deess2On, 1 }, "De-Esser 2 On", false));
+    if (k == 0) p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::deess2Freq, 1 }, "De-Ess 2 Freq",
         freqRange, 7500.0f,
         Attr().withLabel ("Hz").withStringFromValueFunction ([] (float v, int)
                                                              { return String (juce::roundToInt (v)) + " Hz"; })));
-    p.push_back (std::make_unique<AudioParameterFloat> (
+    if (k == 0) p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::deess2Amt, 1 }, "De-Ess 2 Amount",
         NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f,
         Attr().withLabel ("%").withStringFromValueFunction ([] (float v, int)
                                                             { return String (juce::roundToInt (v)) + " %"; })));
 
-    p.push_back (std::make_unique<AudioParameterFloat> (
+    p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::drive, 1 }, "Drive",
         NormalisableRange<float> (0.0f, 10.0f, 0.01f), 0.0f,
         Attr().withStringFromValueFunction (knobText)));
 
     // défaut TUBE : les anciens projets (sans ce paramètre) gardent le son d'origine
-    p.push_back (std::make_unique<AudioParameterChoice> (
+    p.push_back (mkParam<AudioParameterChoice> (k, 
         ParameterID { ids::satType, 1 }, "Saturation Type",
         StringArray { "Tube", "Analog", "Tape" }, 0));
 
-    p.push_back (std::make_unique<AudioParameterFloat> (
+    if (k == 0) p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::output, 1 }, "Output",
         NormalisableRange<float> (-24.0f, 24.0f, 0.1f), 0.0f,
         Attr().withLabel ("dB").withStringFromValueFunction (dbText)));
 
-    p.push_back (std::make_unique<AudioParameterBool> (
+    if (k == 0) p.push_back (mkParam<AudioParameterBool> (k, 
         ParameterID { ids::autoGain, 1 }, "Auto Gain", false));
 
-    p.push_back (std::make_unique<AudioParameterBool> (
+    if (k == 0) p.push_back (mkParam<AudioParameterBool> (k, 
         ParameterID { ids::bypass, 1 }, "Bypass", false));
 
     // suréchantillonnage de TOUTE la chaîne de modules (le plugin tourne toujours en qualité maximale, latence compensée)
-    p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { ids::oversampling, 1 }, "Oversampling",
+    if (k == 0) p.push_back (mkParam<AudioParameterChoice> (k, ParameterID { ids::oversampling, 1 }, "Oversampling",
                                                          StringArray { "Off", "2x", "4x", "8x" }, 1));   // 2x par défaut : 8x coûte ~5x plus de CPU
-    p.push_back (std::make_unique<AudioParameterFloat> (
+    p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::plosive, 1 }, "Plosives", NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f,
         Attr().withLabel ("%").withStringFromValueFunction ([] (float v, int) { return String (juce::roundToInt (v)) + " %"; })));
-    p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::resoListen, 1 }, "Resonance Listen", false));
-    p.push_back (std::make_unique<AudioParameterInt> (ParameterID { ids::chainOrder, 1 }, "Processing Order", 0, kMaxOrderIndex, 0,
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::resoListen, 1 }, "Resonance Listen", false));
+    if (k == 0) p.push_back (mkParam<AudioParameterInt> (k, ParameterID { ids::chainOrder, 1 }, "Processing Order", 0, kMaxOrderIndex, 0,
         AudioParameterIntAttributes().withStringFromValueFunction ([] (int v, int) { return orderText (v); })));
     for (int b = 0; b < 4; ++b)   // écoute d'une bande du multibande (solo)
-        p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::mbSolo[b], 1 }, "Multiband Listen " + String (b + 1), false));
+        p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::mbSolo[b], 1 }, "Multiband Listen " + String (b + 1), false));
 
     // ---- ajoutés après la v0.1
-    p.push_back (std::make_unique<AudioParameterChoice> (
+    p.push_back (mkParam<AudioParameterChoice> (k, 
         ParameterID { ids::lowFreq, 1 }, "Low Freq",
         StringArray { "80 Hz", "100 Hz", "125 Hz" }, 2));          // 125 Hz = fréquence d'origine
 
-    p.push_back (std::make_unique<AudioParameterBool> (
+    p.push_back (mkParam<AudioParameterBool> (k, 
         ParameterID { ids::lowCut, 1 }, "Low Cut 85 Hz", false));
 
     // ---- COMPRESSION : 1176 / LA-2A / DUO (module coupé par défaut : les anciens projets ne changent pas)
     // interrupteur général de la carte COMPRESSION (1176 / LA-2A + MULTIBAND), puis un par sous-module
-    p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::compMaster, 1 }, "Compression Section On", true));
+    if (k == 0) p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::compMaster, 1 }, "Compression Section On", true));
     // compression parallèle (1176 écrasé remis dans la voix), coupée par défaut
-    p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::parOn, 1 }, "Parallel Compression On", false));
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::parAmount, 1 }, "Parallel Compression Amount",
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::parOn, 1 }, "Parallel Compression On", false));
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::parAmount, 1 }, "Parallel Compression Amount",
         NormalisableRange<float> (0.0f, 100.0f, 0.1f), 50.0f,
         Attr().withLabel ("%").withStringFromValueFunction ([] (float v, int) { return String (juce::roundToInt (v)) + " %"; })));
-    p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::compOn, 1 }, "Compression On", false));
-    p.push_back (std::make_unique<AudioParameterChoice> (
+    if (k == 0) p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::compOn, 1 }, "Compression On", false));
+    if (k == 0) p.push_back (mkParam<AudioParameterChoice> (k, 
         ParameterID { ids::compMode, 1 }, "Compression Mode", StringArray { "1176", "LA-2A", "Duo" }, 0));
-    p.push_back (std::make_unique<AudioParameterChoice> (
+    if (k == 0) p.push_back (mkParam<AudioParameterChoice> (k, 
         ParameterID { ids::compOrder, 1 }, "Compression Order", StringArray { "1176 > LA-2A", "LA-2A > 1176" }, 0));
 
     auto timeText = [] (float s)
@@ -329,49 +356,49 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         return s < 0.001f ? String (s * 1000.0f, s < 0.0001f ? 3 : 2) + " ms"   // attaque du 1176 en ms (0.020 .. 0.80 ms)
                           : (s < 1.0f ? String (juce::roundToInt (s * 1000.0f)) + " ms" : String (s, 2) + " s");
     };
-    p.push_back (std::make_unique<AudioParameterFloat> (
+    p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::fetIn, 1 }, "1176 Input", NormalisableRange<float> (-12.0f, 36.0f, 0.1f), 0.0f,
         Attr().withLabel ("dB").withStringFromValueFunction (dbText)));
-    p.push_back (std::make_unique<AudioParameterFloat> (
+    p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::fetOut, 1 }, "1176 Output", NormalisableRange<float> (-24.0f, 24.0f, 0.1f), 0.0f,
         Attr().withLabel ("dB").withStringFromValueFunction (dbText)));
-    p.push_back (std::make_unique<AudioParameterFloat> (
+    p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::fetAttack, 1 }, "1176 Attack", NormalisableRange<float> (1.0f, 7.0f, 0.01f), 3.0f,
         Attr().withStringFromValueFunction ([timeText] (float v, int)
         { return timeText (800.0e-6f * std::pow (20.0f / 800.0f, (v - 1.0f) / 6.0f)); })));
-    p.push_back (std::make_unique<AudioParameterFloat> (
+    p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::fetRelease, 1 }, "1176 Release", NormalisableRange<float> (1.0f, 7.0f, 0.01f), 5.0f,
         Attr().withStringFromValueFunction ([timeText] (float v, int)
         { return timeText (1.1f * std::pow (0.05f / 1.1f, (v - 1.0f) / 6.0f)); })));
-    p.push_back (std::make_unique<AudioParameterChoice> (
+    p.push_back (mkParam<AudioParameterChoice> (k, 
         ParameterID { ids::fetRatio, 1 }, "1176 Ratio", StringArray { "4", "8", "12", "20", "All" }, 0));
 
     // compression parallèle : AUTO = réglage d'usine (1176 ALL, INPUT +16 dB, attaque ~37 us, relâchement ~65 ms) ;
     // AUTO coupé, ces trois réglages reprennent la main. Leurs valeurs par défaut sont exactement celles d'AUTO.
-    p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::parAuto, 1 }, "Parallel Compression Auto", true));
-    p.push_back (std::make_unique<AudioParameterFloat> (
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::parAuto, 1 }, "Parallel Compression Auto", true));
+    p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::parThresh, 1 }, "Parallel Compression Threshold", NormalisableRange<float> (-57.0f, -9.0f, 0.1f), -37.0f,
         Attr().withLabel ("dB").withStringFromValueFunction ([] (float v, int) { return String (v, 1) + " dB"; })));
-    p.push_back (std::make_unique<AudioParameterFloat> (
+    p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::parAttack, 1 }, "Parallel Compression Attack", NormalisableRange<float> (1.0f, 7.0f, 0.01f), 6.0f,
         Attr().withStringFromValueFunction ([timeText] (float v, int)
         { return timeText (800.0e-6f * std::pow (20.0f / 800.0f, (v - 1.0f) / 6.0f)); })));
-    p.push_back (std::make_unique<AudioParameterFloat> (
+    p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::parRelease, 1 }, "Parallel Compression Release", NormalisableRange<float> (1.0f, 7.0f, 0.01f), 6.5f,
         Attr().withStringFromValueFunction ([timeText] (float v, int)
         { return timeText (1.1f * std::pow (0.05f / 1.1f, (v - 1.0f) / 6.0f)); })));
 
-    p.push_back (std::make_unique<AudioParameterFloat> (
+    p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::laGain, 1 }, "LA-2A Gain", NormalisableRange<float> (-12.0f, 30.0f, 0.1f), 0.0f,
         Attr().withLabel ("dB").withStringFromValueFunction (dbText)));
-    p.push_back (std::make_unique<AudioParameterFloat> (
+    p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::laPeak, 1 }, "LA-2A Peak Reduction", NormalisableRange<float> (0.0f, 100.0f, 0.1f), 40.0f,
         Attr().withStringFromValueFunction ([] (float v, int) { return String (juce::roundToInt (v)); })));
-    p.push_back (std::make_unique<AudioParameterChoice> (
+    p.push_back (mkParam<AudioParameterChoice> (k, 
         ParameterID { ids::laLimit, 1 }, "LA-2A Mode", StringArray { "Compress", "Limit" }, 0));
 
     // ---- MULTIBAND : opto 4 bandes (coupé par défaut)
-    p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::mbOn, 1 }, "Multiband On", false));
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::mbOn, 1 }, "Multiband On", false));
     {
         auto hz = [] (float v, int) { return v >= 1000.0f ? String (v / 1000.0f, 2) + " kHz" : String (juce::roundToInt (v)) + " Hz"; };
         struct X { float lo, hi, centre, def; const char* name; };
@@ -382,16 +409,16 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         {
             NormalisableRange<float> r (xs[i].lo, xs[i].hi, 1.0f);
             r.setSkewForCentre (xs[i].centre);
-            p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::mbX[i], 1 }, xs[i].name, r, xs[i].def,
+            p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::mbX[i], 1 }, xs[i].name, r, xs[i].def,
                                                                 Attr().withLabel ("Hz").withStringFromValueFunction (hz)));
         }
         const char* bandNames[4] { "Low", "Lo-Mid", "Hi-Mid", "High" };
         for (int b = 0; b < 4; ++b)
         {
-            p.push_back (std::make_unique<AudioParameterFloat> (
+            p.push_back (mkParam<AudioParameterFloat> (k, 
                 ParameterID { ids::mbThr[b], 1 }, String ("Multiband ") + bandNames[b] + " Threshold",
                 NormalisableRange<float> (-60.0f, 0.0f, 0.1f), -20.0f, Attr().withLabel ("dB").withStringFromValueFunction (dbText)));
-            p.push_back (std::make_unique<AudioParameterFloat> (
+            p.push_back (mkParam<AudioParameterFloat> (k, 
                 ParameterID { ids::mbGain[b], 1 }, String ("Multiband ") + bandNames[b] + " Gain",
                 NormalisableRange<float> (-12.0f, 12.0f, 0.1f), 0.0f, Attr().withLabel ("dB").withStringFromValueFunction (dbText)));
         }
@@ -399,45 +426,45 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         atk.setSkewForCentre (20.0f);
         rel.setSkewForCentre (250.0f);
         auto ms = [] (float v, int) { return v >= 1000.0f ? String (v / 1000.0f, 2) + " s" : String (v, v < 10.0f ? 1 : 0) + " ms"; };
-        p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::mbAttack, 1 }, "Multiband Attack", atk, 15.0f,
+        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::mbAttack, 1 }, "Multiband Attack", atk, 15.0f,
                                                             Attr().withLabel ("ms").withStringFromValueFunction (ms)));
-        p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::mbRelease, 1 }, "Multiband Release", rel, 200.0f,
+        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::mbRelease, 1 }, "Multiband Release", rel, 200.0f,
                                                             Attr().withLabel ("ms").withStringFromValueFunction (ms)));
     }
 
     // ---- NOISE SUPPRESSOR : un seul curseur, 0 = coupé
     {
         auto pct = [] (float v, int) { return String (juce::roundToInt (v)) + " %"; };
-        p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::nsAmount, 1 }, "Noise Suppressor",
+        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::nsAmount, 1 }, "Noise Suppressor",
             NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f, Attr().withLabel ("%").withStringFromValueFunction (pct)));
 
         // sortie du MULTIBAND ; de-esser du bus de compression parallèle (même algorithme que la carte DE-ESSER)
         auto dbT = [] (float v, int) { v = std::round (v * 10.0f) / 10.0f + 0.0f; return String (v > 0.0f ? "+" : "") + String (v, 1) + " dB"; };
-        p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::mbOutput, 1 }, "Multiband Output",
+        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::mbOutput, 1 }, "Multiband Output",
             NormalisableRange<float> (-12.0f, 12.0f, 0.1f), 0.0f, Attr().withLabel ("dB").withStringFromValueFunction (dbT)));
-        p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::parDeessAmt, 1 }, "Parallel De-Ess Amount",
+        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::parDeessAmt, 1 }, "Parallel De-Ess Amount",
             NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f, Attr().withLabel ("%").withStringFromValueFunction (pct)));
         {
             NormalisableRange<float> fr (3000.0f, 10000.0f, 1.0f);
             fr.setSkewForCentre (5500.0f);
-            p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::parDeessFreq, 1 }, "Parallel De-Ess Freq", fr, 6000.0f,
+            p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::parDeessFreq, 1 }, "Parallel De-Ess Freq", fr, 6000.0f,
                 Attr().withLabel ("Hz").withStringFromValueFunction ([] (float v, int) { return String (juce::roundToInt (v)) + " Hz"; })));
         }
 
         // écoute d'une bande de l'EQ paramétrique (session : ni presets, ni automation)
-        p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::peqListen, 1 }, "Param EQ Listen", false,
+        p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::peqListen, 1 }, "Param EQ Listen", false,
                                                            AudioParameterBoolAttributes().withAutomatable (false)));
-        p.push_back (std::make_unique<AudioParameterInt> (ParameterID { ids::peqListenBand, 1 }, "Param EQ Listen Band", 0, 7, 2,
+        p.push_back (mkParam<AudioParameterInt> (k, ParameterID { ids::peqListenBand, 1 }, "Param EQ Listen Band", 0, 7, 2,
                                                           AudioParameterIntAttributes().withAutomatable (false)));
 
         // ---- FX : tous coupés par défaut
         auto hzT = [] (float v, int) { return v >= 1000.0f ? String (v / 1000.0f, v >= 10000.0f ? 1 : 2) + " kHz" : String (juce::roundToInt (v)) + " Hz"; };
         auto msT = [] (float v, int) { return v >= 1000.0f ? String (v / 1000.0f, 2) + " s" : String (juce::roundToInt (v)) + " ms"; };
-        auto addB = [&] (const char* id, const char* name, bool def) { p.push_back (std::make_unique<AudioParameterBool> (ParameterID { id, 1 }, name, def)); };
+        auto addB = [&] (const char* id, const char* name, bool def) { p.push_back (mkParam<AudioParameterBool> (k, ParameterID { id, 1 }, name, def)); };
         auto addF = [&] (const char* id, const char* name, NormalisableRange<float> r, float def, const char* label,
                          std::function<String (float, int)> txt)
         {
-            p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { id, 1 }, name, r, def,
+            p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { id, 1 }, name, r, def,
                                                                 Attr().withLabel (label).withStringFromValueFunction (std::move (txt))));
         };
         auto skewed = [] (float lo, float hi, float step, float centre) { NormalisableRange<float> r (lo, hi, step); r.setSkewForCentre (centre); return r; };
@@ -457,7 +484,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         addB (ids::delayOn, "Delay On", false);
         addB (ids::delaySync, "Delay Sync", true);
         addF (ids::delayTime, "Delay Time", skewed (10.0f, 2000.0f, 1.0f, 300.0f), 375.0f, "ms", msT);
-        p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { ids::delayNote, 1 }, "Delay Note", delayNoteNames(), 4));
+        p.push_back (mkParam<AudioParameterChoice> (k, ParameterID { ids::delayNote, 1 }, "Delay Note", delayNoteNames(), 4));
         addF (ids::delayFeedback, "Delay Feedback", { 0.0f, 95.0f, 0.1f }, 35.0f, "%", pct);
         addF (ids::delayMix, "Delay Send", { 0.0f, 100.0f, 0.1f }, 25.0f, "%", pct);   // niveau du retour (piste auxiliaire)
         addB (ids::delayPingPong, "Delay Ping-Pong", true);
@@ -466,7 +493,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         addF (ids::delayDucking, "Delay Ducking", { 0.0f, 100.0f, 0.1f }, 0.0f, "%", pct);
 
         addB (ids::reverbOn, "Reverb On", false);
-        p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { ids::reverbMode, 1 }, "Reverb Mode",
+        p.push_back (mkParam<AudioParameterChoice> (k, ParameterID { ids::reverbMode, 1 }, "Reverb Mode",
                                                              StringArray { "Room", "Plate 1", "Plate 2", "Hall", "Shimmer" }, 1));
         addF (ids::reverbPreDelay, "Reverb Pre-Delay", skewed (0.0f, 250.0f, 0.1f, 40.0f), 20.0f, "ms", msT);
         addF (ids::reverbDecay, "Reverb Decay", skewed (0.2f, 20.0f, 0.01f, 2.5f), 2.2f, "s",
@@ -489,10 +516,10 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     }
 
     // ---- NOISE GATE : coupé par défaut (les anciens projets ne changent pas) ; réglages d'usine du BROADCAST
-    p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::gateOn, 1 }, "Gate On", false));
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::gateThr, 1 }, "Gate Threshold",
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::gateOn, 1 }, "Gate On", false));
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::gateThr, 1 }, "Gate Threshold",
         NormalisableRange<float> (-80.0f, 0.0f, 0.1f), -48.0f, Attr().withLabel ("dB").withStringFromValueFunction (dbText)));
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::gateRange, 1 }, "Gate Range",
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::gateRange, 1 }, "Gate Range",
         NormalisableRange<float> (0.0f, 80.0f, 0.1f), 24.0f,
         Attr().withLabel ("dB").withStringFromValueFunction ([] (float v, int) { return v >= 79.5f ? String ("MUTE") : "-" + String (v, 1) + " dB"; })));
     {
@@ -501,18 +528,18 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         atk.setSkewForCentre (3.0f);
         hold.setSkewForCentre (100.0f);
         rel.setSkewForCentre (200.0f);
-        p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::gateAttack, 1 }, "Gate Attack", atk, 1.5f,
+        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::gateAttack, 1 }, "Gate Attack", atk, 1.5f,
                                                             Attr().withLabel ("ms").withStringFromValueFunction (msText)));
-        p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::gateHold, 1 }, "Gate Hold", hold, 120.0f,
+        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::gateHold, 1 }, "Gate Hold", hold, 120.0f,
                                                             Attr().withLabel ("ms").withStringFromValueFunction (msText)));
-        p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::gateRelease, 1 }, "Gate Release", rel, 220.0f,
+        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::gateRelease, 1 }, "Gate Release", rel, 220.0f,
                                                             Attr().withLabel ("ms").withStringFromValueFunction (msText)));
     }
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::gateHyst, 1 }, "Gate Hysteresis",
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::gateHyst, 1 }, "Gate Hysteresis",
         NormalisableRange<float> (0.0f, 12.0f, 0.1f), 5.0f, Attr().withLabel ("dB").withStringFromValueFunction ([] (float v, int) { return String (v, 1) + " dB"; })));
 
     // ---- EQ PARAMÉTRIQUE : 8 bandes, toutes coupées par défaut (positions de départ utiles pour la voix)
-    p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::peqPower, 1 }, "Parametric EQ On", true));
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::peqPower, 1 }, "Parametric EQ On", true));
     {
         auto hz = [] (float v, int) { return v >= 1000.0f ? String (v / 1000.0f, v >= 10000.0f ? 1 : 2) + " kHz" : String (juce::roundToInt (v)) + " Hz"; };
         auto qText = [] (float v, int) { return String (v, 2); };
@@ -522,43 +549,43 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         for (int b = 0; b < 8; ++b)
         {
             const String n = "Param EQ " + String (b + 1) + " ";
-            p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::peqOn[b], 1 }, n + "On", false));
-            p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { ids::peqType[b], 1 }, n + "Type",
+            p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::peqOn[b], 1 }, n + "On", false));
+            p.push_back (mkParam<AudioParameterChoice> (k, ParameterID { ids::peqType[b], 1 }, n + "Type",
                 StringArray { "Bell", "Low Shelf", "High Shelf", "Low Cut", "High Cut", "Notch" }, defType[b]));
             NormalisableRange<float> fr (20.0f, 20000.0f, 0.1f);
             fr.setSkewForCentre (1000.0f);
-            p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::peqFreq[b], 1 }, n + "Freq", fr, defFreq[b],
+            p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::peqFreq[b], 1 }, n + "Freq", fr, defFreq[b],
                                                                 Attr().withLabel ("Hz").withStringFromValueFunction (hz)));
-            p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::peqGain[b], 1 }, n + "Gain",
+            p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::peqGain[b], 1 }, n + "Gain",
                 NormalisableRange<float> (-18.0f, 18.0f, 0.1f), 0.0f, Attr().withLabel ("dB").withStringFromValueFunction (dbText)));
             NormalisableRange<float> qr (0.1f, 10.0f, 0.01f);
             qr.setSkewForCentre (1.0f);
-            p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::peqQ[b], 1 }, n + "Q", qr, defQ[b],
+            p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::peqQ[b], 1 }, n + "Q", qr, defQ[b],
                                                                 Attr().withStringFromValueFunction (qText)));
             // pente des coupe-bas / coupe-haut ; mode dynamique (cloche, shelfs, notch) et son seuil
-            p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { ids::peqSlope[b], 1 }, n + "Slope",
+            p.push_back (mkParam<AudioParameterChoice> (k, ParameterID { ids::peqSlope[b], 1 }, n + "Slope",
                 StringArray { "12 dB/oct", "24 dB/oct", "36 dB/oct", "48 dB/oct" }, 0));
-            p.push_back (std::make_unique<AudioParameterBool> (ParameterID { ids::peqDyn[b], 1 }, n + "Dynamic", false));
-            p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::peqThr[b], 1 }, n + "Threshold",
+            p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::peqDyn[b], 1 }, n + "Dynamic", false));
+            p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::peqThr[b], 1 }, n + "Threshold",
                 NormalisableRange<float> (-60.0f, 0.0f, 0.1f), -30.0f,
                 Attr().withLabel ("dB").withStringFromValueFunction ([] (float v, int) { return String (v, 1) + " dB"; })));
         }
     }
 
     auto pctText = [] (float v, int) { return String (juce::roundToInt (v)) + " %"; };
-    p.push_back (std::make_unique<AudioParameterFloat> (
+    p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::resoAmt, 1 }, "Resonance Amount",
         NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f,
         Attr().withLabel ("%").withStringFromValueFunction (pctText)));
-    p.push_back (std::make_unique<AudioParameterFloat> (
+    p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::resoLow, 1 }, "Resonance Low",
         NormalisableRange<float> (0.0f, 100.0f, 0.1f), 40.0f,
         Attr().withLabel ("%").withStringFromValueFunction (pctText)));
-    p.push_back (std::make_unique<AudioParameterFloat> (
+    p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::resoMid, 1 }, "Resonance Mid",
         NormalisableRange<float> (0.0f, 100.0f, 0.1f), 100.0f,
         Attr().withLabel ("%").withStringFromValueFunction (pctText)));
-    p.push_back (std::make_unique<AudioParameterFloat> (
+    p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::resoHigh, 1 }, "Resonance High",
         NormalisableRange<float> (0.0f, 100.0f, 0.1f), 80.0f,
         Attr().withLabel ("%").withStringFromValueFunction (pctText)));
@@ -576,10 +603,10 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     {
         NormalisableRange<float> fr (b.lo, b.hi, 1.0f);
         fr.setSkewForCentre (b.centre);
-        p.push_back (std::make_unique<AudioParameterFloat> (
+        p.push_back (mkParam<AudioParameterFloat> (k, 
             ParameterID { b.freqId, 1 }, String ("Resonance ") + b.name + " Freq", fr, b.def,
             Attr().withLabel ("Hz").withStringFromValueFunction (hzText)));
-        p.push_back (std::make_unique<AudioParameterFloat> (
+        p.push_back (mkParam<AudioParameterFloat> (k, 
             ParameterID { b.widthId, 1 }, String ("Resonance ") + b.name + " Width",
             NormalisableRange<float> (0.3f, 4.0f, 0.01f), b.width,
             Attr().withLabel ("oct").withStringFromValueFunction (octText)));
@@ -589,8 +616,39 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     using Switch = std::pair<const char*, const char*>;
     for (auto [id, name] : { Switch { ids::eqOn, "EQ Analog On" }, Switch { ids::resoOn, "Resonance On" },
                              Switch { ids::deessOn, "De-Esser On" }, Switch { ids::satOn, "Saturation On" } })
-        p.push_back (std::make_unique<AudioParameterBool> (ParameterID { id, 1 }, name, true));
+        p.push_back (mkParam<AudioParameterBool> (k, ParameterID { id, 1 }, name, true));
 
+    // ---- chaîne modulaire : interrupteurs des modules qui suivaient un autre bouton (coupés : les anciens projets sont
+    //      convertis au chargement) et réglages de la SATURATION ajoutés (neutres par défaut : le son ne change pas)
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::nsOn, 1 }, "Noise Suppressor On", false));
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::plosOn, 1 }, "Plosives On", false));
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::fetOn, 1 }, "1176 On", false));
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::optoOn, 1 }, "LA-2A On", false));
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::satMix, 1 }, "Saturation Mix",
+        NormalisableRange<float> (0.0f, 100.0f, 0.1f), 100.0f, Attr().withLabel ("%").withStringFromValueFunction (pctText)));
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::satOutput, 1 }, "Saturation Output",
+        NormalisableRange<float> (-12.0f, 12.0f, 0.1f), 0.0f, Attr().withLabel ("dB").withStringFromValueFunction (dbText)));
+    auto bipolarPct = [] (float v, int) { return (v > 0.5f ? "+" : "") + String (juce::roundToInt (v)) + " %"; };
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::satTone, 1 }, "Saturation Tone",
+        NormalisableRange<float> (-100.0f, 100.0f, 0.1f), 0.0f, Attr().withLabel ("%").withStringFromValueFunction (bipolarPct)));
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::satWarmth, 1 }, "Saturation Warmth",
+        NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f, Attr().withLabel ("%").withStringFromValueFunction (pctText)));
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::satAir, 1 }, "Saturation Air",
+        NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f, Attr().withLabel ("%").withStringFromValueFunction (pctText)));
+
+    // les emplacements de la chaîne : ni automation (le DAW ne doit pas reconstruire la chaîne en lecture), ni nom de module
+    // dans la liste des réglages ; un preset les emporte avec lui
+    if (k == 0)
+        for (int s = 0; s < kSlots; ++s)
+            p.push_back (std::make_unique<AudioParameterInt> (ParameterID { ids::slot[s], 1 }, "Chain Slot " + String (s + 1), 0, 255, 0,
+                                                              AudioParameterIntAttributes().withAutomatable (false)));
+}
+
+inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
+{
+    std::vector<std::unique_ptr<juce::RangedAudioParameter>> p;
+    for (int k = 0; k < kInstances; ++k) addParams (p, k);
     return { p.begin(), p.end() };
 }
 } // namespace onirique
+

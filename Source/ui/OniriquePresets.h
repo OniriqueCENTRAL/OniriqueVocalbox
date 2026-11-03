@@ -28,6 +28,10 @@ public:
 
     enum Source { anySource, stockOnly, userOnly };
 
+    /** Appelé sur chaque preset avant de l'appliquer (presets d'usine, de l'utilisateur, côté A/B) : un plugin y met à jour
+        les presets enregistrés par une version précédente. Rien par défaut. */
+    std::function<void (juce::ValueTree&)> onLoad;
+
     /** `notStored` : les paramètres qu'un preset laisse tels quels, ceux qui disent comment on écoute le plugin
         plutôt que ce qu'il fait au son. */
     PresetBank (juce::AudioProcessorValueTreeState& s, const juce::String& pluginName, std::vector<Stock> stockPresets,
@@ -416,8 +420,13 @@ private:
 
     void setCurrentName (const juce::String& name)   { state.state.setProperty (kPresetProperty, name, nullptr); }
 
-    void apply (const juce::ValueTree& snapshot)
+    void apply (const juce::ValueTree& original)
     {
+        // un preset d'une version précédente peut être mis à jour avant d'être appliqué (voir onLoad)
+        auto snapshot = original.createCopy();
+        if (onLoad != nullptr)
+            onLoad (snapshot);
+
         for (auto* parameter : state.processor.getParameters())
         {
             auto* ranged = dynamic_cast<juce::RangedAudioParameter*> (parameter);
