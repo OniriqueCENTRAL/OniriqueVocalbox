@@ -75,7 +75,7 @@ jobs:
           printf '%s\n' "$MESSAGE" | grep -viE '^(co-authored-by|signed-off-by):' | sed -e 's/ *\[skip ci\]//' -e ':a' -e '/^[[:space:]]*$/{$d;N;ba' -e '}' | head -c 4000 > version/notes.txt
           mkdir -p ~/.ssh
           printf '%s\n' "$CLE" > ~/.ssh/publish && chmod 600 ~/.ssh/publish
-          # clé du serveur épinglée (SHA256:s17azxD9lgapSvGarqB34msuvdMJLWvFV7ptd79FZsc)
-          echo "217.160.106.244 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICV3xBScmxJy34Jgjtvb0R4UCG3jmzkSU+/T1lDrvD/l" >> ~/.ssh/known_hosts
+          # clé du serveur épinglée (SHA256:XHg9Jni6CwZWjPlV3eIzyIm819tA6hwPEZOehfJuVB0)
+          echo "212.227.165.177 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFH55mUNdFgsIuK9wr6/8ioQ22idbndalUSARaSFDaa1" >> ~/.ssh/known_hosts
           ls -R version
-          tar -C version -cf - . | ssh -i ~/.ssh/publish -o IdentitiesOnly=yes -o BatchMode=yes livraison@217.160.106.244 "publish $SLUG"
+          tar -C version -cf - . | ssh -i ~/.ssh/publish -o IdentitiesOnly=yes -o BatchMode=yes livraison@212.227.165.177 "publish $SLUG"
