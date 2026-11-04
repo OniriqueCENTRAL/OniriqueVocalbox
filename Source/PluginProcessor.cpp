@@ -154,6 +154,10 @@ void OniriqueVocalBoxAudioProcessor::prepareToPlay (double sr, int)
     // Toute l'allocation se fait ici ; processBlock n'alloue rien.
     currentRate = sr;
     configureChain (sr);
+    capturing.store (false);
+    capLen = juce::jmax (1, (int) (sr * 10.0));
+    capBuf.assign ((size_t) capLen, 0.0f);
+    capPos.store (0);
 }
 
 void OniriqueVocalBoxAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
@@ -177,6 +181,21 @@ void OniriqueVocalBoxAudioProcessor::processBlock (juce::AudioBuffer<float>& buf
 
     float* ch[2] { buffer.getWritePointer (0), numCh > 1 ? buffer.getWritePointer (1) : nullptr };
     inputTap.push (ch[0], ch[1], total);    // analyseur : signal d'entrée
+    if (capturing.load (std::memory_order_acquire))
+    {
+        // CRÉER LE MIX : la prise en mono, sans les blocs silencieux (transport arrêté, blancs)
+        double e = 0.0;
+        for (int i = 0; i < total; ++i) { const float m = numCh > 1 ? 0.5f * (ch[0][i] + ch[1][i]) : ch[0][i]; e += (double) m * m; }
+        if (std::sqrt (e / total) > 1.0e-4)   // -80 dB : le transport arrêté ne compte pas, le fond de la pièce si
+        {
+            int p = capPos.load (std::memory_order_relaxed);
+            const int n = juce::jmin (total, capLen - p);
+            for (int i = 0; i < n; ++i) capBuf[(size_t) (p + i)] = numCh > 1 ? 0.5f * (ch[0][i] + ch[1][i]) : ch[0][i];
+            p += n;
+            capPos.store (p, std::memory_order_release);
+            if (p >= capLen) capturing.store (false, std::memory_order_release);
+        }
+    }
     chain.process (ch, numCh, total);
     outputTap.push (ch[0], ch[1], total);   // analyseur : signal de sortie
     license.process (buffer, getSampleRate(), isNonRealtime());

@@ -1,5 +1,6 @@
 #include "StartScreen.h"
 #include "PluginProcessor.h"
+#include "Modules.h"
 
 using namespace onirique;
 
@@ -34,6 +35,29 @@ StartScreen::StartScreen (OniriqueVocalBoxAudioProcessor& p) : processor (p)
     search.setColour (juce::CaretComponent::caretColourId, cEmber);
     search.onReturnKey = [this] { submit(); };
     addAndMakeVisible (search);
+   #if ONIRIQUE_UI_TEST
+    // essais locaux : ONIRIQUE_UI_MIX="demande" lance CRÉER LE MIX à l'ouverture (ONIRIQUE_UI_REF=morceau de référence)
+    if (const auto m = juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_MIX", {}); m.isNotEmpty())
+    {
+        search.setText (m, false);
+        if (const auto r = juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_REF", {}); r.isNotEmpty()) reference = juce::File (r);
+        juce::Component::SafePointer<StartScreen> safe (this);
+        juce::Timer::callAfterDelay (500, [safe] { if (safe != nullptr) safe->submit(); });
+    }
+   #endif
+}
+
+StartScreen::~StartScreen()
+{
+    stopWorker();
+    processor.stopCapture();
+}
+
+void StartScreen::stopWorker()
+{
+    cancel.store (true);
+    if (worker.joinable()) worker.join();
+    cancel.store (false);
 }
 
 juce::Rectangle<float> StartScreen::sphereArea() const
@@ -84,15 +108,23 @@ void StartScreen::tick()
     const float target = juce::jlimit (0.0f, 1.0f, (db + 50.0f) / 44.0f);
     level += (target > level ? 0.35f : 0.06f) * (target - level);
     const double now = juce::Time::getMillisecondCounterHiRes() * 0.001;
-    ui::approach (listen, now < listenUntil ? 1.0f : 0.0f, 0.05f);
+    ui::approach (listen, stage == Stage::listening ? 1.0f : 0.0f, 0.05f);
     ui::approach (dropGlow, dragging ? 1.0f : 0.0f, 0.15f);
     ui::approach (goHot, overGo ? 1.0f : 0.0f, 0.16f);
     energy += 0.08f * (std::max (level, 0.7f * listen) - energy);
-    if (now >= listenUntil && listenUntil > 0.0)
+    if (stage == Stage::listening)
     {
-        listenUntil = 0.0;
-        status = utf8 ("APERÇU : LE MOTEUR D'ANALYSE SE BRANCHE À L'ÉTAPE SUIVANTE");
+        progress = processor.captureProgress();
+        const int rs = refState.load (std::memory_order_acquire);
+        if (rs == 1) status = utf8 ("J'ÉCOUTE LA VOIX DE LA RÉFÉRENCE…");
+        else if (! processor.captureDone() && ! forceBuild)
+            status = (now - stageStart > 6.0 && progress < 0.02f)
+                       ? utf8 ("PAS DE SON : LANCE LA LECTURE, OU RECLIQUE POUR CRÉER SANS ÉCOUTER")
+                       : utf8 ("LANCE LA LECTURE : J'ÉCOUTE TA VOIX · ") + juce::String (juce::roundToInt (progress * 10.0f)) + " / 10 S";
+        if (rs != 1 && (processor.captureDone() || forceBuild)) finish();
     }
+    else if (stage == Stage::report && now - stageStart > 6.0)
+        apply();
     repaint();
 }
 
@@ -141,6 +173,17 @@ void StartScreen::paint (juce::Graphics& g)
         g.setColour (cBone);
         g.fillPath (ui::starPath (sp, 6.0f * u, a));
     }
+    // pendant l'écoute : l'orbite se remplit de braise au fil des 10 s de voix
+    if (stage == Stage::listening && progress > 0.002f)
+    {
+        juce::Path arc;
+        arc.addCentredArc (c.x, c.y, orbit, orbit, 0.0f, 0.0f, juce::MathConstants<float>::twoPi * juce::jmin (1.0f, progress), true);
+        juce::Path stroke;   // la lueur suit le trait (un arc rempli ferait un disque)
+        juce::PathStrokeType (2.5f * u, juce::PathStrokeType::curved, juce::PathStrokeType::rounded).createStrokedPath (stroke, arc);
+        ui::softGlow (g, stroke, cEmber.withAlpha (0.8f), 10.0f * u);
+        g.setColour (cEmber);
+        g.strokePath (arc, juce::PathStrokeType (2.5f * u, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    }
 
     // les points : rotation lente, ondes sphériques qui partent d'un pôle et parcourent la surface ; plus la voix est forte,
     // plus les ondes se creusent et vont vite
@@ -166,6 +209,27 @@ void StartScreen::paint (juce::Graphics& g)
         const auto col = cEmber.interpolatedWith (cBone, 0.25f + 0.6f * crest * depth).withAlpha (alpha);
         g.setColour (col);
         g.fillEllipse (c.x + x * R - sz * 0.5f, c.y + y2 * R - sz * 0.5f, sz, sz);
+    }
+
+    // le compte rendu, par-dessus la sphère : ce qui a été entendu et décidé
+    if (stage == Stage::report && ! plan.report.isEmpty())
+    {
+        const float lh = 24.0f * u;
+        const int nLines = juce::jmin (12, plan.report.size());
+        auto box = juce::Rectangle<float> (std::min (1000.0f * u, b.getWidth() - 80.0f * u), (float) nLines * lh + 36.0f * u).withCentre (c);
+        g.setColour (juce::Colour (0xff0b0709).withAlpha (0.82f));
+        g.fillRoundedRectangle (box, 22.0f * u);
+        ui::drawDemoGlass (g, box, 22.0f * u, u, false);
+        auto r = box.reduced (28.0f * u, 18.0f * u);
+        for (int i = 0; i < nLines; ++i)
+        {
+            const auto row = r.removeFromTop (lh);
+            g.setColour (i == 0 ? cBone : juce::Colour (0xffd9c6c9));
+            g.setFont (ui::css (ui::Face::body, 14.0f * u));
+            g.drawText (plan.report[i], row.withTrimmedLeft (20.0f * u), juce::Justification::centredLeft, true);
+            g.setColour (cEmber);
+            g.fillEllipse (juce::Rectangle<float> (5.0f * u, 5.0f * u).withCentre ({ row.getX() + 6.0f * u, row.getCentreY() }));
+        }
     }
 
     // l'état, sous la sphère
@@ -247,6 +311,8 @@ void StartScreen::filesDropped (const juce::StringArray& files, int, int)
 
 void StartScreen::submit()
 {
+    if (stage == Stage::listening) { forceBuild = true; return; }   // recliquer : créer sans attendre la prise
+    if (stage == Stage::report) { apply(); return; }               // recliquer : monter la chaîne tout de suite
     const auto text = search.getText().trim();
     if (text.isEmpty() && ! reference.existsAsFile())
     {
@@ -254,8 +320,81 @@ void StartScreen::submit()
         search.grabKeyboardFocus();
         return;
     }
-    // la sphère écoute quelques secondes ; l'analyse elle-même se branche ici (onCreate)
-    listenUntil = juce::Time::getMillisecondCounterHiRes() * 0.001 + 4.0;
-    status = utf8 ("ÉCOUTE…");
-    if (onCreate) onCreate (text, reference);
+    hints = mix::parseHints (text);
+    stopWorker();
+    refState.store (0);
+    if (reference.existsAsFile())
+    {
+        // la référence : lue, sa voix isolée et analysée sur un autre thread (l'interface reste fluide)
+        refState.store (1);
+        worker = std::thread ([this, file = reference]
+        {
+            juce::AudioBuffer<float> song;
+            double sr = 44100.0;
+            if (! mix::readSong (file, song, sr)) { refState.store (3, std::memory_order_release); return; }
+            if (cancel.load()) return;
+            const auto voice = mix::isolateVoice (song, [this] { return cancel.load(); });
+            if (cancel.load()) return;
+            refProfile = mix::analyse (voice.data(), (int) voice.size(), sr);
+            refProfile.fromMix = song.getNumChannels() > 1;
+            refState.store (refProfile.valid ? 2 : 3, std::memory_order_release);
+        });
+    }
+    processor.startCapture();
+    forceBuild = false;
+    stage = Stage::listening;
+    stageStart = juce::Time::getMillisecondCounterHiRes() * 0.001;
+    status.clear();
+}
+
+void StartScreen::finish()
+{
+    if (worker.joinable()) worker.join();
+    processor.stopCapture();
+    mix::Profile src, tgt;
+    if (processor.captureDone())
+    {
+        const auto& take = processor.capturedTake();
+        src = mix::analyse (take.data(), (int) take.size(), processor.captureRate());
+    }
+    if (refState.load() == 2) tgt = refProfile;
+    plan = mix::buildPlan (src, tgt, hints);
+    juce::StringArray head;
+    head.add (src.valid ? utf8 ("Ta voix : 10 s écoutées") : utf8 ("Ta voix n'a pas été écoutée : réglages d'après la demande seule"));
+    if (refState.load() == 2) head.add (utf8 ("Référence : la voix prise au centre du mix de « ") + reference.getFileNameWithoutExtension() + utf8 (" »"));
+    else if (refState.load() == 3) head.add (utf8 ("Référence illisible : ") + reference.getFileName());
+    if (! hints.understood.isEmpty()) head.add (utf8 ("Compris : ") + hints.understood.joinIntoString (", "));
+    if (! hints.unknown.isEmpty() && refState.load() != 2)
+        head.add (utf8 ("« ") + hints.unknown.joinIntoString (" ") + utf8 (" » : glisse un de ses morceaux sur la sphère pour coller à sa voix"));
+    head.addArray (plan.report);
+    plan.report = head;
+    stage = Stage::report;
+    stageStart = juce::Time::getMillisecondCounterHiRes() * 0.001;
+    status = utf8 ("JE MONTE LA CHAÎNE… (CLIQUE POUR ALLER PLUS VITE)");
+}
+
+void StartScreen::apply()
+{
+    stage = Stage::idle;
+    status.clear();
+    auto& apvts = processor.apvts;
+    auto set = [&apvts] (const juce::String& id, float v)
+    {
+        if (auto* p = apvts.getParameter (id)) p->setValueNotifyingHost (p->convertTo0to1 (v));
+    };
+    modules::Chain chain {};
+    size_t n = 0;
+    for (const auto& s : plan.modules)
+    {
+        if (n >= chain.size()) break;
+        // réglages d'usine, allumé, puis les réglages décidés
+        for (const auto& id : modules::paramIds (s.type))
+            if (auto* p = apvts.getParameter (id)) p->setValueNotifyingHost (p->getDefaultValue());
+        set (modules::info (s.type).onId, 1.0f);
+        for (const auto& [id, v] : s.params) set (id, v);
+        chain[n++] = modules::code (s.type, 0);
+    }
+    // AUTO GAIN : la voix sort au niveau où elle entre, on juge le son et pas le volume
+    set (ids::autoGain, 1.0f);
+    processor.setChain (chain);
 }

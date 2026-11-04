@@ -55,6 +55,7 @@ target_sources(OniriqueVocalBox PRIVATE
     Source/PluginEditor.cpp
     Source/ModulePanels.cpp
     Source/ModuleScreens.cpp
+    Source/MixAnalysis.cpp
     Source/StartScreen.cpp
     Source/Widgets.cpp)
 
@@ -71,7 +72,8 @@ target_compile_definitions(OniriqueVocalBox PUBLIC
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
-    JUCE_DISPLAY_SPLASH_SCREEN=0)
+    JUCE_DISPLAY_SPLASH_SCREEN=0
+    JUCE_USE_MP3AUDIOFORMAT=1)
 
 # Mac : sans cette option, Core Graphics fusionne toutes les petites zones animées (étoiles, logo, mètres,
 # analyseur) en une seule grande zone et redessine presque toute la fenêtre à chaque image. Avec elle, JUCE

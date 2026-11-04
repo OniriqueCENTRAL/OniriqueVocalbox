@@ -76,6 +76,15 @@ public:
     // écoute d'une bande de l'EQ paramétrique : vraie seulement pendant qu'on tient une bande
     std::atomic<bool> peqListenHold { false };
 
+    // CRÉER LE MIX : la prise écoutée (mono, 10 s de voix ; les blocs silencieux ne comptent pas)
+    void startCapture() noexcept { capPos.store (0); capturing.store (capLen > 0, std::memory_order_release); }
+    void stopCapture() noexcept { capturing.store (false); }
+    float captureProgress() const noexcept { return capLen > 0 ? (float) capPos.load() / (float) capLen : 0.0f; }
+    bool captureDone() const noexcept { return capLen > 0 && capPos.load (std::memory_order_acquire) >= capLen; }
+    // à lire seulement quand captureDone() (le thread audio n'y écrit plus)
+    const std::vector<float>& capturedTake() const noexcept { return capBuf; }
+    double captureRate() const noexcept { return currentRate; }
+
 private:
     std::atomic<float>* pBypass = nullptr;
     std::atomic<float>* pOversampling = nullptr;
@@ -93,6 +102,10 @@ private:
 
     onirique::ModularChain chain { apvts, hostBpm, peqListenHold };
     std::atomic<float> outPeak { 0.0f }, autoGainDbShown { 0.0f };
+    std::vector<float> capBuf;
+    std::atomic<int> capPos { 0 };
+    std::atomic<bool> capturing { false };
+    int capLen = 0;
 
 public:
     /** Licence ONIRIQUE (acheté, essai, démo) : voir License/LicenseGuard.h. */

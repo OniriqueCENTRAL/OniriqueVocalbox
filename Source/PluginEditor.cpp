@@ -1037,7 +1037,8 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
     if (const auto png = juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_PNG", {}); png.isNotEmpty())
     {
         juce::Component::SafePointer<OniriqueVocalBoxAudioProcessorEditor> safe (this);
-        juce::Timer::callAfterDelay (2500, [safe, png]
+        const int delay = juce::jmax (500, juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_PNG_DELAY", "2500").getIntValue());
+        juce::Timer::callAfterDelay (delay, [safe, png]
         {
             if (safe == nullptr) return;
             juce::Image img (juce::Image::ARGB, safe->getWidth() * 2, safe->getHeight() * 2, true, juce::SoftwareImageType());
