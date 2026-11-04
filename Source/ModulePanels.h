@@ -28,8 +28,8 @@ void drawGlass (juce::Graphics&, juce::Rectangle<float>, float corner, float u, 
 } // namespace onirique::ui
 
 //==============================================================================
-/*  Le potard « Étoile » (celui de la page des potards ONIRIQUE) : un arc fin qui s'allume en braise jusqu'à la valeur, une
-    petite étoile qui glisse sur l'arc, et au centre du corps sombre la grande étoile du logo qui tourne avec le réglage.
+/*  Le potard « Graduations » (choix B) : 21 repères qui s'allument en braise jusqu'à la valeur (depuis le zéro pour un réglage
+    négatif / positif), un capuchon mat et un trait blanc pour la position.
     Nom au-dessus, valeur dessous. Glisser verticalement (Maj : fin), molette, double-clic = valeur d'usine. */
 class StarKnob : public juce::Component, public juce::SettableTooltipClient, public Animated
 {

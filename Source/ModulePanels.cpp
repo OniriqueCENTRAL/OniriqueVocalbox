@@ -117,50 +117,56 @@ void StarKnob::paint (juce::Graphics& g)
     if (glow > 0.01f)
         ui::softGlowEllipse (g, k.reduced (d * 0.1f), juce::Colour (229, 56, 74).withAlpha (0.45f * glow * alpha), 11.0f * u);   // reste dans le potard : pas de bord coupé
 
-    // l'arc : piste de rayon 44 (blanc rosé .12), valeur en braise avec sa lueur de 4
-    const float R = d * 0.44f, w = std::max (1.0f, d * 0.03f);
-    juce::Path track, arc;
-    track.addCentredArc (c.x, c.y, R, R, 0.0f, kArc0, kArc1, true);
-    g.setColour (juce::Colour (0xffffecee).withAlpha (0.12f * alpha));
-    g.strokePath (track, juce::PathStrokeType (w, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-    if (shown > 0.002f)
+    // le potard B (graduations) : 21 repères autour (un grand tous les 5), allumés en braise jusqu'à la valeur, depuis le
+    // zéro pour un réglage qui va du négatif au positif ; au centre un capuchon mat et un trait blanc pour la position
+    float from = 0.0f;
+    if (param != nullptr)
     {
-        arc.addCentredArc (c.x, c.y, R, R, 0.0f, kArc0, a, true);
-        ui::strokeGlow (g, arc, juce::Colour (0xffE23444), w, 0.95f * alpha);
-        g.setColour (juce::Colour (0xffE23444).withAlpha (alpha));
-        g.strokePath (arc, juce::PathStrokeType (w, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        const auto& range = param->getNormalisableRange();
+        if (range.start < 0.0f && range.end > 0.0f) from = range.convertTo0to1 (0.0f);
+    }
+    const float lo = std::min (from, shown), hi = std::max (from, shown);
+    for (int i = 0; i <= 20; ++i)
+    {
+        const float t = (float) i / 20.0f, ang = kArc0 + (kArc1 - kArc0) * t;
+        const bool big = i % 5 == 0, lit = t >= lo - 1.0e-4f && t <= hi + 1.0e-4f && (hi - lo > 0.002f || t == from);
+        const float r0 = d * (big ? 0.385f : 0.415f), r1 = d * 0.475f;
+        const juce::Line<float> tick (c.x + r0 * std::sin (ang), c.y - r0 * std::cos (ang), c.x + r1 * std::sin (ang), c.y - r1 * std::cos (ang));
+        const float w = std::max (1.0f, d * (big ? 0.024f : 0.016f));
+        if (lit)
+        {
+            g.setColour (juce::Colour (229, 56, 74).withAlpha (0.28f * alpha));
+            g.drawLine (tick, w * 2.6f);
+        }
+        g.setColour ((lit ? juce::Colour (0xffE5384A) : juce::Colour (255, 236, 238).withAlpha (0.18f)).withMultipliedAlpha (alpha));
+        juce::Path p;
+        p.startNewSubPath (tick.getStart()); p.lineTo (tick.getEnd());
+        g.strokePath (p, juce::PathStrokeType (w, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
 
-    // le corps : ombre floue décalée de 2.5, dégradé radial (32 % / 30 %, rayon 80 %) #36161a -> #160a0c -> #080405
-    const float br = d * 0.326f;
+    // le capuchon : ombre douce dessous, mat (#1c1412 -> #120c0d), liseré rosé, reflet léger en haut
+    const float br = d * 0.32f;
+    const auto cap = juce::Rectangle<float> (2.0f * br, 2.0f * br).withCentre (c);
     for (int q = 3; q >= 1; --q)
     {
-        g.setColour (juce::Colours::black.withAlpha (0.25f * alpha));
-        g.fillEllipse (juce::Rectangle<float> (2.0f * br, 2.0f * br).withCentre (c.translated (0.0f, 2.5f * u)).expanded (1.0f * u * (float) q));
+        g.setColour (juce::Colours::black.withAlpha (0.16f * alpha));
+        g.fillEllipse (cap.translated (0.0f, 2.5f * u).expanded (1.0f * u * (float) q));
     }
-    const juce::Point<float> gc (c.x - br + 0.64f * br, c.y - br + 0.60f * br);
-    juce::ColourGradient body (juce::Colour (0xff36161a), gc.x, gc.y, juce::Colour (0xff080405), gc.x + 1.6f * br, gc.y, true);
-    body.addColour (0.6, juce::Colour (0xff160a0c));
-    g.setGradientFill (body);
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff1e1614), c.x, cap.getY(), juce::Colour (0xff110b0c), c.x, cap.getBottom(), false));
     g.setOpacity (alpha);
-    g.fillEllipse (juce::Rectangle<float> (2.0f * br, 2.0f * br).withCentre (c));
-    g.setColour (juce::Colour (255, 220, 225).withAlpha (0.08f * alpha));
-    g.drawEllipse (juce::Rectangle<float> (2.0f * br, 2.0f * br).withCentre (c), std::max (0.6f, 0.5f * u));
+    g.fillEllipse (cap);
+    g.setColour (juce::Colour (255, 220, 225).withAlpha (0.10f * alpha));
+    g.drawEllipse (cap.reduced (0.5f), std::max (0.8f, 0.6f * u));
+    g.setColour (juce::Colours::white.withAlpha (0.05f * alpha));
+    g.drawEllipse (cap.reduced (2.0f * u), std::max (0.6f, 0.5f * u));
 
-    // les étoiles (petite sur l'arc, grande au centre), blanc rosé avec leur lueur de 4
-    const auto tip = juce::Point<float> (c.x + R * std::sin (a), c.y - R * std::cos (a));
-    const auto small = ui::starPath (tip, d * 0.04f, a);
-    const auto big = ui::starPath (c, d * 0.194f, a);
-    for (const auto* p : { &small, &big })
-    {
-        for (int q = 3; q >= 1; --q)
-        {
-            g.setColour (juce::Colour (255, 236, 238).withAlpha (0.22f / (float) q * alpha));
-            g.strokePath (*p, juce::PathStrokeType (2.6f * u * (float) q, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-        }
-        g.setColour (juce::Colour (0xffFFECEE).withAlpha (alpha));
-        g.fillPath (*p);
-    }
+    // le trait de position
+    // (a : l'angle de la valeur, calculé plus haut)
+    juce::Path ptr;
+    ptr.startNewSubPath (c.x + d * 0.12f * std::sin (a), c.y - d * 0.12f * std::cos (a));
+    ptr.lineTo (c.x + d * 0.27f * std::sin (a), c.y - d * 0.27f * std::cos (a));
+    g.setColour (juce::Colour (0xffF4ECEC).withAlpha (alpha));
+    g.strokePath (ptr, juce::PathStrokeType (std::max (1.2f, d * 0.026f), juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 
     if (showValue && param != nullptr)
     {
