@@ -70,12 +70,19 @@ int OniriqueVocalBoxAudioProcessor::addModule (int type)
     {
         const int code = modules::code (type, k);
         if (std::find (c.begin(), c.end(), code) != c.end()) continue;
+        // CREATIVE FX fait tourner les DOUBLER / CHORUS / FLANGER / PHONE de son exemplaire : jamais les deux à la fois
+        auto inChain = [&c] (int ty, int kk) { return std::find (c.begin(), c.end(), modules::code (ty, kk)) != c.end(); };
+        if (type == modules::creative && (inChain (modules::doubler, k) || inChain (modules::chorus, k) || inChain (modules::flanger, k) || inChain (modules::phone, k))) continue;
+        if (modules::inCreative (type) && inChain (modules::creative, k)) continue;
         // un module ajouté part de ses réglages d'usine, allumé
         for (const auto& id : modules::paramIds (type))
             if (auto* p = apvts.getParameter (ids::inst (id.toRawUTF8(), k)))
                 p->setValueNotifyingHost (p->getDefaultValue());
         if (auto* on = apvts.getParameter (ids::inst (modules::info (type).onId, k)))
             on->setValueNotifyingHost (1.0f);
+        // CREATIVE FX arrive avec le doubleur allumé : on entend tout de suite quelque chose
+        if (type == modules::creative)
+            if (auto* d = apvts.getParameter (ids::inst (ids::doublerOn, k))) d->setValueNotifyingHost (1.0f);
         c[used] = code;
         setChain (c);
         return code;

@@ -58,6 +58,7 @@ const char* iconPath (int type)
         "M6 3h5l1 5-3 2a11 11 0 0 0 5 5l2-3 5 1v5a2 2 0 0 1-2 2A17 17 0 0 1 4 5a2 2 0 0 1 2-2z",              // phone
         "M4 6v12M9.5 8v8M14.5 10v4M19.5 11.2v1.6",                                                            // delay
         "M3 19a9 9 0 0 1 18 0M6.5 19a5.5 5.5 0 0 1 11 0M10 19a2 2 0 0 1 4 0",                                 // reverb
+        "M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z",       // creative
     };
     return p[juce::jlimit (0, (int) modules::numTypes - 1, type)];
 }
@@ -500,7 +501,7 @@ int ModulePicker::freeCount (int type) const
 namespace
 {
 constexpr float kCardW = 1240.0f, kPad = 26.0f, kHead = 36.0f, kGroupLabel = 14.0f, kItemH = 72.0f, kGap = 10.0f, kGroupGap = 18.0f;
-int rowsOf (int group) { int n = 0; for (int t = 0; t < modules::numTypes; ++t) if (modules::info (t).group == group) ++n; return (n + 3) / 4; }
+int rowsOf (int group) { int n = 0; for (int t = 0; t < modules::numTypes; ++t) if (modules::inPicker (t) && modules::info (t).group == group) ++n; return (n + 3) / 4; }
 float cardHeight()
 {
     float h = kPad + kHead;
@@ -529,7 +530,8 @@ juce::Rectangle<float> ModulePicker::itemRect (int type) const
     const auto c = card();
     const int group = modules::info (type).group;
     int idx = 0;
-    for (int t = 0; t < type; ++t) if (modules::info (t).group == group) ++idx;
+    if (! modules::inPicker (type)) return {};
+    for (int t = 0; t < type; ++t) if (modules::inPicker (t) && modules::info (t).group == group) ++idx;
     const float cw = (kCardW - 2.0f * kPad - 3.0f * kGap) / 4.0f;
     const float x = kPad + (float) (idx % 4) * (cw + kGap), y = groupY (group) + kGroupLabel + 8.0f + (float) (idx / 4) * (kItemH + kGap);
     return { c.getX() + x * u, c.getY() + y * u, cw * u, kItemH * u };
@@ -544,7 +546,7 @@ juce::Rectangle<float> ModulePicker::closeRect() const
 
 int ModulePicker::itemAt (juce::Point<float> p) const
 {
-    for (int t = 0; t < modules::numTypes; ++t) if (itemRect (t).contains (p)) return t;
+    for (int t = 0; t < modules::numTypes; ++t) if (modules::inPicker (t) && itemRect (t).contains (p)) return t;
     return -1;
 }
 
@@ -585,6 +587,7 @@ void ModulePicker::paint (juce::Graphics& g)
     }
     for (int t = 0; t < modules::numTypes; ++t)
     {
+        if (! modules::inPicker (t)) continue;
         const auto& inf = modules::info (t);
         const bool free = freeCount (t) > 0;
         const float hg = hoverGlow[t];
@@ -764,7 +767,8 @@ VocalBoxView::VocalBoxView (OniriqueVocalBoxAudioProcessor& p)
       outStrip (p, ids::output, "OUT", [&p] (int c) { return p.consumeOutputLevel (c); }),
       autoGain (p),
       oversampling (p.apvts, ids::oversampling, { "OFF", "2x", "4x", "8x" }),
-      picker (p)
+      picker (p),
+      start (p)
 {
     setLookAndFeel (&lnf);
     setOpaque (true);
@@ -774,6 +778,7 @@ VocalBoxView::VocalBoxView (OniriqueVocalBoxAudioProcessor& p)
     addAndMakeVisible (autoGain);
     addAndMakeVisible (oversampling);
     oversampling.round = true;
+    addChildComponent (start);
     addChildComponent (picker);
 
     strip.onSelect = [this] (int code) { select (code); };
@@ -873,6 +878,7 @@ void VocalBoxView::resized()
     inStrip.setBounds (juce::Rectangle<float> (24.0f * u, fy, side, fh).toNearestInt());
     autoGain.setBounds (juce::Rectangle<float> (24.0f * u + side + 18.0f * u, fy, 230.0f * u, fh).toNearestInt());
     outStrip.setBounds (juce::Rectangle<float> (w - 24.0f * u - side, fy, side, fh).toNearestInt());
+    start.setBounds (a.toNearestInt());
     picker.setBounds (getLocalBounds());
     backdrop = {};
 }
@@ -880,6 +886,12 @@ void VocalBoxView::resized()
 void VocalBoxView::timerCallback()
 {
     strip.tick();
+    {
+        // l'écran de départ tant que la chaîne est vide
+        const bool empty = ! modules::valid (selected);
+        if (start.isVisible() != empty) start.setVisible (empty);
+        if (empty) start.tick();
+    }
     inStrip.tick();
     outStrip.tick();
     autoGain.tick();
@@ -955,10 +967,7 @@ void VocalBoxView::paint (juce::Graphics& g)
     ui::drawDemoGlass (g, a, 28.0f * u, u, true);
     if (! modules::valid (selected))
     {
-        g.setColour (cHaze);
-        g.setFont (ui::css (ui::Face::display, 18.0f * u));
-        g.drawText (juce::String::fromUTF8 ("La chaîne est vide : ajoute un module avec le +"), a, juce::Justification::centred, false);
-        return;
+        return;   // l'écran de départ (StartScreen) occupe le panneau
     }
 
     // en-tête : point de 10 (lueur 14), nom (Unbounded 22, 0.05 em), ce qu'il fait (JetBrains Mono 10), ON

@@ -133,11 +133,6 @@ void StarKnob::paint (juce::Graphics& g)
         const float r0 = d * (big ? 0.385f : 0.415f), r1 = d * 0.475f;
         const juce::Line<float> tick (c.x + r0 * std::sin (ang), c.y - r0 * std::cos (ang), c.x + r1 * std::sin (ang), c.y - r1 * std::cos (ang));
         const float w = std::max (1.0f, d * (big ? 0.024f : 0.016f));
-        if (lit)
-        {
-            g.setColour (juce::Colour (229, 56, 74).withAlpha (0.28f * alpha));
-            g.drawLine (tick, w * 2.6f);
-        }
         g.setColour ((lit ? juce::Colour (0xffE5384A) : juce::Colour (255, 236, 238).withAlpha (0.18f)).withMultipliedAlpha (alpha));
         juce::Path p;
         p.startNewSubPath (tick.getStart()); p.lineTo (tick.getEnd());

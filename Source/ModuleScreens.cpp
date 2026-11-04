@@ -1082,9 +1082,11 @@ private:
         std::vector<float> c (n), l (n), r (n);
         for (size_t i = 0; i < n; ++i)
         {
-            c[i] = juce::jlimit (0.0f, 1.0f, in[i] * 1.3f * 0.95f);
-            l[i] = juce::jlimit (0.0f, 1.0f, in[(i + n - 4) % n] * 1.3f * (0.9f + 0.1f * std::sin ((float) i * 0.3f)));
-            r[i] = juce::jlimit (0.0f, 1.0f, in[(i + n - 8) % n] * 1.3f * (0.9f + 0.1f * std::sin ((float) i * 0.3f + 1.0f)));
+            // en dB (-60 .. 0) : une voix douce reste lisible
+            auto nd = [] (float a) { return juce::jlimit (0.0f, 1.0f, (dbOf (a) + 60.0f) / 60.0f); };
+            c[i] = nd (in[i]) * 0.95f;
+            l[i] = nd (in[(i + n - 4) % n]) * (0.9f + 0.1f * std::sin ((float) i * 0.3f));
+            r[i] = nd (in[(i + n - 8) % n]) * (0.9f + 0.1f * std::sin ((float) i * 0.3f + 1.0f));
         }
         g.setColour (juce::Colours::white.withAlpha (0.08f));
         g.drawHorizontalLine ((int) (180.0f - off), 0.0f, vw);
@@ -1768,6 +1770,170 @@ std::unique_ptr<StdPanel> stdPanel (OniriqueVocalBoxAudioProcessor& p, int code,
     s->viz = &s->own (std::move (v));
     return s;
 }
+//==============================================================================
+// CREATIVE FX : quatre pastilles (DOUBLER, CHORUS, FLANGER, PHONE) ; le témoin allume ou coupe l'effet, le nom l'affiche
+// dessous avec son écran complet ; AU HASARD tire un point de départ musical
+class CreativeChips : public juce::Component, public Animated
+{
+public:
+    CreativeChips (OniriqueVocalBoxAudioProcessor& p, int k) : processor (p), inst (k) { setMouseCursor (juce::MouseCursor::PointingHandCursor); }
+    std::function<void (int)> onSelect;
+    std::function<void()> onDice;
+    int selected = 0;
+
+    static constexpr int kTypes[4] { modules::doubler, modules::chorus, modules::flanger, modules::phone };
+    static const char* name (int i) { static const char* n[4] { "DOUBLER", "CHORUS", "FLANGER", "PHONE" }; return n[i]; }
+
+    void tick() override
+    {
+        bool moved = false;
+        for (int i = 0; i < 5; ++i)
+        {
+            const bool on = i < 4 && isOn (i);
+            moved |= ui::approach (lit[i], on ? 1.0f : 0.0f, 0.2f);
+            moved |= ui::approach (hot[i], i == hover ? 1.0f : 0.0f, 0.16f);
+            moved |= ui::approach (sel[i], i == selected ? 1.0f : 0.0f, 0.2f);
+        }
+        if (moved) repaint();
+    }
+    void paint (juce::Graphics& g) override
+    {
+        const float u = ui::unitOf (*this);
+        const auto box = chipsBox();
+        ui::drawDemoGlass (g, box, box.getHeight() * 0.5f, u, false);
+        for (int i = 0; i < 4; ++i)
+        {
+            const auto r = chip (i);
+            if (sel[i] > 0.01f) ui::drawSeg (g, r, sel[i], 0.0f, u);
+            else if (hot[i] > 0.01f) ui::drawSeg (g, r, 0.0f, hot[i], u);
+            // le témoin : braise allumé, gris éteint
+            const auto led = juce::Rectangle<float> (10.0f * u, 10.0f * u).withCentre ({ r.getX() + 22.0f * u, r.getCentreY() });
+            if (lit[i] > 0.01f) ui::softGlowEllipse (g, led, cEmber.withAlpha (0.8f * lit[i]), 8.0f * u);
+            g.setColour (cEmber.interpolatedWith (juce::Colour (0xff4a3a3e), 1.0f - lit[i]));
+            g.fillEllipse (led);
+            g.setColour (juce::Colour (0xffbba7aa).interpolatedWith (juce::Colours::white, std::max (sel[i], hot[i])));
+            g.setFont (ui::css (ui::Face::mono, 11.0f * u, 0.14f));
+            g.drawText (name (i), r.withTrimmedLeft (36.0f * u), juce::Justification::centredLeft, false);
+        }
+        // AU HASARD
+        const auto d = dice();
+        ui::drawDemoGlass (g, d, d.getHeight() * 0.5f, u, false);
+        if (hot[4] > 0.01f) ui::drawSeg (g, d.reduced (4.0f * u), 0.0f, hot[4], u);
+        const auto ic = juce::Rectangle<float> (14.0f * u, 14.0f * u).withCentre ({ d.getX() + 26.0f * u, d.getCentreY() });
+        g.setColour (cPink);
+        g.drawRoundedRectangle (ic, 3.0f * u, 1.5f * u);
+        for (auto pt : { ic.getCentre(), ic.getTopLeft() + juce::Point<float> (4.0f * u, 4.0f * u), ic.getBottomRight() - juce::Point<float> (4.0f * u, 4.0f * u) })
+            g.fillEllipse (juce::Rectangle<float> (2.6f * u, 2.6f * u).withCentre (pt));
+        g.setColour (juce::Colour (0xffbba7aa).interpolatedWith (juce::Colours::white, hot[4]));
+        g.setFont (ui::css (ui::Face::mono, 11.0f * u, 0.14f));
+        g.drawText ("AU HASARD", d.withTrimmedLeft (44.0f * u), juce::Justification::centredLeft, false);
+    }
+    void mouseMove (const juce::MouseEvent& e) override { const int h = zoneAt (e.position); if (h != hover) { hover = h; repaint(); } }
+    void mouseExit (const juce::MouseEvent&) override { hover = -1; }
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        const int z = zoneAt (e.position);
+        if (z == 4) { if (onDice) onDice(); return; }
+        if (z < 0) return;
+        // le témoin (ou un clic sur la pastille déjà affichée) allume / coupe ; ailleurs, la pastille s'affiche
+        const bool onLed = e.position.x < chip (z).getX() + 36.0f * ui::unitOf (*this);
+        if (onLed || z == selected)
+        {
+            if (auto* prm = processor.param (modules::info (kTypes[z]).onId, inst)) prm->setValueNotifyingHost (isOn (z) ? 0.0f : 1.0f);
+        }
+        if (z != selected) { selected = z; if (onSelect) onSelect (z); }
+    }
+
+private:
+    bool isOn (int i) const { return processor.apvts.getRawParameterValue (ids::inst (modules::info (kTypes[i]).onId, inst))->load() > 0.5f; }
+    juce::Rectangle<float> chipsBox() const
+    {
+        const float u = ui::unitOf (*this);
+        return getLocalBounds().toFloat().withWidth (4.0f * 150.0f * u + 8.0f * u);
+    }
+    juce::Rectangle<float> chip (int i) const
+    {
+        const float u = ui::unitOf (*this);
+        const auto b = chipsBox().reduced (4.0f * u);
+        return { b.getX() + (float) i * 150.0f * u, b.getY(), 150.0f * u - (i < 3 ? 4.0f * u : 0.0f), b.getHeight() };
+    }
+    juce::Rectangle<float> dice() const
+    {
+        const float u = ui::unitOf (*this);
+        const auto b = chipsBox();
+        return { b.getRight() + 14.0f * u, b.getY(), 150.0f * u, b.getHeight() };
+    }
+    int zoneAt (juce::Point<float> p) const
+    {
+        for (int i = 0; i < 4; ++i) if (chip (i).contains (p)) return i;
+        return dice().contains (p) ? 4 : -1;
+    }
+
+    OniriqueVocalBoxAudioProcessor& processor;
+    int inst, hover = -1;
+    float lit[5] {}, hot[5] {}, sel[5] {};
+};
+
+class CreativePanel final : public ModulePanel
+{
+public:
+    CreativePanel (OniriqueVocalBoxAudioProcessor& p, int c) : ModulePanel (p, c), chips (p, modules::instanceOf (c))
+    {
+        addAndMakeVisible (chips);
+        addAnim (&chips);
+        chips.onSelect = [this] (int i) { show (i); };
+        chips.onDice = [this] { roll(); };
+        // l'effet affiché d'abord : le premier allumé
+        int first = 0;
+        for (int i = 0; i < 4; ++i)
+            if (p.apvts.getRawParameterValue (ids::inst (modules::info (CreativeChips::kTypes[i]).onId, inst))->load() > 0.5f) { first = i; break; }
+        chips.selected = first;
+        show (first);
+    }
+    void tick() override
+    {
+        chips.tick();
+        if (sub != nullptr) sub->tick();
+    }
+    void resized() override
+    {
+        const float u = ui::unitOf (*this);
+        auto r = getLocalBounds().toFloat();
+        chips.setBounds (r.removeFromTop (42.0f * u).toNearestInt());
+        r.removeFromTop (14.0f * u);
+        if (sub != nullptr) sub->setBounds (r.toNearestInt());
+    }
+
+private:
+    void show (int i)
+    {
+        if (sub != nullptr) removeChildComponent (sub.get());
+        sub = createModulePanel (processor, modules::code (CreativeChips::kTypes[i], inst));
+        addAndMakeVisible (*sub);
+        resized();
+    }
+    // un point de départ musical : un ou deux effets allumés, des réglages dans leur zone utile
+    void roll()
+    {
+        auto& r = juce::Random::getSystemRandom();
+        auto set = [this] (const char* id, float v) { if (auto* p = processor.param (id, inst)) p->setValueNotifyingHost (p->convertTo0to1 (v)); };
+        auto between = [&r] (float a, float b) { return a + (b - a) * r.nextFloat(); };
+        bool on[4] { r.nextFloat() < 0.6f, r.nextFloat() < 0.4f, r.nextFloat() < 0.3f, r.nextFloat() < 0.15f };
+        if (! (on[0] || on[1] || on[2] || on[3])) on[r.nextInt (3)] = true;
+        if (on[1] && on[2]) on[r.nextBool() ? 1 : 2] = false;   // chorus et flanger ensemble : trop
+        set (ids::doublerAmount, between (30.0f, 70.0f));
+        set (ids::chorusRate, between (0.3f, 1.4f)); set (ids::chorusDepth, between (20.0f, 60.0f)); set (ids::chorusMix, between (15.0f, 40.0f));
+        set (ids::flangerRate, between (0.08f, 0.5f)); set (ids::flangerDepth, between (30.0f, 80.0f));
+        set (ids::flangerFeedback, between (10.0f, 55.0f)); set (ids::flangerMix, between (20.0f, 45.0f));
+        set (ids::phoneAmount, between (35.0f, 80.0f));
+        for (int i = 0; i < 4; ++i) set (modules::info (CreativeChips::kTypes[i]).onId, on[i] ? 1.0f : 0.0f);
+        for (int i = 0; i < 4; ++i) if (on[i]) { chips.selected = i; show (i); break; }
+    }
+
+    CreativeChips chips;
+    std::unique_ptr<ModulePanel> sub;
+};
+
 } // namespace
 
 //==============================================================================
@@ -1906,6 +2072,7 @@ std::unique_ptr<ModulePanel> createModulePanel (OniriqueVocalBoxAudioProcessor& 
             s->knobs = { &s->knob (ids::phoneAmount, "AMOUNT") };
             return s;
         }
+        case modules::creative: return std::make_unique<CreativePanel> (p, code);
         default: break;
     }
     return createGenericPanel (p, code);

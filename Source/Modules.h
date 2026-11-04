@@ -16,7 +16,7 @@ namespace modules
 enum Type
 {
     gate = 0, noise, plosive, reso, deess, peq, analog, sat, fet, opto, multi, parallel,
-    doubler, chorus, flanger, phone, delay, reverb, numTypes
+    doubler, chorus, flanger, phone, delay, reverb, creative, numTypes
 };
 
 // où tourne le module : à la cadence de l'hôte (analyse FFT, effets) ou dans la chaîne suréchantillonnée
@@ -53,6 +53,7 @@ inline const Info& info (int type)
         { "PHONE",    "PHONE",            "Voix de téléphone, de radio",               3, host,        ids::phoneOn },
         { "DELAY",    "DELAY",            "Échos au tempo, ping-pong, ducking",        3, host,        ids::delayOn },
         { "REVERB",   "REVERB",           "Room, plates, hall, shimmer",               3, host,        ids::reverbOn },
+        { "CREATIVE", "CREATIVE FX",      "Doubleur, chorus, flanger, phone",          3, host,        ids::creativeOn },
     };
     return table[juce::jlimit (0, (int) numTypes - 1, type)];
 }
@@ -94,6 +95,8 @@ inline const std::vector<juce::String>& paramIds (int type)
         add (reverb, { ids::reverbOn, ids::reverbMode, ids::reverbPreDelay, ids::reverbDecay, ids::reverbSize, ids::reverbDiffusion,
                        ids::reverbModRate, ids::reverbModDepth, ids::reverbMix, ids::reverbLowCut, ids::reverbHighCut, ids::reverbDucking,
                        ids::reverbWidth, ids::reverbClean });
+        add (creative, { ids::creativeOn, ids::doublerOn, ids::doublerAmount, ids::chorusOn, ids::chorusRate, ids::chorusDepth, ids::chorusMix,
+                         ids::flangerOn, ids::flangerRate, ids::flangerDepth, ids::flangerFeedback, ids::flangerMix, ids::phoneOn, ids::phoneAmount });
         return t;
     }();
     return table[(size_t) juce::jlimit (0, (int) numTypes - 1, type)];
@@ -104,6 +107,10 @@ inline int code (int type, int instance) noexcept { return type * kInstances + i
 inline int typeOf (int c) noexcept { return c > 0 ? (c - 1) / kInstances : -1; }
 inline int instanceOf (int c) noexcept { return c > 0 ? (c - 1) % kInstances : -1; }
 inline bool valid (int c) noexcept { return c > 0 && c <= numTypes * kInstances; }
+
+// les effets que CREATIVE FX regroupe : ils ne se proposent plus seuls dans le +, mais les anciens projets qui les ont les gardent
+inline bool inCreative (int type) noexcept { return type == doubler || type == chorus || type == flanger || type == phone; }
+inline bool inPicker (int type) noexcept { return ! inCreative (type); }
 
 using Chain = std::array<int, kSlots>;
 

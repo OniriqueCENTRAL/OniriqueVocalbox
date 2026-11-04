@@ -631,6 +631,24 @@ private:
     std::atomic<float> *rate = nullptr, *depth = nullptr, *fb = nullptr, *mix = nullptr;
 };
 
+// CREATIVE FX : DOUBLER, CHORUS, FLANGER et PHONE du même exemplaire, en série ; chacun suit son interrupteur et ses réglages.
+// Il fait tourner les modules eux-mêmes (leurs mètres et leurs écrans restent valables) : un exemplaire de ces quatre effets
+// n'est donc jamais à la fois seul dans la chaîne et dans un CREATIVE FX (le processeur l'évite à l'ajout).
+class CreativeFx final : public ChainModule
+{
+public:
+    CreativeFx (juce::AudioProcessorValueTreeState& s, int k) : ChainModule (s, modules::creative, k) {}
+    void setParts (ChainModule* d, ChainModule* c, ChainModule* f, ChainModule* p) noexcept { parts = { d, c, f, p }; }
+    ChainModule* part (int i) const noexcept { return parts[(size_t) juce::jlimit (0, 3, i)]; }
+
+private:
+    void prepareEngine (double, int, int) override {}   // les quatre modules sont préparés avec les autres
+    void updateEngine (bool, bool snap) noexcept override { for (auto* m : parts) if (m != nullptr) m->update (snap); }
+    void processEngine (float* const* ch, int numCh, int n) noexcept override { for (auto* m : parts) if (m != nullptr) m->process (ch, numCh, n); }
+    void resetEngine() noexcept override { for (auto* m : parts) if (m != nullptr) m->arrive(); }
+    std::array<ChainModule*, 4> parts {};
+};
+
 // DELAY et REVERB : des pistes auxiliaires (la voix reste à 100 %, leur retour s'ajoute)
 class Delay final : public ChainModule
 {
@@ -731,6 +749,9 @@ public:
             put (modules::phone, new AmountFx<mini::Phone, modules::phone> (s, k, ids::phoneAmount));
             put (modules::delay, new Delay (s, k, tempo));
             put (modules::reverb, new Reverb (s, k));
+            put (modules::creative, new CreativeFx (s, k));
+            static_cast<CreativeFx*> (module (modules::creative, k))->setParts (module (modules::doubler, k), module (modules::chorus, k),
+                                                                              module (modules::flanger, k), module (modules::phone, k));
         }
         for (int j = 0; j < kSlots; ++j) pSlot[j] = s.getRawParameterValue (ids::slot[j]);
         pInput = s.getRawParameterValue (ids::input);

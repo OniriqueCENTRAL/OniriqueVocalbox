@@ -76,6 +76,8 @@ namespace ids
     // FX venus de VOCAL MINI : PHONE, DOUBLER, et CLEAN / WIDTH de la REVERB
     inline constexpr const char* phoneOn = "fxPhoneOn", *phoneAmount = "fxPhoneAmount", *doublerOn = "fxDoublerOn",
                                  *doublerAmount = "fxDoublerAmount", *reverbWidth = "fxReverbWidth", *reverbClean = "fxReverbClean";
+    // CREATIVE FX : regroupe DOUBLER, CHORUS, FLANGER et PHONE (chacun garde ses réglages et son interrupteur)
+    inline constexpr const char* creativeOn = "fxCreativeOn";
     // NOISE GATE (premier module, comme celui d'ONIRIQUE BROADCAST)
     inline constexpr const char* gateOn      = "gateOn";
     inline constexpr const char* gateThr     = "gateThreshold";
@@ -517,6 +519,7 @@ inline void addParams (std::vector<std::unique_ptr<juce::RangedAudioParameter>>&
         addF (ids::phoneAmount, "Phone Amount", { 0.0f, 100.0f, 0.1f }, 50.0f, "%", pct);
         addB (ids::doublerOn, "Doubler On", false);
         addF (ids::doublerAmount, "Doubler Amount", { 0.0f, 100.0f, 0.1f }, 50.0f, "%", pct);
+        addB (ids::creativeOn, "Creative FX On", false);
     }
 
     // ---- NOISE GATE : coupé par défaut (les anciens projets ne changent pas) ; réglages d'usine du BROADCAST
