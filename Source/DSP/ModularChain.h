@@ -4,6 +4,7 @@
 #include <juce_dsp/juce_dsp.h>
 #include "../Modules.h"
 #include "VocalChain.h"   // ModuleSwitch, et tous les moteurs des modules
+#include "SpectrumTap.h"
 
 namespace onirique
 {
@@ -51,6 +52,8 @@ public:
     ChainModule (juce::AudioProcessorValueTreeState& s, int moduleType, int instance) : apvts (s), type (moduleType), inst (instance)
     {
         pOn = raw (modules::info (type).onId);
+        if (type == modules::gate || type == modules::noise || type == modules::plosive || type == modules::deess)
+        { tapIn = std::make_unique<SpectrumTap>(); tapOut = std::make_unique<SpectrumTap>(); }
     }
     virtual ~ChainModule() = default;
 
@@ -77,6 +80,7 @@ public:
         sw.process (ch, numCh, n, [this] (float* const* s, int nc, int q) { processEngine (s, nc, q); }, [this] { resetEngine(); });
         const float* dry[2] { sw.getDry (0), sw.getDry (numCh > 1 ? 1 : 0) };
         scope.push (dry, ch, numCh, n);
+        if (tapIn != nullptr) { tapIn->push (dry[0], numCh > 1 ? dry[1] : nullptr, n); tapOut->push (ch[0], numCh > 1 ? ch[1] : nullptr, n); }
     }
 
     // entrée dans la chaîne : rien de l'ancien passage ne ressort
@@ -94,6 +98,11 @@ public:
     juce::AudioProcessorValueTreeState& apvts;
     const int type, inst;
     ModuleScope scope;
+    // spectres avant / après (nettoyages : gate, noise, plosives, de-esser), à la cadence du module (getRate)
+    std::unique_ptr<SpectrumTap> tapIn, tapOut;
+    double getRate() const noexcept { return fs; }
+    // retours d'effet (DELAY, REVERB) : la voix qui entre et le retour, pour l'interface
+    void recordSend (const float* const* in, const float* const* wet, int numCh, int n) noexcept { scope.push (in, wet, numCh, n); }
 
 protected:
     virtual void prepareEngine (double rate, int factor, int maxBlock) = 0;
@@ -330,16 +339,19 @@ private:
     std::atomic<float> *low = nullptr, *mud = nullptr, *hi = nullptr, *air = nullptr, *lowFreq = nullptr, *lowCut = nullptr;
 };
 
-/*  SATURATION LAB : les trois émulations d'origine, et autour d'elles WARMTH (le bas-médium poussé dans la saturation puis
-    rendu à la sortie : plus de densité sans plus de grave), TONE (bascule grave / aigu après), AIR (aigus après), MIX
-    (avec le signal direct aligné) et OUTPUT. Tous neutres par défaut : le son d'origine ne change pas. */
+/*  SATURATION LAB : quatre émulations (TUBE, ANALOG et TAPE d'origine ; TRANSFORMER : l'ANALOG nourri d'un bas renforcé que
+    l'on retire à la sortie, comme un noyau de transformateur qui sature d'abord dans le grave), et autour d'elles :
+    DRIVE ; BIAS (un décalage avant la saturation, retiré après : harmoniques paires, son plus « tube ») ; WARMTH (le
+    bas-médium poussé dans la saturation puis rendu à la sortie : plus de densité sans plus de grave) ; DYNAMICS (les passages
+    forts poussés plus fort dans la saturation, rendus à leur niveau ensuite) ; TONE (bascule grave / aigu après) ; AIR
+    (aigus après) ; MIX (avec le signal direct aligné) ; OUTPUT. Tous neutres par défaut : le son d'origine ne change pas. */
 class Sat final : public ChainModule
 {
 public:
     Sat (juce::AudioProcessorValueTreeState& s, int k) : ChainModule (s, modules::sat, k)
     {
         drive = raw (ids::drive); mode = raw (ids::satType); mix = raw (ids::satMix); out = raw (ids::satOutput);
-        tone = raw (ids::satTone); warmth = raw (ids::satWarmth); air = raw (ids::satAir);
+        tone = raw (ids::satTone); warmth = raw (ids::satWarmth); air = raw (ids::satAir); bias = raw (ids::satBias); dyn = raw (ids::satDynamics);
     }
     int getLatencySamples() const noexcept override { return engine.getLatencySamples(); }
 
@@ -347,36 +359,69 @@ private:
     void prepareEngine (double rate, int, int maxBlock) override
     {
         engine.prepare (rate, maxBlock, 0);   // la chaîne est déjà suréchantillonnée
-        for (auto* s : { &mixS, &outS }) s->reset (rate, 0.03);
-        last[0] = last[1] = last[2] = 1.0e9f;
+        for (auto* s : { &mixS, &outS, &biasS, &dynS }) s->reset (rate, 0.03);
+        for (auto& d : gainDelay) d.prepare (std::max (1, engine.getLatencySamples()));
+        gainDelay[0].setLength (engine.getLatencySamples());
+        envA = (float) (1.0 - std::exp (-1.0 / (0.005 * rate)));
+        envR = (float) (1.0 - std::exp (-1.0 / (0.120 * rate)));
+        dcR = (float) std::exp (-2.0 * juce::MathConstants<double>::pi * 12.0 / rate);
+        for (auto& l : last) l = 1.0e9f;
     }
     void updateEngine (bool, bool snap) noexcept override
     {
+        const int m4 = juce::jlimit (0, 3, i (mode));
         engine.setDrive (f (drive), snap);
-        engine.setMode (i (mode), snap);
-        const float m = f (mix) * 0.01f, g = dbToGain (f (out));
-        if (snap) { mixS.setCurrentAndTargetValue (m); outS.setCurrentAndTargetValue (g); }
-        else      { mixS.setTargetValue (m); outS.setTargetValue (g); }
-        const float w = f (warmth) * 0.01f, t = f (tone) * 0.01f, a = f (air) * 0.01f;
-        if (w != last[0] || t != last[1] || a != last[2])
+        engine.setMode (m4 == 3 ? 1 : m4, snap);
+        const float m = f (mix) * 0.01f, g = dbToGain (f (out)), b = f (bias) * 0.01f, dy = f (dyn) * 0.01f;
+        if (snap) { mixS.setCurrentAndTargetValue (m); outS.setCurrentAndTargetValue (g); biasS.setCurrentAndTargetValue (b); dynS.setCurrentAndTargetValue (dy); }
+        else      { mixS.setTargetValue (m); outS.setTargetValue (g); biasS.setTargetValue (b); dynS.setTargetValue (dy); }
+        const float w = f (warmth) * 0.01f, t = f (tone) * 0.01f, a = f (air) * 0.01f, tr = m4 == 3 ? 1.0f : 0.0f;
+        if (w != last[0] || t != last[1] || a != last[2] || tr != last[3])
         {
-            last[0] = w; last[1] = t; last[2] = a;
+            last[0] = w; last[1] = t; last[2] = a; last[3] = tr;
             const double fq = std::min (0.45 * fs, 11000.0);
             pre.setCoeffs (BiquadCoeffs::peaking (fs, 280.0, 0.7, 7.0 * w));
             post.setCoeffs (BiquadCoeffs::peaking (fs, 280.0, 0.7, -7.0 * w));
+            preT.setCoeffs (BiquadCoeffs::lowShelf (fs, 110.0, 0.7, 6.0 * tr));
+            postT.setCoeffs (BiquadCoeffs::lowShelf (fs, 110.0, 0.7, -6.0 * tr));
             tiltLo.setCoeffs (BiquadCoeffs::lowShelf (fs, 700.0, 0.6, -4.0 * t));
             tiltHi.setCoeffs (BiquadCoeffs::highShelf (fs, 1800.0, 0.6, 4.0 * t));
             airF.setCoeffs (BiquadCoeffs::highShelf (fs, fq, 0.7, 6.0 * a));
-            colour = w > 0.0005f || std::abs (t) > 0.0005f || a > 0.0005f;
+            colour = w > 0.0005f || std::abs (t) > 0.0005f || a > 0.0005f || tr > 0.5f;
         }
     }
     void processEngine (float* const* ch, int numCh, int n) noexcept override
     {
-        if (colour) for (int c = 0; c < numCh; ++c) for (int s = 0; s < n; ++s) ch[c][s] = pre.process (ch[c][s], c);
+        // avant : BIAS et DYNAMICS (gain qui suit l'enveloppe, rendu ensuite, aligné sur la latence), couleurs d'entrée
+        const bool shaping = biasS.isSmoothing() || dynS.isSmoothing() || biasS.getTargetValue() != 0.0f || dynS.getTargetValue() > 0.0f;
+        if (shaping)
+            for (int s = 0; s < n; ++s)
+            {
+                float pk = 0.0f;
+                for (int c = 0; c < numCh; ++c) pk = std::max (pk, std::abs (ch[c][s]));
+                env += (pk > env ? envA : envR) * (pk - env);
+                const float gIn = 1.0f + dynS.getNextValue() * 2.0f * std::min (1.0f, env * 2.0f);
+                const float b = biasS.getNextValue() * 0.18f;
+                gains[(size_t) std::min (s, (int) gains.size() - 1)] = gainDelay[0].process (1.0f / gIn);
+                for (int c = 0; c < numCh; ++c) ch[c][s] = ch[c][s] * gIn + b;
+            }
+        if (colour)
+            for (int c = 0; c < numCh; ++c) for (int s = 0; s < n; ++s) ch[c][s] = preT.process (pre.process (ch[c][s], c), c);
         engine.process (ch, numCh, n);
+        if (shaping)
+            for (int c = 0; c < numCh; ++c)
+                for (int s = 0; s < n; ++s)
+                {
+                    // le décalage retiré (passe-haut de 12 Hz), le gain de DYNAMICS rendu
+                    const float x = ch[c][s] * gains[(size_t) std::min (s, (int) gains.size() - 1)];
+                    const float y = x - dcX[c] + dcR * dcY[c];
+                    dcX[c] = x; dcY[c] = y;
+                    ch[c][s] = y;
+                }
         if (colour)
             for (int c = 0; c < numCh; ++c)
-                for (int s = 0; s < n; ++s) ch[c][s] = airF.process (tiltHi.process (tiltLo.process (post.process (ch[c][s], c), c), c), c);
+                for (int s = 0; s < n; ++s)
+                    ch[c][s] = airF.process (tiltHi.process (tiltLo.process (post.process (postT.process (ch[c][s], c), c), c), c), c);
         if (! mixS.isSmoothing() && mixS.getTargetValue() >= 1.0f && ! outS.isSmoothing() && outS.getTargetValue() == 1.0f) return;
         for (int s = 0; s < n; ++s)
         {
@@ -384,13 +429,20 @@ private:
             for (int c = 0; c < numCh; ++c) { const float d = sw.getDry (c)[s]; ch[c][s] = (d + m * (ch[c][s] - d)) * g; }
         }
     }
-    void resetEngine() noexcept override { for (auto* q : { &pre, &post, &tiltLo, &tiltHi, &airF }) q->reset(); }
+    void resetEngine() noexcept override
+    {
+        for (auto* q : { &pre, &post, &preT, &postT, &tiltLo, &tiltHi, &airF }) q->reset();
+        env = 0.0f; dcX[0] = dcX[1] = dcY[0] = dcY[1] = 0.0f;
+    }
     SaturationLab engine;
-    Biquad pre, post, tiltLo, tiltHi, airF;
+    Biquad pre, post, preT, postT, tiltLo, tiltHi, airF;
     bool colour = false;
-    float last[3] {};
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> mixS { 1.0f }, outS { 1.0f };
-    std::atomic<float> *drive = nullptr, *mode = nullptr, *mix = nullptr, *out = nullptr, *tone = nullptr, *warmth = nullptr, *air = nullptr;
+    float last[4] {}, env = 0.0f, envA = 0.1f, envR = 0.01f, dcR = 0.999f, dcX[2] {}, dcY[2] {};
+    std::array<float, 8192> gains {};
+    DelayLine gainDelay[1];
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> mixS { 1.0f }, outS { 1.0f }, biasS, dynS;
+    std::atomic<float> *drive = nullptr, *mode = nullptr, *mix = nullptr, *out = nullptr, *tone = nullptr, *warmth = nullptr, *air = nullptr,
+                       *bias = nullptr, *dyn = nullptr;
 };
 
 //------------------------------------------------------------------------------ DYNAMIQUE
@@ -841,6 +893,7 @@ private:
                     std::fill (wet[0], wet[0] + n, 0.0f); std::fill (wet[1], wet[1] + n, 0.0f);
                     const float* in[2] { ch[0], numCh > 1 ? ch[1] : ch[0] };
                     for (int q = j; q < e; ++q) plan.steps[(size_t) q].m->processSendInto (in, wet, numCh, n);
+                    for (int q = j; q < e; ++q) plan.steps[(size_t) q].m->recordSend (in, wet, numCh, n);
                     for (int c = 0; c < numCh; ++c) for (int s = 0; s < n; ++s) ch[c][s] += wet[c][s];
                     j = e;
                     continue;

@@ -42,7 +42,7 @@ inline const Info& info (int type)
         { "DE-ESS",   "DE-ESSER",         "Les S et les CH",                           0, oversampled, ids::deessOn },
         { "EQ",       "PARAMETRIC EQ",    "8 bandes, mode dynamique, écoute",          1, oversampled, ids::peqPower },
         { "ANALOG",   "EQ ANALOG",        "Couleur de console : LOW, MUD, HI, AIR",    1, oversampled, ids::eqOn },
-        { "SAT",      "SATURATION LAB",   "Tube, analog, tape, plus de réglages",      1, oversampled, ids::satOn },
+        { "SAT",      "SATURATION LAB",   "Tube, analog, tape, transformer",      1, oversampled, ids::satOn },
         { "1176",     "1176 FET",         "Compresseur FET, attaque rapide",           2, oversampled, ids::fetOn },
         { "LA-2A",    "LA-2A OPTO",       "Nivellement optique, doux",                 2, oversampled, ids::optoOn },
         { "MULTI",    "MULTIBAND",        "Quatre bandes optiques",                    2, oversampled, ids::mbOn },
@@ -79,7 +79,7 @@ inline const std::vector<juce::String>& paramIds (int type)
         for (int b = 0; b < 8; ++b)
             add (peq, { ids::peqOn[b], ids::peqType[b], ids::peqFreq[b], ids::peqGain[b], ids::peqQ[b], ids::peqSlope[b], ids::peqDyn[b], ids::peqThr[b] });
         add (analog, { ids::eqOn, ids::low, ids::mud, ids::high, ids::air, ids::lowFreq, ids::lowCut });
-        add (sat, { ids::satOn, ids::drive, ids::satType, ids::satMix, ids::satOutput, ids::satTone, ids::satWarmth, ids::satAir });
+        add (sat, { ids::satOn, ids::drive, ids::satType, ids::satMix, ids::satOutput, ids::satTone, ids::satWarmth, ids::satAir, ids::satBias, ids::satDynamics });
         add (fet, { ids::fetOn, ids::fetIn, ids::fetOut, ids::fetAttack, ids::fetRelease, ids::fetRatio });
         add (opto, { ids::optoOn, ids::laGain, ids::laPeak, ids::laLimit });
         add (multi, { ids::mbOn, ids::mbX[0], ids::mbX[1], ids::mbX[2], ids::mbAttack, ids::mbRelease, ids::mbOutput });

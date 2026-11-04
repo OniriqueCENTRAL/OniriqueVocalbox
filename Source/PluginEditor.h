@@ -5,20 +5,21 @@
 
 namespace onirique::ui
 {
-// le pictogramme d'un module (carré de la chaîne, catalogue du +), dessiné en trait dans r
+// le pictogramme d'un module (carré de la chaîne, catalogue du +), tracé comme dans la démo (grille de 24, trait arrondi)
 void drawModuleIcon (juce::Graphics&, int type, juce::Rectangle<float> r, juce::Colour, float thickness);
 } // namespace onirique::ui
 
-/*  La chaîne : les modules en carrés de verre, dans l'ordre du traitement. Un clic choisit le module (il s'affiche en grand
-    dessous) ; glisser un carré à gauche ou à droite le déplace (les autres s'écartent) ; au survol, power et retirer. Le +
-    au bout ouvre le catalogue des modules. */
+/*  La chaîne : les modules en carrés de verre de 132 x 96, dans l'ordre du traitement, une flèche entre deux. Un clic choisit
+    le module (il s'affiche en grand dessous) ; glisser un carré à gauche ou à droite le déplace (les autres s'écartent) ; au
+    survol, il se soulève, un reflet passe, power et retirer apparaissent. Le + au bout ouvre le catalogue. Trop de modules
+    pour la largeur : la rangée défile (molette, ou en approchant un bord pendant un glisser). */
 class ChainStrip : public juce::Component, public Animated, public juce::TooltipClient
 {
 public:
     explicit ChainStrip (OniriqueVocalBoxAudioProcessor&);
     std::function<void (int code)> onSelect;
     std::function<void()> onAdd;
-    void setSelected (int code) { if (code != selected) { selected = code; repaint(); } }
+    void setSelected (int code);
 
     void paint (juce::Graphics&) override;
     void tick() override;
@@ -27,36 +28,37 @@ public:
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
     juce::String getTooltip() override;
 
 private:
-    struct Tile { int code = 0; float x = 0.0f, vel = 0.0f, hover = 0.0f, on = 1.0f, sel = 0.0f, appear = 0.0f; };
-    juce::Rectangle<float> tileRect (float x) const;
+    struct Tile { int code = 0; float x = 0.0f, vel = 0.0f, hover = 0.0f, on = 1.0f, sel = 0.0f, sheen = 0.0f; };
+    juce::Rectangle<float> tileRect (float x) const;   // x : position dans la rangée (avant défilement)
     juce::Rectangle<float> plusRect() const;
     float slotX (int index) const;
+    float contentWidth() const;
     int tileAt (juce::Point<float>) const;
     juce::Rectangle<float> powerRect (const juce::Rectangle<float>& t) const;
     juce::Rectangle<float> closeRect (const juce::Rectangle<float>& t) const;
-    float tileW() const;
     void sync();
     bool isOn (int code) const;
+    void reveal (int index);
 
     OniriqueVocalBoxAudioProcessor& processor;
     std::vector<Tile> tiles;
-    int selected = 0, hoverTile = -1, dragTile = -1, dropIndex = -1;
+    int selected = 0, hoverTile = -1, dragTile = -1, dropIndex = -1, hoverButton = -1;
     bool plusHover = false, dragMoved = false;
-    float dragOffset = 0.0f, dragX = 0.0f, plusGlow = 0.0f, plusSpin = 0.0f;
+    float dragOffset = 0.0f, dragX = 0.0f, plusGlow = 0.0f, scroll = 0.0f, scrollTarget = 0.0f;
     juce::Point<float> downPos;
 };
 
-// Le catalogue du + : chaque module avec son pictogramme, son nom et ce qu'il fait, rangés par usage. Autant d'exemplaires
-// qu'on veut (trois par module).
+// Le catalogue du + : chaque module avec son pictogramme, son nom et ce qu'il fait, rangés par usage (quatre colonnes).
+// Trois exemplaires de chaque module au plus.
 class ModulePicker : public juce::Component, public Animated
 {
 public:
     explicit ModulePicker (OniriqueVocalBoxAudioProcessor&);
     std::function<void (int type)> onPick;
-    std::function<void()> onClose;
     void open();
     void close();
     bool isOpen() const noexcept { return target > 0.5f; }
@@ -64,21 +66,24 @@ public:
     void paint (juce::Graphics&) override;
     void tick() override;
     void mouseMove (const juce::MouseEvent&) override;
-    void mouseExit (const juce::MouseEvent&) override { hover = -1; repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { hover = -1; closeHover = false; repaint(); }
     void mouseDown (const juce::MouseEvent&) override;
     bool keyPressed (const juce::KeyPress&) override;
 
 private:
     juce::Rectangle<float> card() const;
     juce::Rectangle<float> itemRect (int type) const;
+    juce::Rectangle<float> closeRect() const;
+    float groupY (int group) const;   // haut du titre du groupe, dans la carte
     int itemAt (juce::Point<float>) const;
     int freeCount (int type) const;
     OniriqueVocalBoxAudioProcessor& processor;
     float shown = 0.0f, target = 0.0f, hoverGlow[onirique::modules::numTypes] {};
     int hover = -1;
+    bool closeHover = false;
 };
 
-// Potard IN / OUT du bas (gain d'entrée, de sortie), avec son mètre stéréo
+// IN / OUT du bas : le titre, le niveau, sa valeur, le potard étoile du gain
 class GainStrip : public juce::Component, public Animated
 {
 public:
@@ -91,12 +96,11 @@ private:
     juce::String title;
     std::function<float (int)> consume;
     StarKnob knob;
-    float level[2] { -100.0f, -100.0f }, hold[2] { -100.0f, -100.0f };
-    int holdFrames[2] {};
+    float level = -100.0f;
 };
 
-// l'interrupteur AUTO GAIN du bas (avec la correction appliquée)
-class AutoGainSwitch : public juce::Component, public Animated
+// AUTO GAIN du bas : le libellé et l'interrupteur
+class AutoGainSwitch : public juce::Component, public Animated, public juce::SettableTooltipClient
 {
 public:
     explicit AutoGainSwitch (OniriqueVocalBoxAudioProcessor&);
@@ -109,12 +113,13 @@ private:
     std::unique_ptr<juce::ParameterAttachment> attachment;
     juce::RangedAudioParameter* param = nullptr;
     bool state = false;
-    float lit = 0.0f, shownDb = 0.0f;
+    float lit = 0.0f;
 };
 
 //==============================================================================
-/*  L'interface sous la barre : la chaîne en haut, le module choisi en grand (son en-tête : nom, ce qu'il fait, power), IN /
-    AUTO GAIN / OUT en bas. Le catalogue du + s'ouvre par-dessus. Une seule horloge à 60 Hz anime tout. */
+/*  L'interface sous la barre, telle que la démo validée (1600 x 936) : la chaîne en haut, le module choisi en grand dans son
+    panneau de verre (son en-tête : point braise, nom, ce qu'il fait, ON), IN / AUTO GAIN / OUT en bas. Le catalogue du +
+    s'ouvre par-dessus. Une seule horloge à 60 Hz anime tout. */
 class VocalBoxView : public juce::Component, private juce::Timer
 {
 public:
@@ -123,6 +128,7 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
     void mouseDown (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
 
 private:
     void timerCallback() override;
@@ -142,7 +148,8 @@ private:
     ModulePicker picker;
     juce::TooltipWindow tooltips { this, 600 };
     int selected = 0;
-    float panelFade = 1.0f, powerLit = 0.0f, drift = 0.0f;
+    float panelFade = 1.0f, powerLit = 0.0f, powerHover = 0.0f;
+    bool overPower = false;
     juce::Image backdrop;   // le fond (taches de braise floues) : dessiné une fois par taille
 };
 
@@ -167,7 +174,6 @@ private:
     onirique::ui::FontScope fontScope;   // polices de la charte, le temps que l'interface est ouverte
     VocalBoxView view;
     onirique::nuit::Bar bar;
-    juce::Image logo, logoGlow;   // le logo du titre et sa lueur, qui respire
     std::unique_ptr<onirique::license::Overlay> licenseOverlay;
     bool restoringSize = true;
 

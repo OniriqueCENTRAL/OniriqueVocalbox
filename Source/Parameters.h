@@ -119,6 +119,8 @@ namespace ids
     inline constexpr const char* satTone   = "satTone";
     inline constexpr const char* satWarmth = "satWarmth";
     inline constexpr const char* satAir    = "satAir";
+    inline constexpr const char* satBias   = "satBias";
+    inline constexpr const char* satDynamics = "satDynamics";
     inline constexpr const char* slot[16] { "slot1", "slot2", "slot3", "slot4", "slot5", "slot6", "slot7", "slot8",
                                             "slot9", "slot10", "slot11", "slot12", "slot13", "slot14", "slot15", "slot16" };
     // identifiant d'un réglage pour l'exemplaire k (0 = le premier, qui garde l'identifiant d'origine)
@@ -304,7 +306,7 @@ inline void addParams (std::vector<std::unique_ptr<juce::RangedAudioParameter>>&
     // défaut TUBE : les anciens projets (sans ce paramètre) gardent le son d'origine
     p.push_back (mkParam<AudioParameterChoice> (k, 
         ParameterID { ids::satType, 1 }, "Saturation Type",
-        StringArray { "Tube", "Analog", "Tape" }, 0));
+        StringArray { "Tube", "Analog", "Tape", "Transformer" }, 0));
 
     if (k == 0) p.push_back (mkParam<AudioParameterFloat> (k, 
         ParameterID { ids::output, 1 }, "Output",
@@ -634,6 +636,10 @@ inline void addParams (std::vector<std::unique_ptr<juce::RangedAudioParameter>>&
     p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::satWarmth, 1 }, "Saturation Warmth",
         NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f, Attr().withLabel ("%").withStringFromValueFunction (pctText)));
     p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::satAir, 1 }, "Saturation Air",
+        NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f, Attr().withLabel ("%").withStringFromValueFunction (pctText)));
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::satBias, 1 }, "Saturation Bias",
+        NormalisableRange<float> (-100.0f, 100.0f, 0.1f), 0.0f, Attr().withLabel ("%").withStringFromValueFunction (bipolarPct)));
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::satDynamics, 1 }, "Saturation Dynamics",
         NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f, Attr().withLabel ("%").withStringFromValueFunction (pctText)));
 
     // les emplacements de la chaîne : ni automation (le DAW ne doit pas reconstruire la chaîne en lecture), ni nom de module

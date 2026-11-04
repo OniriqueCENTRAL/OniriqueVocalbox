@@ -65,12 +65,15 @@ StarKnob::StarKnob (juce::AudioProcessorValueTreeState& s, const juce::String& i
 
 StarKnob::~StarKnob() = default;
 
+// la cellule de la démo (.kcell) : 8 de marge, le nom (JetBrains Mono 10), 4, le potard, 4, la valeur (JetBrains Mono 12) ;
+// façade (1176, LA-2A) : le nom en Unbounded 13 espacé de 0.2 em, la valeur dans une pastille sombre
 juce::Rectangle<float> StarKnob::knobArea() const noexcept
 {
     auto r = getLocalBounds().toFloat();
-    const float u = r.getWidth() / 110.0f;
-    if (showLabel) r.removeFromTop (std::min (20.0f * u, r.getHeight() * 0.16f));
-    if (showValue) r.removeFromBottom (std::min (22.0f * u, r.getHeight() * 0.18f));
+    const float u = ui::unitOf (*this);
+    r.reduce (4.0f * u, 8.0f * u);
+    if (showLabel) r.removeFromTop ((faceStyle ? 18.0f + 14.0f : 13.0f + 4.0f) * u);
+    if (showValue) r.removeFromBottom ((faceStyle ? 14.0f + 30.0f : 4.0f + 16.0f) * u);
     const float d = std::min (r.getWidth(), r.getHeight());
     return juce::Rectangle<float> (d, d).withCentre (r.getCentre());
 }
@@ -78,27 +81,48 @@ juce::Rectangle<float> StarKnob::knobArea() const noexcept
 void StarKnob::tick()
 {
     bool moved = ui::approach (shown, norm, 0.35f);
-    moved |= ui::approach (glow, dragging ? 1.0f : (hovering ? 0.6f : 0.0f), 0.18f);
+    moved |= ui::approach (glow, dragging ? 1.0f : (hovering ? 0.6f : 0.0f), 0.16f);
+    moved |= ui::approach (cell, hovering || dragging ? 1.0f : 0.0f, 0.16f);
     if (moved) repaint();
 }
 
 void StarKnob::paint (juce::Graphics& g)
 {
+    const float uu = ui::unitOf (*this);
     const auto k = knobArea();
     const float d = k.getWidth(), u = d / 100.0f;
     const auto c = k.getCentre();
     const float alpha = dimmed ? 0.35f : 1.0f;
     const float a = kArc0 + (kArc1 - kArc0) * shown;
 
+    // survol de la cellule : fond blanc .035 et liseré rose .18 (rayon 18)
+    if (cell > 0.01f && showLabel && ! faceStyle)
+    {
+        const auto cr = getLocalBounds().toFloat().reduced (1.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.035f * cell));
+        g.fillRoundedRectangle (cr, 18.0f * uu);
+        g.setColour (juce::Colour (255, 140, 150).withAlpha (0.18f * cell));
+        g.drawRoundedRectangle (cr.reduced (0.5f), 18.0f * uu, 1.0f);
+    }
+
     if (showLabel)
     {
-        const auto lr = getLocalBounds().toFloat().withBottom (k.getY());
-        g.setColour (ui::mist.withAlpha (0.85f * alpha));
-        g.setFont (ui::font (ui::Face::mono, 11.0f * ui::unitOf (*this)));
+        const auto lr = juce::Rectangle<float> (0.0f, 8.0f * uu, (float) getWidth(), (faceStyle ? 18.0f : 13.0f) * uu);
+        g.setColour ((faceStyle ? juce::Colour (0xffe9e9ec) : juce::Colour (0xffd9c6c9)).withMultipliedAlpha (alpha));
+        g.setFont (faceStyle ? ui::css (ui::Face::display, 13.0f * uu, 0.2f) : ui::css (ui::Face::mono, 10.0f * uu, 0.12f));
         g.drawText (label, lr, juce::Justification::centred, false);
     }
 
-    const float R = d * 0.44f, w = std::max (1.2f, d * 0.03f);
+    // survol du potard : lueur braise de 14 autour (drop-shadow de la démo)
+    if (glow > 0.01f)
+        for (int q = 3; q >= 1; --q)
+        {
+            g.setColour (juce::Colour (229, 56, 74).withAlpha (0.10f * glow / (float) q * alpha));
+            g.fillEllipse (k.expanded (4.5f * u * (float) q).reduced (d * 0.06f));
+        }
+
+    // l'arc : piste de rayon 44 (blanc rosé .12), valeur en braise avec sa lueur de 4
+    const float R = d * 0.44f, w = std::max (1.0f, d * 0.03f);
     juce::Path track, arc;
     track.addCentredArc (c.x, c.y, R, R, 0.0f, kArc0, kArc1, true);
     g.setColour (juce::Colour (0xffffecee).withAlpha (0.12f * alpha));
@@ -106,42 +130,65 @@ void StarKnob::paint (juce::Graphics& g)
     if (shown > 0.002f)
     {
         arc.addCentredArc (c.x, c.y, R, R, 0.0f, kArc0, a, true);
-        ui::strokeGlow (g, arc, ui::ember, w, (0.55f + 0.45f * glow) * alpha);
-        g.setColour (ui::ember.withAlpha (alpha));
+        ui::strokeGlow (g, arc, juce::Colour (0xffE23444), w, 0.95f * alpha);
+        g.setColour (juce::Colour (0xffE23444).withAlpha (alpha));
         g.strokePath (arc, juce::PathStrokeType (w, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
 
-    // le corps sombre et son ombre
+    // le corps : ombre floue décalée de 2.5, dégradé radial (32 % / 30 %, rayon 80 %) #36161a -> #160a0c -> #080405
     const float br = d * 0.326f;
-    g.setColour (juce::Colours::black.withAlpha (0.55f * alpha));
-    g.fillEllipse (juce::Rectangle<float> (2.0f * br, 2.0f * br).withCentre (c.translated (0.0f, 2.5f * u)).expanded (1.5f * u));
-    juce::ColourGradient body (juce::Colour (0xff36161a), c.x - br * 0.35f, c.y - br * 0.4f, juce::Colour (0xff080405), c.x + br, c.y + br, true);
+    for (int q = 3; q >= 1; --q)
+    {
+        g.setColour (juce::Colours::black.withAlpha (0.25f * alpha));
+        g.fillEllipse (juce::Rectangle<float> (2.0f * br, 2.0f * br).withCentre (c.translated (0.0f, 2.5f * u)).expanded (1.0f * u * (float) q));
+    }
+    const juce::Point<float> gc (c.x - br + 0.64f * br, c.y - br + 0.60f * br);
+    juce::ColourGradient body (juce::Colour (0xff36161a), gc.x, gc.y, juce::Colour (0xff080405), gc.x + 1.6f * br, gc.y, true);
     body.addColour (0.6, juce::Colour (0xff160a0c));
     g.setGradientFill (body);
     g.setOpacity (alpha);
     g.fillEllipse (juce::Rectangle<float> (2.0f * br, 2.0f * br).withCentre (c));
-    g.setColour (juce::Colour (0xffffdce1).withAlpha (0.08f + 0.12f * glow));
-    g.drawEllipse (juce::Rectangle<float> (2.0f * br, 2.0f * br).withCentre (c), std::max (1.0f, 0.5f * u));
+    g.setColour (juce::Colour (255, 220, 225).withAlpha (0.08f * alpha));
+    g.drawEllipse (juce::Rectangle<float> (2.0f * br, 2.0f * br).withCentre (c), std::max (0.6f, 0.5f * u));
 
-    // les deux étoiles : la petite sur l'arc, la grande au centre (elles tournent avec la valeur)
+    // les étoiles (petite sur l'arc, grande au centre), blanc rosé avec leur lueur de 4
     const auto tip = juce::Point<float> (c.x + R * std::sin (a), c.y - R * std::cos (a));
-    const auto small = ui::starPath (tip, d * 0.045f, a);
+    const auto small = ui::starPath (tip, d * 0.04f, a);
     const auto big = ui::starPath (c, d * 0.194f, a);
     for (const auto* p : { &small, &big })
     {
-        g.setColour (ui::bone.withAlpha ((0.20f + 0.15f * glow) * alpha));
-        g.strokePath (*p, juce::PathStrokeType (3.0f * u, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-        g.setColour (juce::Colour (0xffffecee).withAlpha (alpha));
+        for (int q = 3; q >= 1; --q)
+        {
+            g.setColour (juce::Colour (255, 236, 238).withAlpha (0.22f / (float) q * alpha));
+            g.strokePath (*p, juce::PathStrokeType (2.6f * u * (float) q, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        }
+        g.setColour (juce::Colour (0xffFFECEE).withAlpha (alpha));
         g.fillPath (*p);
     }
 
     if (showValue && param != nullptr)
     {
-        const auto vr = getLocalBounds().toFloat().withTop (k.getBottom());
         const auto text = param->getCurrentValueAsText();
-        g.setColour (ui::bone.withAlpha (alpha));
-        g.setFont (ui::font (ui::Face::mono, 13.0f * ui::unitOf (*this)));
-        g.drawText (text, vr, juce::Justification::centred, false);
+        if (faceStyle)
+        {
+            const auto f = ui::css (ui::Face::mono, 13.0f * uu, 0.12f);
+            const float tw = ui::textWidth (f, text) + 28.0f * uu;
+            const auto pill = juce::Rectangle<float> (tw, 30.0f * uu).withCentre ({ c.x, k.getBottom() + (14.0f + 15.0f) * uu });
+            g.setColour (juce::Colours::black.withAlpha (0.45f));
+            g.fillRoundedRectangle (pill, 10.0f * uu);
+            g.setColour (juce::Colours::white.withAlpha (0.08f));
+            g.drawRoundedRectangle (pill.reduced (0.5f), 10.0f * uu, 1.0f);
+            g.setColour (juce::Colours::white.withAlpha (alpha));
+            g.setFont (f);
+            g.drawText (text, pill, juce::Justification::centred, false);
+        }
+        else
+        {
+            const auto vr = juce::Rectangle<float> (0.0f, k.getBottom() + 4.0f * uu, (float) getWidth(), 16.0f * uu);
+            g.setColour (juce::Colours::white.withAlpha (alpha));
+            g.setFont (ui::css (ui::Face::mono, 12.0f * uu, 0.12f));
+            g.drawText (text, vr, juce::Justification::centred, false);
+        }
     }
 }
 
@@ -195,27 +242,22 @@ GlassToggle::GlassToggle (juce::AudioProcessorValueTreeState& s, const juce::Str
 
 void GlassToggle::tick()
 {
-    bool moved = ui::approach (lit, state ? 1.0f : 0.0f, 0.2f);
-    moved |= ui::approach (hot, hover ? 1.0f : 0.0f, 0.2f);
+    bool moved = ui::approach (lit, state ? 1.0f : 0.0f, 0.16f);
+    moved |= ui::approach (hot, hover ? 1.0f : 0.0f, 0.16f);
     if (moved) repaint();
 }
 
+// pastille de verre (rayon 14, 4 de marge) avec un .seg dedans (rayon 10, JetBrains Mono 11 espacé de 0.14 em)
 void GlassToggle::paint (juce::Graphics& g)
 {
-    const auto r = getLocalBounds().toFloat().reduced (1.0f);
-    const float u = ui::unitOf (*this), rad = r.getHeight() * 0.32f;
-    ui::drawGlass (g, r, rad, u, 0.0f);
-    if (lit > 0.01f)
-    {
-        g.setGradientFill (juce::ColourGradient (ui::ember.withAlpha (0.62f * lit), r.getX(), r.getY(), juce::Colour (0xff6e0a18).withAlpha (0.62f * lit),
-                                                 r.getX(), r.getBottom(), false));
-        g.fillRoundedRectangle (r, rad);
-        g.setColour (juce::Colour (0xffff7887).withAlpha (0.5f * lit));
-        g.drawRoundedRectangle (r.reduced (0.5f), rad, 1.0f);
-    }
-    g.setColour (ui::mist.withAlpha (0.65f + 0.35f * std::max (lit, hot)));
-    g.setFont (ui::font (ui::Face::mono, 11.0f * u));
-    g.drawText (label, r, juce::Justification::centred, false);
+    const auto r = getLocalBounds().toFloat();
+    const float u = ui::unitOf (*this);
+    ui::drawDemoGlass (g, r, 14.0f * u, u, false);
+    const auto seg = r.reduced (4.0f * u);
+    ui::drawSeg (g, seg, lit, hot, u);
+    g.setColour (juce::Colour (0xffbba7aa).interpolatedWith (juce::Colours::white, std::max (lit, hot)));
+    g.setFont (ui::css (ui::Face::mono, 11.0f * u, 0.14f));
+    g.drawText (label, seg, juce::Justification::centred, false);
 }
 
 void GlassToggle::mouseDown (const juce::MouseEvent&)
@@ -233,50 +275,67 @@ GlassTabs::GlassTabs (juce::AudioProcessorValueTreeState& s, const juce::String&
     setMouseCursor (juce::MouseCursor::PointingHandCursor);
 }
 
-float GlassTabs::idealWidth (float h) const
+// chaque onglet : son texte et 18 de marge de chaque côté (padding: 0 18px), 4 entre deux, 4 autour
+float GlassTabs::idealWidth (float) const
 {
-    float w = 0.0f;
-    const auto f = ui::font (ui::Face::mono, 11.0f * ui::unitOf (*this));
-    for (auto& l : labels) w += ui::textWidth (f, l) + h * 0.9f;
-    return w + h * 0.25f;
+    const float u = ui::unitOf (*this);
+    const auto f = ui::css (ui::Face::mono, 11.0f * u, 0.14f);
+    float w = 4.0f * u;
+    for (auto& l : labels) w += ui::textWidth (f, l) + 36.0f * u + 4.0f * u;
+    return w;
+}
+
+juce::Rectangle<float> GlassTabs::segment (int i) const
+{
+    const float u = ui::unitOf (*this);
+    const auto r = getLocalBounds().toFloat().reduced (4.0f * u);
+    const auto f = ui::css (ui::Face::mono, 11.0f * u, 0.14f);
+    std::vector<float> w;
+    float total = 0.0f;
+    for (auto& l : labels) { w.push_back (ui::textWidth (f, l) + 36.0f * u); total += w.back(); }
+    const float gaps = 4.0f * u * (float) std::max (0, labels.size() - 1);
+    const float k = total > 0.0f ? (r.getWidth() - gaps) / total : 1.0f;   // plus de place : les onglets s'élargissent ensemble
+    float x = r.getX();
+    for (int j = 0; j < i; ++j) x += w[(size_t) j] * k + 4.0f * u;
+    return { x, r.getY(), w[(size_t) juce::jlimit (0, (int) w.size() - 1, i)] * k, r.getHeight() };
 }
 
 int GlassTabs::at (float x) const noexcept
 {
-    const float w = (float) getWidth() / (float) std::max (1, labels.size());
-    return juce::jlimit (0, labels.size() - 1, (int) (x / w));
+    for (int i = 0; i < labels.size(); ++i)
+        if (x < segment (i).getRight() + 2.0f) return i;
+    return labels.size() - 1;
 }
 
 void GlassTabs::tick()
 {
-    if (slide < 0.0f) { slide = (float) selected; repaint(); return; }
-    if (ui::spring (slide, vel, (float) selected)) repaint();
+    bool moved = false;
+    if (slide < 0.0f) { slide = (float) selected; moved = true; }
+    moved |= ui::spring (slide, vel, (float) selected);
+    for (int i = 0; i < 16; ++i) moved |= ui::approach (hot[i], i == hover ? 1.0f : 0.0f, 0.16f);
+    if (moved) repaint();
 }
 
 void GlassTabs::paint (juce::Graphics& g)
 {
-    const auto r = getLocalBounds().toFloat().reduced (1.0f);
-    const float u = ui::unitOf (*this), rad = r.getHeight() * 0.32f;
-    ui::drawGlass (g, r, rad, u);
-    const int n = std::max (1, labels.size());
-    const float w = (r.getWidth() - 6.0f * u) / (float) n;
-    auto seg = [&] (float i) { return juce::Rectangle<float> (r.getX() + 3.0f * u + i * w, r.getY() + 3.0f * u, w, r.getHeight() - 6.0f * u); };
-    const auto pill = seg (std::max (0.0f, slide));
-    g.setGradientFill (juce::ColourGradient (ui::ember.withAlpha (0.62f), pill.getX(), pill.getY(), juce::Colour (0xff6e0a18).withAlpha (0.62f),
-                                             pill.getX(), pill.getBottom(), false));
-    g.fillRoundedRectangle (pill, rad * 0.8f);
-    g.setColour (juce::Colour (0xffff7887).withAlpha (0.5f));
-    g.drawRoundedRectangle (pill.reduced (0.5f), rad * 0.8f, 1.0f);
-    float scale = 1.0f;
+    const auto r = getLocalBounds().toFloat();
+    const float u = ui::unitOf (*this);
+    ui::drawDemoGlass (g, r, 14.0f * u, u, false);
+    const int n = labels.size();
+    if (n == 0) return;
+    // la pastille braise glisse d'un onglet à l'autre
+    const int i0 = juce::jlimit (0, n - 1, (int) std::floor (slide)), i1 = juce::jlimit (0, n - 1, i0 + 1);
+    const float t = juce::jlimit (0.0f, 1.0f, slide - (float) i0);
+    const auto a = segment (i0), b = segment (i1);
+    const juce::Rectangle<float> pill (a.getX() + (b.getX() - a.getX()) * t, a.getY(), a.getWidth() + (b.getWidth() - a.getWidth()) * t, a.getHeight());
     for (int i = 0; i < n; ++i)
-        scale = std::min (scale, w * 0.9f / std::max (1.0f, ui::textWidth (ui::font (ui::Face::mono, 11.0f * u), labels[i])));
-    const auto tabFont = ui::font (ui::Face::mono, 11.0f * u * scale);
+        if (hot[std::min (i, 15)] > 0.01f && i != selected) ui::drawSeg (g, segment (i), 0.0f, hot[std::min (i, 15)], u);
+    ui::drawSeg (g, pill, 1.0f, 0.0f, u);
+    g.setFont (ui::css (ui::Face::mono, 11.0f * u, 0.14f));
     for (int i = 0; i < n; ++i)
     {
-        const auto sr = seg ((float) i);
-        g.setColour (i == selected ? ui::bone : (i == hover ? ui::mist : ui::haze));
-        g.setFont (tabFont);
-        g.drawText (labels[i], sr, juce::Justification::centred, false);
+        g.setColour (juce::Colour (0xffbba7aa).interpolatedWith (juce::Colours::white, i == selected ? 1.0f : hot[std::min (i, 15)]));
+        g.drawText (labels[i], segment (i), juce::Justification::centred, false);
     }
 }
 
@@ -387,4 +446,69 @@ std::unique_ptr<ModulePanel> createGenericPanel (OniriqueVocalBoxAudioProcessor&
 {
     if (! modules::valid (code)) return nullptr;
     return std::make_unique<GenericPanel> (p, code);
+}
+
+//==============================================================================
+juce::Font ui::css (Face f, float px, float letterEm)
+{
+    auto tf = ui::font (f, 12.0f).getTypefacePtr();
+    juce::Font fnt = tf != nullptr ? juce::Font (juce::FontOptions (tf).withPointHeight (std::max (1.0f, px)))
+                                   : ui::font (f, px * 1.25f);
+    if (letterEm != 0.0f && fnt.getHeight() > 0.0f) fnt.setExtraKerningFactor (letterEm * px / fnt.getHeight());
+    return fnt;
+}
+
+void ui::drawDemoGlass (juce::Graphics& g, juce::Rectangle<float> r, float corner, float u, bool shadow)
+{
+    if (shadow)   // 0 18px 40px rgba(0,0,0,.45), en quelques couches
+        for (int k = 4; k >= 1; --k)
+        {
+            const float e = 10.0f * u * (float) k;
+            g.setColour (juce::Colours::black.withAlpha (0.10f / (float) k));
+            g.fillRoundedRectangle (r.translated (0.0f, 18.0f * u * 0.6f).expanded (e * 0.5f), corner + e * 0.5f);
+        }
+    // linear-gradient(160deg, .075, .02 40%, .035)
+    const auto a = r.getTopLeft(), b = r.getBottomRight();
+    juce::ColourGradient gr (juce::Colours::white.withAlpha (0.075f), a.x + r.getWidth() * 0.32f, a.y,
+                             juce::Colours::white.withAlpha (0.035f), b.x - r.getWidth() * 0.32f, b.y, false);
+    gr.addColour (0.4, juce::Colours::white.withAlpha (0.02f));
+    g.setGradientFill (gr);
+    g.fillRoundedRectangle (r, corner);
+    g.setColour (juce::Colour (0xffffebee).withAlpha (0.10f));
+    g.drawRoundedRectangle (r.reduced (0.5f), corner, 1.0f);
+    juce::Graphics::ScopedSaveState s (g);
+    juce::Path clip; clip.addRoundedRectangle (r, corner);
+    g.reduceClipRegion (clip);
+    g.setColour (juce::Colours::white.withAlpha (0.12f));
+    g.fillRect (r.withHeight (std::max (1.0f, u)).translated (0.0f, 1.0f));
+    g.setColour (juce::Colours::black.withAlpha (0.4f));
+    g.fillRect (r.withTop (r.getBottom() - std::max (1.0f, u) - 1.0f).withHeight (std::max (1.0f, u)));
+}
+
+// le .seg de la démo : rayon 10 ; allumé : dégradé braise (.6), liseré rose (.5) et lueur de 18 ; survol : blanc .05
+void ui::drawSeg (juce::Graphics& g, juce::Rectangle<float> r, float lit, float hover, float u)
+{
+    const float rad = 10.0f * u;
+    if (hover > 0.01f && lit < 0.99f)
+    {
+        g.setColour (juce::Colours::white.withAlpha (0.05f * hover * (1.0f - lit)));
+        g.fillRoundedRectangle (r, rad);
+    }
+    if (lit <= 0.01f) return;
+    for (int q = 3; q >= 1; --q)
+    {
+        g.setColour (juce::Colour (229, 56, 74).withAlpha (0.10f * lit / (float) q));
+        g.fillRoundedRectangle (r.expanded (3.0f * u * (float) q), rad + 3.0f * u * (float) q);
+    }
+    g.setGradientFill (juce::ColourGradient (juce::Colour (229, 56, 74).withAlpha (0.6f * lit), 0.0f, r.getY(),
+                                             juce::Colour (110, 10, 24).withAlpha (0.6f * lit), 0.0f, r.getBottom(), false));
+    g.fillRoundedRectangle (r, rad);
+    g.setColour (juce::Colour (255, 120, 135).withAlpha (0.5f * lit));
+    g.drawRoundedRectangle (r.reduced (0.5f), rad, 1.0f);
+}
+
+float GlassToggle::idealWidth() const
+{
+    const float u = ui::unitOf (*this);
+    return ui::textWidth (ui::css (ui::Face::mono, 11.0f * u, 0.14f), label) + 36.0f * u + 8.0f * u;
 }

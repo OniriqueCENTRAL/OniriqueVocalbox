@@ -10,6 +10,15 @@ float unitOf (const juce::Component&);
 // l'étoile à quatre branches du logo ONIRIQUE, côtés creusés, centrée en c, de rayon r, tournée de rot (radians)
 juce::Path starPath (juce::Point<float> c, float r, float rot = 0.0f);
 
+// police comme en CSS (la démo) : px = font-size (le corps de la lettre, pas la hauteur de ligne), letterEm = letter-spacing en em
+juce::Font css (Face, float px, float letterEm = 0.0f);
+
+// le verre de la démo (.glass) : dégradé, liseré, reflet haut, filet sombre bas et ombre portée douce
+void drawDemoGlass (juce::Graphics&, juce::Rectangle<float>, float corner, float u, bool shadow = true);
+
+// un onglet / bouton segmenté de la démo (.seg), allumé (lit) ou survolé
+void drawSeg (juce::Graphics&, juce::Rectangle<float>, float lit, float hover, float u);
+
 // verre sombre : le panneau de la nouvelle interface (fond translucide, liseré clair, reflet en haut)
 void drawGlass (juce::Graphics&, juce::Rectangle<float>, float corner, float u, float lit = 0.0f);
 } // namespace onirique::ui
@@ -26,6 +35,8 @@ public:
 
     void setShowText (bool label, bool value) { showLabel = label; showValue = value; repaint(); }
     void setDimmed (bool d) { if (d != dimmed) { dimmed = d; repaint(); } }
+    // façade de compresseur : nom en Unbounded espacé au-dessus, valeur dans une pastille
+    void setFaceStyle (bool f) { faceStyle = f; repaint(); }
     std::function<void (bool)> onFocusChange;
 
     void paint (juce::Graphics&) override;
@@ -47,6 +58,8 @@ private:
     juce::String label;
     float norm = 0.0f, shown = 0.0f, glow = 0.0f, startNorm = 0.0f, startY = 0.0f;
     bool hovering = false, dragging = false, showLabel = true, showValue = true, dimmed = false;
+    bool faceStyle = false;
+    float cell = 0.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (StarKnob)
 };
@@ -56,6 +69,7 @@ class GlassToggle : public juce::Component, public Animated
 {
 public:
     GlassToggle (juce::AudioProcessorValueTreeState&, const juce::String& paramId, const juce::String& label);
+    float idealWidth() const;   // le texte, 18 de marge de chaque côté, 4 autour
     void paint (juce::Graphics&) override;
     void tick() override;
     void mouseDown (const juce::MouseEvent&) override;
@@ -90,11 +104,13 @@ public:
 
 private:
     int at (float x) const noexcept;
+    juce::Rectangle<float> segment (int) const;
     juce::RangedAudioParameter* param = nullptr;
     std::unique_ptr<juce::ParameterAttachment> attachment;
     juce::StringArray labels;
     int selected = 0, hover = -1;
     float slide = -1.0f, vel = 0.0f;
+    float hot[16] {};
 };
 
 //==============================================================================

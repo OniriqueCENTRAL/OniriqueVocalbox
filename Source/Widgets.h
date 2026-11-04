@@ -424,6 +424,8 @@ public:
     void setBand (int b) { if (b != band) { band = b; shownText.clear(); repaint(); } }
     void setPointsDown (bool down) { if (down != pointsDown) { pointsDown = down; resized(); repaint(); } }
     std::function<void()> onRemoved;   // bande retirée (x) : le panneau se ferme
+    std::function<void()> onResize;    // le texte a changé de largeur : l'analyseur replace la bulle
+    float idealWidth() const;
     // échelle des fréquences de l'analyseur (x dans l'analyseur) : le casque tenu promène la bande en fréquence
     std::function<float (float)> xOfHz, hzOfX;
 
@@ -449,7 +451,8 @@ private:
     bool sweeping = false;
     float sweepStartX = 0.0f;
     juce::String shownText;
-    juce::Rectangle<float> box, zPower, zListen, zClose, zUp, zDown, zType;
+    juce::Rectangle<float> box, zPower, zListen, zClose, zUp, zDown, zType, zFreq, zValue, zSlope;
+    juce::String valueText() const;
 };
 
 // Panneau flottant de la bande sélectionnée (en bas de l'analyseur, plein écran) : marche / arrêt, type et pente à gauche ;
