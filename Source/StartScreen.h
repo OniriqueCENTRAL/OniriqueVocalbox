@@ -50,6 +50,8 @@ private:
     onirique::mix::Profile refProfile;
     std::atomic<int> refState { 0 };        // 0 aucune, 1 en calcul, 2 prête, 3 illisible
     std::atomic<bool> cancel { false };
+    std::atomic<float> refProgress { 0.0f };
+    std::atomic<bool> refAi { false };
     std::thread worker;
     onirique::mix::Plan plan;
     double stageStart = 0.0, lastHeard = 0.0;

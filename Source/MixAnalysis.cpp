@@ -1,5 +1,6 @@
 #include "MixAnalysis.h"
 #include "Modules.h"
+#include "onirique_separate.hpp"
 
 namespace onirique::mix
 {
@@ -165,9 +166,12 @@ Profile analyse (const float* x, int n, double sr)
     for (size_t i = 1; i + 90 < sm.size(); ++i)
     {
         if (sm[i] >= p.loudDb - 8.0f) { ++above; continue; }
-        if (above >= 30 && sm[i] < p.loudDb - 15.0f && sm[i - 1] >= p.loudDb - 15.0f)
+        // fin de phrase : on repasse sous les phrases fortes - 8 dB après y avoir été 200 ms
+        if (above >= 20)
         {
             ++offsets;
+            float phrase = -120.0f;
+            for (int j = 1; j <= 20; ++j) phrase = juce::jmax (phrase, sm[i - (size_t) j]);
             // la queue : régression sur 400 ms tant qu'elle reste au-dessus du fond et qu'aucune phrase ne repart
             double sx = 0, sy = 0, sxx = 0, sxy = 0; int m = 0;
             for (int j = 0; j < 40; ++j)
@@ -181,13 +185,13 @@ Profile analyse (const float* x, int n, double sr)
                 const double slope = (m * sxy - sx * sy) / juce::jmax (1.0e-9, m * sxx - sx * sx);   // dB par 10 ms
                 if (slope < -0.05) rts.push_back ((float) juce::jlimit (0.1, 8.0, -60.0 / (slope * 100.0)));
             }
-            wets.push_back (sm[i + 12] - p.loudDb);
+            wets.push_back (sm[i + 12] - phrase);
             // l'écho : une bosse de 4 dB au même retard après la plupart des phrases
             for (int lag = 12; lag < 90; ++lag)
             {
                 float lo = 1.0e9f;
                 for (int j = 1; j <= 6; ++j) lo = juce::jmin (lo, sm[i + (size_t) (lag - j)]);
-                if (sm[i + (size_t) lag] - lo > 4.0f && sm[i + (size_t) lag] > p.noiseFloorDb + 6.0f)
+                if (sm[i + (size_t) lag] - lo > 4.0f && sm[i + (size_t) lag] > p.noiseFloorDb + 6.0f && sm[i + (size_t) lag] < phrase - 6.0f)
                     for (int d = -1; d <= 1; ++d) ++echoHist[(size_t) (lag + d)];
             }
         }
@@ -200,7 +204,7 @@ Profile analyse (const float* x, int n, double sr)
         int best = 0;
         for (int lag = 12; lag < 90; ++lag) if (echoHist[(size_t) lag] > echoHist[(size_t) best]) best = lag;
         const float share = juce::jmin (1.0f, (float) echoHist[(size_t) best] / (2.0f * (float) offsets));
-        if (share >= 0.4f) { p.echoMs = (float) best * 10.0f; p.echoAmount = juce::jmin (1.0f, share); }
+        if (share >= 0.5f) { p.echoMs = (float) best * 10.0f; p.echoAmount = juce::jmin (1.0f, share); }
     }
     p.valid = true;
     return p;
@@ -275,6 +279,44 @@ bool readSong (const juce::File& file, juce::AudioBuffer<float>& out, double& sa
     return true;
 }
 
+juce::File modelFile()
+{
+    const juce::String name ("ggml-model-htdemucs_ft_vocals-4s-f16.bin");
+    const auto bin = juce::File::getSpecialLocation (juce::File::currentExecutableFile).getParentDirectory();
+    for (const auto& f : { bin.getSiblingFile ("Resources").getChildFile (name), bin.getChildFile (name), bin.getChildFile ("Resources").getChildFile (name),
+                           juce::File::getSpecialLocation (juce::File::commonApplicationDataDirectory).getChildFile ("Onirique/models").getChildFile (name),
+                           juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("Onirique/models").getChildFile (name) })
+        if (f.existsAsFile() && f.getSize() > 1000000) return f;
+    return {};
+}
+
+bool separateVoice (const juce::AudioBuffer<float>& song, double sr, std::vector<float>& voice, double& voiceRate,
+                    std::function<bool (float)> shouldContinue, double maxSeconds)
+{
+    const auto model = modelFile();
+    if (! model.existsAsFile() || sr <= 0.0 || song.getNumSamples() < (int) (sr * 5.0)) return false;
+    // l'extrait : maxSeconds à partir de 30 % du morceau (couplets et refrains, pas l'intro)
+    const int total = song.getNumSamples(), len = juce::jmin (total, (int) (maxSeconds * sr));
+    const int start = juce::jmin (total - len, (int) (0.3 * total));
+    // en 44,1 kHz stéréo
+    const double ratio = sr / 44100.0;
+    const int out = (int) std::floor ((double) len / ratio) - 4;
+    if (out < 44100 * 5) return false;
+    std::vector<float> lr[2];
+    for (int c = 0; c < 2; ++c)
+    {
+        lr[c].resize ((size_t) out);
+        const float* src = song.getReadPointer (juce::jmin (c, song.getNumChannels() - 1), start);
+        if (std::abs (ratio - 1.0) < 1.0e-6) std::copy (src, src + out, lr[c].begin());
+        else { juce::LagrangeInterpolator li; li.process (ratio, src, lr[c].data(), out); }
+    }
+    const int threads = juce::jlimit (1, 8, juce::SystemStats::getNumCpus() - 1);
+    if (! sep::separateVocals (model.getFullPathName().toStdString(), lr[0].data(), lr[1].data(), out, threads, voice, shouldContinue))
+        return false;
+    voiceRate = 44100.0;
+    return true;
+}
+
 //==============================================================================
 Hints parseHints (const juce::String& text)
 {
@@ -320,10 +362,10 @@ Hints parseHints (const juce::String& text)
     if (has ({ "agressif", "agressive", "aggressive", "punch", "punchy", "en avant", "upfront", "devant", "serre", "serree", "compresse", "compressee", "tight", "dense" })) { h.comp += 0.7f; note ("en avant"); }
     if (has ({ "naturel", "naturelle", "natural", "leger", "legere", "light", "dynamique", "ouvert", "ouverte" })) { h.comp -= 0.6f; note ("naturelle"); }
     // espace
-    if (has ({ "reverb", "reverbe", "reverberation", "espace", "spacieux", "spacieuse", "hall", "cathedrale", "cathedral", "atmospherique", "atmosphere", "ambiance", "ambient" })) { h.reverb = juce::jmax (h.reverb, 0.45f); h.reverbSize = juce::jmax (h.reverbSize, 0.6f); note ("réverbe"); }
-    if (has ({ "planant", "planante", "dreamy", "reve", "reveur", "onirique", "ethere", "etheree", "ethereal", "nuage", "cloud" })) { h.reverb = juce::jmax (h.reverb, 0.55f); h.reverbSize = 0.9f; h.delay = juce::jmax (h.delay, 0.3f); note ("planante"); }
+    if (has ({ "reverb", "reverbe", "reverberation", "espace", "spacieux", "spacieuse", "hall", "cathedrale", "cathedral", "atmospherique", "atmosphere", "ambiance", "ambient" })) { h.reverb = juce::jmax (h.reverb, 0.45f); h.reverbExplicit = true; h.reverbSize = juce::jmax (h.reverbSize, 0.6f); note ("réverbe"); }
+    if (has ({ "planant", "planante", "dreamy", "reve", "reveur", "onirique", "ethere", "etheree", "ethereal", "nuage", "cloud" })) { h.reverb = juce::jmax (h.reverb, 0.55f); h.reverbExplicit = true; h.reverbSize = 0.9f; h.delay = juce::jmax (h.delay, 0.3f); note ("planante"); }
     if (has ({ "shimmer", "celeste", "angelique", "angelic" })) { h.reverb = juce::jmax (h.reverb, 0.5f); h.reverbSize = 0.9f; h.dreamy = true; note ("shimmer"); }
-    if (has ({ "sec", "seche", "dry", "close", "intime", "intimate", "proche" })) { h.reverb = 0.0f; h.delay = 0.0f; note ("sèche"); }
+    if (has ({ "sec", "seche", "dry", "close", "intime", "intimate", "proche" })) { h.reverb = 0.0f; h.delay = 0.0f; h.reverbExplicit = true; note ("sèche"); }
     if (has ({ "delay", "echo", "echos", "ping pong" })) { h.delay = juce::jmax (h.delay, 0.5f); note ("delay"); }
     if (has ({ "longue", "long", "grande", "large reverb", "big" })) h.reverbSize = juce::jmax (h.reverbSize, 0.8f);
     if (has ({ "courte", "short", "petite", "room", "piece" })) h.reverbSize = 0.15f;
@@ -451,14 +493,14 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
             put (s, ids::peqFreq[bnd], kCentres[centre[i]]);
             put (s, ids::peqGain[bnd], std::round (g * 10.0f) / 10.0f);
             put (s, ids::peqQ[bnd], 1.1f);
-            if (on) moves.add (dbText (g) + u8 (" à ") + hzText (kCentres[centre[i]]));
+            if (on) moves.add (dbText (g) + " " + hzText (kCentres[centre[i]]));
         }
         const float shelf = juce::jlimit (-4.0f, 4.0f, avg (27, 28));
         put (s, ids::peqOn[7], std::abs (shelf) >= 0.7f ? 1.0f : 0.0f);
         put (s, ids::peqType[7], 2.0f); put (s, ids::peqFreq[7], 10000.0f); put (s, ids::peqGain[7], std::round (shelf * 10.0f) / 10.0f); put (s, ids::peqQ[7], 0.71f);
-        if (std::abs (shelf) >= 0.7f) moves.add (dbText (shelf) + u8 (" d'air au-dessus de 10 kHz"));
+        if (std::abs (shelf) >= 0.7f) moves.add ("air " + dbText (shelf));
         plan.modules.push_back (s);
-        rep.add ("EQ : coupe-bas " + hzText (cut) + (moves.isEmpty() ? juce::String() : ", " + moves.joinIntoString (", ")));
+        rep.add ("EQ : coupe-bas " + hzText (cut) + (moves.isEmpty() ? juce::String() : u8 (" · ") + moves.joinIntoString (u8 (" · "))));
     }
 
     // ---- 3. COMPRESSION : la dynamique de la prise ramenée vers celle de la cible (1176 pour les crêtes, LA-2A pour lisser)
@@ -561,10 +603,11 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
         float decay = h.reverbSize >= 0.0f ? 0.8f + 3.0f * h.reverbSize : 1.8f;
         if (tgt.valid && tgt.rt60 > 0.0f)
         {
-            decay = juce::jlimit (0.5f, 5.0f, tgt.rt60);
+            if (! h.reverbExplicit) decay = juce::jlimit (0.5f, 3.5f, tgt.rt60);   // au-delà, ce sont des restes d'instruments
             // la queue (mesurée au centre du mix, donc sous-estimée) : -45 dB → presque sèche, -20 dB → très présente
-            const float wet = juce::jlimit (0.0f, 1.0f, (tgt.wetDb + 6.0f + 45.0f) / 25.0f);
-            if (h.reverb < 0.0f) send = 0.05f + 0.45f * wet;
+            // la queue 120 ms après la fin des phrases, par rapport à la phrase : -25 dB → presque sèche, -5 dB → très présente
+            const float wet = juce::jlimit (0.0f, 1.0f, (tgt.wetDb + 25.0f) / 20.0f);
+            if (! h.reverbExplicit) send = 0.05f + 0.4f * wet;
         }
         if (send > 0.02f)
         {

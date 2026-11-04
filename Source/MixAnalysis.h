@@ -49,6 +49,12 @@ Profile analyse (const float* mono, int numSamples, double sampleRate);
 // la voix d'un morceau (stéréo : le centre du mix ; mono : tel quel) ; shouldStop est appelé de temps en temps
 std::vector<float> isolateVoice (const juce::AudioBuffer<float>& song, std::function<bool()> shouldStop = {});
 
+// la voix d'un morceau séparée par l'IA (demucs.cpp, dans le plugin, hors ligne) : un extrait de maxSeconds pris à 30 % du
+// morceau, rendu en mono à 44,1 kHz ; false si le modèle manque ou si shouldContinue rend false (progression 0..1)
+bool separateVoice (const juce::AudioBuffer<float>& song, double sampleRate, std::vector<float>& voice, double& voiceRate,
+                    std::function<bool (float)> shouldContinue, double maxSeconds = 40.0);
+juce::File modelFile();   // le modèle de séparation livré avec le plugin (invalide s'il manque)
+
 // lit un morceau (au plus maxSeconds), rend false si le format n'est pas lisible
 bool readSong (const juce::File&, juce::AudioBuffer<float>& out, double& sampleRate, double maxSeconds = 360.0);
 bool canRead (const juce::File&);
@@ -58,6 +64,7 @@ struct Hints
     float bright = 0.0f, air = 0.0f, warm = 0.0f, dark = 0.0f;   // 0 .. 1
     float comp = 0.0f;           // -1 (naturel) .. +1 (très en avant)
     float reverb = -1.0f;        // -1 : non dit ; 0 .. 1
+    bool reverbExplicit = false; // l'espace a été demandé en toutes lettres (sinon la référence décide)
     float reverbSize = -1.0f;    // -1 : non dit ; 0 (pièce) .. 1 (grand espace)
     bool dreamy = false;
     float delay = -1.0f;         // -1 : non dit ; 0 .. 1

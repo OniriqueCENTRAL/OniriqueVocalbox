@@ -116,11 +116,15 @@ void StartScreen::tick()
     {
         progress = processor.captureProgress();
         const int rs = refState.load (std::memory_order_acquire);
-        if (rs == 1) status = utf8 ("J'ÉCOUTE LA VOIX DE LA RÉFÉRENCE…");
-        else if (! processor.captureDone() && ! forceBuild)
+        // les deux écoutes en même temps : ta voix (10 s de lecture) et la voix de la référence (séparée par l'IA)
+        const bool takeDone = processor.captureDone() || forceBuild;
+        const juce::String ref = rs == 1 ? utf8 ("RÉFÉRENCE : J'ISOLE LA VOIX ") + juce::String (juce::roundToInt (refProgress.load() * 100.0f)) + " %" : juce::String();
+        if (! takeDone)
             status = (now - stageStart > 6.0 && progress < 0.02f)
                        ? utf8 ("PAS DE SON : LANCE LA LECTURE, OU RECLIQUE POUR CRÉER SANS ÉCOUTER")
                        : utf8 ("LANCE LA LECTURE : J'ÉCOUTE TA VOIX · ") + juce::String (juce::roundToInt (progress * 10.0f)) + " / 10 S";
+        else status = juce::String();
+        if (ref.isNotEmpty()) status = status.isEmpty() ? ref : status + utf8 ("  ·  ") + ref;
         if (rs != 1 && (processor.captureDone() || forceBuild)) finish();
     }
     else if (stage == Stage::report && now - stageStart > 6.0)
@@ -327,16 +331,31 @@ void StartScreen::submit()
     {
         // la référence : lue, sa voix isolée et analysée sur un autre thread (l'interface reste fluide)
         refState.store (1);
+        refProgress.store (0.0f);
+        refAi.store (false);
         worker = std::thread ([this, file = reference]
         {
             juce::AudioBuffer<float> song;
             double sr = 44100.0;
             if (! mix::readSong (file, song, sr)) { refState.store (3, std::memory_order_release); return; }
             if (cancel.load()) return;
-            const auto voice = mix::isolateVoice (song, [this] { return cancel.load(); });
+            // la voix séparée par l'IA (demucs, dans le plugin) ; sans le modèle, celle du centre du mix
+            std::vector<float> voice;
+            double vr = 0.0;
+            const bool ai = mix::separateVoice (song, sr, voice, vr, [this] (float p) { refProgress.store (p); return ! cancel.load(); });
             if (cancel.load()) return;
-            refProfile = mix::analyse (voice.data(), (int) voice.size(), sr);
-            refProfile.fromMix = song.getNumChannels() > 1;
+            if (ai)
+            {
+                refProfile = mix::analyse (voice.data(), (int) voice.size(), vr);
+                refAi.store (true);
+            }
+            else
+            {
+                voice = mix::isolateVoice (song, [this] { return cancel.load(); });
+                if (cancel.load()) return;
+                refProfile = mix::analyse (voice.data(), (int) voice.size(), sr);
+                refProfile.fromMix = song.getNumChannels() > 1;
+            }
             refState.store (refProfile.valid ? 2 : 3, std::memory_order_release);
         });
     }
@@ -361,7 +380,9 @@ void StartScreen::finish()
     plan = mix::buildPlan (src, tgt, hints);
     juce::StringArray head;
     head.add (src.valid ? utf8 ("Ta voix : 10 s écoutées") : utf8 ("Ta voix n'a pas été écoutée : réglages d'après la demande seule"));
-    if (refState.load() == 2) head.add (utf8 ("Référence : la voix prise au centre du mix de « ") + reference.getFileNameWithoutExtension() + utf8 (" »"));
+    if (refState.load() == 2)
+        head.add ((refAi.load() ? utf8 ("Référence : la voix séparée par l'IA (40 s de « ") : utf8 ("Référence : la voix prise au centre du mix de « "))
+                  + reference.getFileNameWithoutExtension() + utf8 (refAi.load() ? " »)" : " »"));
     else if (refState.load() == 3) head.add (utf8 ("Référence illisible : ") + reference.getFileName());
     if (! hints.understood.isEmpty()) head.add (utf8 ("Compris : ") + hints.understood.joinIntoString (", "));
     if (! hints.unknown.isEmpty() && refState.load() != 2)

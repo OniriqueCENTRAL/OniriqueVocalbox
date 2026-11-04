@@ -82,8 +82,38 @@ if(APPLE)
     target_compile_definitions(OniriqueVocalBox PUBLIC JUCE_COREGRAPHICS_RENDER_WITH_MULTIPLE_PAINT_CALLS=1)
 endif()
 
+# CRÉER LE MIX : séparation de la voix d'un morceau de référence (demucs.cpp + Eigen, MIT / MPL2), compilée à part
+file(GLOB ONIRIQUE_DEMUCS_SOURCES ThirdParty/demucs/*.cpp)
+add_library(onirique_demucs STATIC ${ONIRIQUE_DEMUCS_SOURCES} ThirdParty/separation/onirique_separate.cpp)
+target_include_directories(onirique_demucs PUBLIC ThirdParty/separation PRIVATE ThirdParty/demucs ThirdParty/eigen)
+set_target_properties(onirique_demucs PROPERTIES POSITION_INDEPENDENT_CODE ON CXX_STANDARD 17)
+if(MSVC)
+    target_compile_options(onirique_demucs PRIVATE /O2 /Oi /fp:fast /bigobj /EHsc /W0)
+else()
+    target_compile_options(onirique_demucs PRIVATE -O3 -ffast-math -w)
+endif()
+
+# le modèle (84 Mo, non versionné) : Resources/models/, copié dans le plugin (Contents/Resources)
+set(ONIRIQUE_DEMUCS_MODEL "${CMAKE_CURRENT_SOURCE_DIR}/Resources/models/ggml-model-htdemucs_ft_vocals-4s-f16.bin")
+if(EXISTS "${ONIRIQUE_DEMUCS_MODEL}")
+    foreach(fmt VST3 AU)
+        if(TARGET OniriqueVocalBox_${fmt})
+            add_custom_command(TARGET OniriqueVocalBox_${fmt} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:OniriqueVocalBox_${fmt}>/../Resources"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${ONIRIQUE_DEMUCS_MODEL}" "$<TARGET_FILE_DIR:OniriqueVocalBox_${fmt}>/../Resources/")
+        endif()
+    endforeach()
+    if(TARGET OniriqueVocalBox_Standalone)
+        add_custom_command(TARGET OniriqueVocalBox_Standalone POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${ONIRIQUE_DEMUCS_MODEL}" "$<TARGET_FILE_DIR:OniriqueVocalBox_Standalone>/")
+    endif()
+else()
+    message(WARNING "Modèle de séparation absent (${ONIRIQUE_DEMUCS_MODEL}) : CRÉER LE MIX prendra la voix au centre du mix")
+endif()
+
 target_link_libraries(OniriqueVocalBox
     PRIVATE
+        onirique_demucs
         juce::juce_audio_utils
         juce::juce_dsp
         OniriqueAssets
