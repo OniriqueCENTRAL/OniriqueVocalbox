@@ -1141,13 +1141,18 @@ public:
     {
         const auto b = getLocalBounds().toFloat();
         // la boîte : 10 de marge, rayon 16, fond #050405, liseré blanc .12, lueur braise de 30, ombre intérieure
-        const float s = std::min (b.getWidth() / 320.0f, b.getHeight() / 195.0f);
+        // une marge tout autour pour que la lueur tienne dans le composant (sinon elle est coupée net sur les bords)
+        const float pad = 22.0f * ui::unitOf (*this);
+        const float s = std::min ((b.getWidth() - 2.0f * pad) / 320.0f, (b.getHeight() - 2.0f * pad) / 195.0f);
         const auto frame = juce::Rectangle<float> (320.0f * s, 195.0f * s).withCentre (b.getCentre());
-        for (int k = 3; k >= 1; --k)
+        if (! glowCache.isValid() || glowCache.getWidth() != getWidth() || glowCache.getHeight() != getHeight())
         {
-            g.setColour (juce::Colour (229, 56, 74).withAlpha (0.06f / (float) k));
-            g.fillRoundedRectangle (frame.expanded (10.0f * s * (float) k), 16.0f * s + 10.0f * s * (float) k);
+            // la lueur floue ne change qu'avec la taille : calculée une fois, l'aiguille bouge par-dessus
+            glowCache = juce::Image (juce::Image::ARGB, std::max (1, getWidth()), std::max (1, getHeight()), true, juce::SoftwareImageType());
+            juce::Graphics cg (glowCache);
+            ui::softGlowRect (cg, frame, 16.0f * s, juce::Colour (229, 56, 74).withAlpha (0.32f), pad * 0.9f);
         }
+        g.drawImageAt (glowCache, 0, 0);
         g.setColour (juce::Colour (0xff050405));
         g.fillRoundedRectangle (frame, 16.0f * s);
         g.setColour (juce::Colours::white.withAlpha (0.12f));
@@ -1221,6 +1226,7 @@ private:
     }
     std::function<float()> read;
     float angle = 20.0f;
+    juce::Image glowCache;
 };
 
 // la compression en direct (bas des façades) : la voix qui entre (pâle), qui sort (blanche), et la réduction en braise
