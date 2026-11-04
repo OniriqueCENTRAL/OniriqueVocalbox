@@ -37,9 +37,9 @@ inline const Info& info (int type)
     static const Info table[numTypes] {
         { "GATE",     "NOISE GATE",       "Coupe le bruit entre les phrases",         0, host,        ids::gateOn },
         { "NOISE",    "NOISE SUPPRESSOR", "Souffle, ventilation, pièce",               0, host,        ids::nsOn },
-        { "PLOSIVES", "PLOSIVES",         "Les P et les B",                            0, oversampled, ids::plosOn },
-        { "RESO",     "RESONANCE",        "Résonances qui sifflent ou bourdonnent",    0, oversampled, ids::resoOn },
-        { "DE-ESS",   "DE-ESSER",         "Les S et les CH",                           0, oversampled, ids::deessOn },
+        { "PLOSIVES", "PLOSIVES",         "Les P et les B",                            0, host       , ids::plosOn },
+        { "RESO",     "RESONANCE",        "Résonances qui sifflent ou bourdonnent",    0, host       , ids::resoOn },
+        { "DE-ESS",   "DE-ESSER",         "Les S et les CH",                           0, host       , ids::deessOn },
         { "EQ",       "PARAMETRIC EQ",    "8 bandes, mode dynamique, écoute",          1, oversampled, ids::peqPower },
         { "ANALOG",   "EQ ANALOG",        "Couleur de console : LOW, MUD, HI, AIR",    1, oversampled, ids::eqOn },
         { "SAT",      "SATURATION LAB",   "Tube, analog, tape, transformer",      1, oversampled, ids::satOn },

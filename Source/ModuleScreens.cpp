@@ -124,12 +124,16 @@ class MiniSpectrum
 {
 public:
     void setRange (float a, float b, int points) { fa = a; fb = b; db.assign ((size_t) points, -120.0f); }
-    void update (SpectrumTap& tap, double rate)
+    bool update (SpectrumTap& tap, double rate)
     {
         float tmp[2048];
-        int got;
+        int got, total = 0;
         while ((got = tap.pull (tmp, 2048)) > 0)
+        {
+            total += got;
             for (int i = 0; i < got; ++i) { ring[(size_t) pos] = tmp[i]; pos = (pos + 1) % kN; }
+        }
+        if (total == 0 && settled) return false;
         for (int i = 0; i < kN; ++i)
         {
             const float w = 0.5f - 0.5f * std::cos (2.0f * kPi * (float) i / (float) kN);
@@ -151,12 +155,18 @@ public:
         }
         for (int pass = 0; pass < 2; ++pass)
             for (int k = 1; k + 1 < n; ++k) now[(size_t) k] = 0.25f * now[(size_t) k - 1] + 0.5f * now[(size_t) k] + 0.25f * now[(size_t) k + 1];
+        float moved = 0.0f;
         for (int k = 0; k < n; ++k)
         {
             auto& d = db[(size_t) k];
-            d += (now[(size_t) k] > d ? 0.45f : 0.10f) * (now[(size_t) k] - d);
+            const float step = (now[(size_t) k] > d ? 0.45f : 0.10f) * (now[(size_t) k] - d);
+            d += step;
+            moved = std::max (moved, std::abs (step));
         }
+        settled = total == 0 && moved < 0.01f;
+        return true;
     }
+    bool settled = false;
     float fa = 20.0f, fb = 20000.0f;
     std::vector<float> db;
 
@@ -183,11 +193,20 @@ public:
         const float u = ui::unitOf (*this);
         const auto r = getLocalBounds().toFloat();
         const float rad = 22.0f * u;
-        juce::ColourGradient bg (juce::Colour (0xff1d1013), r.getX() + r.getWidth() * 0.15f, r.getY(), juce::Colour (0xff070506),
-                                 r.getX() + r.getWidth() * 0.15f + r.getWidth() * 1.2f, r.getY(), true);
-        bg.addColour (0.55, juce::Colour (0xff0e0a0c));
-        g.setGradientFill (bg);
-        g.fillRoundedRectangle (r, rad);
+        // le fond (dégradé radial, coûteux) est calculé une fois par taille, puis recopié
+        const float sc = g.getInternalContext().getPhysicalPixelScaleFactor();
+        const int bw = juce::roundToInt (r.getWidth() * sc), bh = juce::roundToInt (r.getHeight() * sc);
+        if (! bgCache.isValid() || bgCache.getWidth() != bw || bgCache.getHeight() != bh)
+        {
+            bgCache = juce::Image (juce::Image::ARGB, std::max (1, bw), std::max (1, bh), true, juce::SoftwareImageType());
+            juce::Graphics cg (bgCache);
+            cg.addTransform (juce::AffineTransform::scale (sc));
+            juce::ColourGradient bg (juce::Colour (0xff1d1013), r.getWidth() * 0.15f, 0.0f, juce::Colour (0xff070506), r.getWidth() * 0.15f + r.getWidth() * 1.2f, 0.0f, true);
+            bg.addColour (0.55, juce::Colour (0xff0e0a0c));
+            cg.setGradientFill (bg);
+            cg.fillRoundedRectangle (r.withPosition (0.0f, 0.0f), rad);
+        }
+        g.drawImage (bgCache, r, juce::RectanglePlacement::stretchToFit);
         {
             juce::Graphics::ScopedSaveState s (g);
             juce::Path clip; clip.addRoundedRectangle (r, rad);
@@ -252,6 +271,18 @@ protected:
     float time() const { return (float) (juce::Time::getMillisecondCounterHiRes() * 0.001); }
     float waveEnd() const { return vw - 400.0f; }   // la forme d'onde à gauche, le spectre dans les 400 de droite
     float vw = 1400.0f;
+    juce::Image bgCache;
+    // ne redessiner que si l'oscilloscope du module a avancé (lecture arrêtée : plus aucun dessin)
+    bool scopeMoved (const ChainModule* m)
+    {
+        if (m == nullptr) return false;
+        const int w = m->scope.write.load (std::memory_order_relaxed);
+        if (w == lastWrite && ++idle > 2) return false;
+        if (w != lastWrite) idle = 0;
+        lastWrite = w;
+        return true;
+    }
+    int lastWrite = -1, idle = 0;
 };
 
 // le dégradé braise des parties retirées (#ff6b7a -> #7a0d1c, du haut vers le bas)
@@ -274,6 +305,14 @@ public:
     void tick() override
     {
         if (module == nullptr) return;
+        if (! scopeMoved (module) && ! moving)
+        {
+            // lecture arrêtée : on ne redessine que si un réglage a changé (seuil, fréquence…)
+            const auto before = stat;
+            updateText();
+            if (stat != before) repaint();
+            return;
+        }
         readScope (module->scope, in, out);
         if (++frame % 2 == 0 && module->tapIn != nullptr)
         {
@@ -285,13 +324,27 @@ public:
         repaint();
     }
 
-    void mouseDown (const juce::MouseEvent& e) override { mouseDrag (e); }
+    // le seuil se règle en glissant (bouton enfoncé, au-delà de 3 px), de l'écart parcouru : un simple clic ne change rien
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        moving = false;
+        startThr = get (ids::gateThr);
+        startY = toDemo (e.position).y;
+        side = startY < 170.0f ? -1.0f : 1.0f;
+    }
     void mouseDrag (const juce::MouseEvent& e) override
     {
         if (type != modules::gate) return;
-        const auto q = toDemo (e.position);
-        const float t = juce::jlimit (0.0f, 1.0f, std::abs (q.y - 170.0f) / 150.0f);
-        if (auto* prm = processor.param (ids::gateThr, k)) prm->setValueNotifyingHost (prm->convertTo0to1 (t * 70.0f - 70.0f));
+        auto* prm = processor.param (ids::gateThr, k);
+        if (prm == nullptr) return;
+        if (! moving) { if (e.getDistanceFromDragStart() < 3) return; moving = true; prm->beginChangeGesture(); }
+        const float dy = (toDemo (e.position).y - startY) * side;   // en s'éloignant du centre, le seuil monte
+        prm->setValueNotifyingHost (prm->convertTo0to1 (juce::jlimit (-70.0f, 0.0f, startThr + dy / 150.0f * 70.0f)));
+    }
+    void mouseUp (const juce::MouseEvent&) override
+    {
+        if (moving) if (auto* prm = processor.param (ids::gateThr, k)) prm->endChangeGesture();
+        moving = false;
     }
 
 private:
@@ -416,6 +469,8 @@ private:
     ChainModule* module;
     int type, k, frame = 0;
     float red = 0.0f;
+    bool moving = false;
+    float startThr = 0.0f, startY = 0.0f, side = 1.0f;
     std::vector<float> in, out;
     MiniSpectrum specIn, specOut;
 };
@@ -436,20 +491,28 @@ public:
     }
     void tick() override
     {
+        float change = 0.0f;
         if (module != nullptr)
         {
             const auto& m = module->getMeter();
             for (int b = 0; b < ResonanceSuppressor::kBands; ++b)
             {
-                spec[(size_t) b] += 0.3f * (m.spectrumDb[(size_t) b].load() - spec[(size_t) b]);
+                const float ds = 0.3f * (m.spectrumDb[(size_t) b].load() - spec[(size_t) b]);
+                spec[(size_t) b] += ds;
                 const float rd = m.reductionDb[(size_t) b].load();
-                red[(size_t) b] += (rd > red[(size_t) b] ? 0.5f : 0.1f) * (rd - red[(size_t) b]);
+                const float dr = (rd > red[(size_t) b] ? 0.5f : 0.1f) * (rd - red[(size_t) b]);
+                red[(size_t) b] += dr;
+                change = std::max (change, std::max (std::abs (ds), std::abs (dr)));
             }
         }
         const juce::String dot = juce::String::fromUTF8 (" · ");
         stat = "AMOUNT " + juce::String (juce::roundToInt (get (ids::resoAmt))) + " %" + dot + "LOW " + juce::String (juce::roundToInt (get (ids::resoLow)))
              + " %" + dot + "MID " + juce::String (juce::roundToInt (get (ids::resoMid))) + " %" + dot + "HIGH " + juce::String (juce::roundToInt (get (ids::resoHigh))) + " %";
-        repaint();
+        // rien ne bouge (lecture arrêtée, réglages fixes) : pas de dessin
+        juce::String sig = stat;
+        for (auto* id : { ids::resoLowFreq, ids::resoMidFreq, ids::resoHighFreq, ids::resoLowWidth, ids::resoMidWidth, ids::resoHighWidth }) sig << "|" << get (id);
+        if (change > 0.02f || sig != lastSig || drag >= 0) repaint();
+        lastSig = sig;
     }
     void mouseDown (const juce::MouseEvent& e) override
     {
@@ -457,11 +520,13 @@ public:
         drag = -1;
         float best = 40.0f;
         for (int b = 0; b < 3; ++b) { const float d = handle (b).getDistanceFrom (q); if (d < best) { best = d; drag = b; } }
+        if (drag >= 0) grab = handle (drag) - q;   // la poignée garde son écart avec la souris : elle ne saute pas
     }
     void mouseDrag (const juce::MouseEvent& e) override
     {
         if (drag < 0) return;
-        const auto q = toDemo (e.position);
+        if (e.getDistanceFromDragStart() < 3) return;
+        const auto q = toDemo (e.position) + grab;
         const char* fid[] { ids::resoLowFreq, ids::resoMidFreq, ids::resoHighFreq };
         const char* sid[] { ids::resoLow, ids::resoMid, ids::resoHigh };
         if (auto* p = processor.param (fid[drag], k)) p->setValueNotifyingHost (p->convertTo0to1 (fOf (q.x)));
@@ -537,6 +602,8 @@ private:
     chainmods::Reso* module;
     int k, drag = -1;
     std::array<float, ResonanceSuppressor::kBands> spec {}, red {};
+    juce::Point<float> grab;
+    juce::String lastSig;
 };
 
 //==============================================================================
@@ -556,46 +623,70 @@ public:
 
     void tick() override
     {
+        float change = 0.0f;
         if (module != nullptr)
             for (int b = 0; b < 4; ++b)
             {
                 const float l = module->getMeter().levelDb[(size_t) b].load(), r = std::abs (module->getMeter().grDb[(size_t) b].load());
-                lv[b] += 0.3f * (l - lv[b]);
-                gr[b] += (r > gr[b] ? 0.5f : 0.12f) * (r - gr[b]);
+                const float dl = 0.3f * (l - lv[b]), dg = (r > gr[b] ? 0.5f : 0.12f) * (r - gr[b]);
+                lv[b] += dl; gr[b] += dg;
+                change = std::max (change, std::max (std::abs (dl), std::abs (dg)));
             }
-        if (++frame % 2 == 0) spec.update (processor.outputTap, processor.getSampleRate() > 0.0 ? processor.getSampleRate() : 48000.0);
+        if (++frame % 2 == 0 && spec.update (processor.outputTap, processor.getSampleRate() > 0.0 ? processor.getSampleRate() : 48000.0)) change = 1.0f;
         stat = hz (get (ids::mbX[0])) + " / " + hz (get (ids::mbX[1])) + " / " + hz (get (ids::mbX[2]));
-        repaint();
+        juce::String sig = stat;
+        for (int b = 0; b < 4; ++b) sig << "|" << get (ids::mbThr[b]) << get (ids::mbSolo[b]);
+        sig << band;
+        if (change > 0.02f || sig != lastSig || dragX >= 0 || dragB >= 0) repaint();
+        lastSig = sig;
     }
+    // un clic choisit la bande sans rien changer ; on règle en gardant le bouton enfoncé et en glissant (au-delà de 3 px),
+    // et la valeur bouge de l'écart parcouru depuis sa position de départ : rien ne saute au clic
     void mouseDown (const juce::MouseEvent& e) override
     {
         const auto q = toDemo (e.position);
-        dragX = -1; dragB = -1;
+        dragX = -1; dragB = -1; moving = false;
         const auto xs = edges();
         for (int i = 0; i < 3; ++i) if (std::abs (q.x - xs[(size_t) i + 1]) < 14.0f) dragX = i;
         if (dragX < 0)
             for (int b = 0; b < 4; ++b)
-                if (q.x >= xs[(size_t) b] && q.x < xs[(size_t) b + 1]) { dragB = b; band = b; if (onBand) onBand (b); }
-        mouseDrag (e);
+                if (q.x >= xs[(size_t) b] && q.x < xs[(size_t) b + 1]) { dragB = b; if (b != band) { band = b; if (onBand) onBand (b); } }
+        startX = dragX >= 0 ? xs[(size_t) dragX + 1] : 0.0f;
+        startThr = dragB >= 0 ? get (ids::mbThr[dragB]) : 0.0f;
+        startQ = q;
     }
     void mouseDrag (const juce::MouseEvent& e) override
     {
+        if (dragX < 0 && dragB < 0) return;
         const auto q = toDemo (e.position);
+        juce::RangedAudioParameter* p = dragX >= 0 ? processor.param (ids::mbX[dragX], k) : processor.param (ids::mbThr[dragB], k);
+        if (p == nullptr) return;
+        if (! moving)
+        {
+            if (e.getDistanceFromDragStart() < 3) return;
+            moving = true;
+            p->beginChangeGesture();
+        }
         if (dragX >= 0)
         {
-            if (auto* p = processor.param (ids::mbX[dragX], k))
-            {
-                float f = fOf (q.x);
-                if (dragX > 0) f = std::max (f, get (ids::mbX[dragX - 1]) * 1.3f);
-                if (dragX < 2) f = std::min (f, get (ids::mbX[dragX + 1]) / 1.3f);
-                p->setValueNotifyingHost (p->convertTo0to1 (f));
-            }
+            float f = fOf (startX + (q.x - startQ.x));
+            if (dragX > 0) f = std::max (f, get (ids::mbX[dragX - 1]) * 1.3f);
+            if (dragX < 2) f = std::min (f, get (ids::mbX[dragX + 1]) / 1.3f);
+            p->setValueNotifyingHost (p->convertTo0to1 (f));
         }
-        else if (dragB >= 0)
-            if (auto* p = processor.param (ids::mbThr[dragB], k))
-                p->setValueNotifyingHost (p->convertTo0to1 (juce::jlimit (-60.0f, 0.0f, -(q.y - 60.0f) / 270.0f * 60.0f)));
+        else
+        {
+            const float fine = e.mods.isShiftDown() ? 0.25f : 1.0f;
+            p->setValueNotifyingHost (p->convertTo0to1 (juce::jlimit (-60.0f, 0.0f, startThr - (q.y - startQ.y) / 270.0f * 60.0f * fine)));
+        }
     }
-    void mouseUp (const juce::MouseEvent&) override { dragX = dragB = -1; }
+    void mouseUp (const juce::MouseEvent&) override
+    {
+        if (moving)
+            if (auto* p = dragX >= 0 ? processor.param (ids::mbX[dragX], k) : processor.param (ids::mbThr[dragB], k)) p->endChangeGesture();
+        dragX = dragB = -1;
+        moving = false;
+    }
     void mouseMove (const juce::MouseEvent& e) override
     {
         const auto q = toDemo (e.position);
@@ -676,6 +767,10 @@ private:
     OniriqueVocalBoxAudioProcessor& processor;
     chainmods::Multi* module;
     int k, dragX = -1, dragB = -1, frame = 0;
+    bool moving = false;
+    float startX = 0.0f, startThr = 0.0f;
+    juce::String lastSig;
+    juce::Point<float> startQ;
     float lv[4] { -60.0f, -60.0f, -60.0f, -60.0f }, gr[4] {};
     MiniSpectrum spec;
 };
@@ -903,7 +998,7 @@ public:
         stat = "PRE-DELAY " + juce::String (juce::roundToInt (get (ids::reverbPreDelay))) + " ms" + dot + "DECAY " + juce::String (get (ids::reverbDecay), 1) + " s" + dot + "CLEAN "
              + juce::String (juce::roundToInt (get (ids::reverbClean))) + " %" + dot + hz (get (ids::reverbLowCut)) + utf8 (" → ") + hz (get (ids::reverbHighCut));
         if (module != nullptr) readScope (module->scope, in, out);
-        repaint();
+        if (scopeMoved (module) || juce::roundToInt (get (ids::reverbMode)) == 4 || get (ids::reverbModDepth) > 0.5f) repaint();
     }
 
 private:
@@ -974,7 +1069,7 @@ public:
     {
         if (module != nullptr) readScope (module->scope, in, out);
         stat = "AMOUNT " + juce::String (juce::roundToInt (get (ids::doublerAmount))) + " %";
-        repaint();
+        if (scopeMoved (module)) repaint();
     }
 
 private:
@@ -1134,7 +1229,14 @@ class CompStrip : public juce::Component, public Animated
 {
 public:
     explicit CompStrip (ChainModule* m) : module (m) { setInterceptsMouseClicks (false, false); }
-    void tick() override { if (module != nullptr) repaint(); }
+    void tick() override
+    {
+        if (module == nullptr) return;
+        const int w = module->scope.write.load (std::memory_order_relaxed);
+        if (w == lastWrite) return;   // lecture arrêtée : rien à redessiner
+        lastWrite = w;
+        repaint();
+    }
     void paint (juce::Graphics& g) override
     {
         const float u = ui::unitOf (*this);
@@ -1185,6 +1287,7 @@ public:
 private:
     ChainModule* module = nullptr;
     float mx = 0.0f;
+    int lastWrite = -1;
 };
 
 //==============================================================================
