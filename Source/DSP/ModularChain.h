@@ -14,7 +14,8 @@ namespace onirique
 struct ModuleScope
 {
     static constexpr int kCols = 256;
-    std::atomic<float> in[kCols] {}, out[kCols] {};
+    std::atomic<float> in[kCols] {}, out[kCols] {}, gr[kCols] {};   // gr : la plus forte réduction (dB) de la colonne
+    void noteReduction (float db) noexcept { grMax = std::max (grMax, std::abs (db)); }
     std::atomic<int> write { 0 };
 
     void prepare (double fs) noexcept { colLen = std::max (1, juce::roundToInt (0.025 * fs)); count = 0; pkIn = pkOut = 0.0f; }
@@ -32,6 +33,8 @@ struct ModuleScope
                 const int w = write.load (std::memory_order_relaxed);
                 in[w].store (pkIn, std::memory_order_relaxed);
                 out[w].store (pkOut, std::memory_order_relaxed);
+                gr[w].store (grMax, std::memory_order_relaxed);
+                grMax = 0.0f;
                 write.store ((w + 1) % kCols, std::memory_order_release);
                 count = 0; pkIn = pkOut = 0.0f;
             }
@@ -40,7 +43,7 @@ struct ModuleScope
 
 private:
     int colLen = 1200, count = 0;
-    float pkIn = 0.0f, pkOut = 0.0f;
+    float pkIn = 0.0f, pkOut = 0.0f, grMax = 0.0f;
 };
 
 //==============================================================================
@@ -78,6 +81,7 @@ public:
     void process (float* const* ch, int numCh, int n) noexcept
     {
         sw.process (ch, numCh, n, [this] (float* const* s, int nc, int q) { processEngine (s, nc, q); }, [this] { resetEngine(); });
+        scope.noteReduction (getReductionDb());
         const float* dry[2] { sw.getDry (0), sw.getDry (numCh > 1 ? 1 : 0) };
         scope.push (dry, ch, numCh, n);
         if (tapIn != nullptr) { tapIn->push (dry[0], numCh > 1 ? dry[1] : nullptr, n); tapOut->push (ch[0], numCh > 1 ? ch[1] : nullptr, n); }
@@ -229,19 +233,60 @@ private:
     std::atomic<float> *amt = nullptr, *sens[3] {}, *fr[3] {}, *wd[3] {}, *listen = nullptr;
 };
 
+/*  DE-ESSER : on coche ce qu'on veut traiter. S (à la fréquence réglée, 5.5 kHz d'origine), T (attaques vers 4.2 kHz), CH (vers
+    3.2 kHz), F (le souffle aigu vers 9 kHz) : un détecteur par son, en série, tous à la même dose (AMOUNT). CLARITY rend un peu
+    d'air et de présence après coup (étagère douce dès 3 kHz), mais se retire tant qu'un son est en train d'être traité : la
+    clarté revient sans faire revenir les S. Par défaut : S seul, sans CLARITY (le son d'origine). */
 class DeEss final : public ChainModule
 {
 public:
-    DeEss (juce::AudioProcessorValueTreeState& s, int k) : ChainModule (s, modules::deess, k) { freq = raw (ids::deessFreq); amt = raw (ids::deessAmt); }
-    int getLatencySamples() const noexcept override { return engine.getLatencySamples(); }
-    float getReductionDb() const noexcept override { return engine.getReductionDb(); }
+    DeEss (juce::AudioProcessorValueTreeState& s, int k) : ChainModule (s, modules::deess, k)
+    {
+        freq = raw (ids::deessFreq); amt = raw (ids::deessAmt); clarity = raw (ids::deessClarity);
+        target[0] = raw (ids::deessS); target[1] = raw (ids::deessT); target[2] = raw (ids::deessCH); target[3] = raw (ids::deessF);
+    }
+    int getLatencySamples() const noexcept override { int l = 0; for (auto& e : engines) l += e.getLatencySamples(); return l; }
+    float getReductionDb() const noexcept override { float r = 0.0f; for (auto& e : engines) r = std::max (r, std::abs (e.getReductionDb())); return r; }
 
 private:
-    void prepareEngine (double rate, int factor, int) override { engine.prepare (rate, false, factor); }
-    void updateEngine (bool, bool snap) noexcept override { engine.setParams (f (freq), f (amt) * 0.01f, snap); }
-    void processEngine (float* const* ch, int numCh, int n) noexcept override { engine.process (ch, numCh, n); }
-    DeEsser engine;
-    std::atomic<float> *freq = nullptr, *amt = nullptr;
+    void prepareEngine (double rate, int factor, int) override
+    {
+        for (auto& e : engines) e.prepare (rate, false, factor);
+        clar.reset (rate, 0.05);
+        lastGain = 1.0e9f;
+    }
+    void updateEngine (bool, bool snap) noexcept override
+    {
+        const float a = f (amt) * 0.01f;
+        const float freqs[4] { f (freq), 4200.0f, 3200.0f, 9000.0f };
+        for (int j = 0; j < 4; ++j) engines[j].setParams (freqs[j], b (target[j]) ? a : 0.0f, snap);
+        const float c = f (clarity) * 0.01f;
+        if (snap) clar.setCurrentAndTargetValue (c); else clar.setTargetValue (c);
+    }
+    void processEngine (float* const* ch, int numCh, int n) noexcept override
+    {
+        for (auto& e : engines) e.process (ch, numCh, n);
+        const float c = clar.getNextValue();
+        clar.skip (std::max (0, n - 1));
+        if (c <= 0.0005f && lastGain == 0.0f) return;
+        // l'étagère suit la réduction : à 6 dB de réduction ou plus, elle s'efface
+        const float duck = 1.0f - juce::jlimit (0.0f, 1.0f, getReductionDb() / 6.0f);
+        duckS += 0.2f * (duck - duckS);
+        const float gainDb = 4.0f * c * duckS;
+        if (std::abs (gainDb - lastGain) > 0.02f)
+        {
+            lastGain = gainDb < 0.01f ? 0.0f : gainDb;
+            shelf.setCoeffs (BiquadCoeffs::highShelf (fs, std::min (3000.0, 0.45 * fs), 0.6, lastGain));
+        }
+        if (lastGain == 0.0f) return;
+        for (int cc = 0; cc < numCh; ++cc) for (int s = 0; s < n; ++s) ch[cc][s] = shelf.process (ch[cc][s], cc);
+    }
+    void resetEngine() noexcept override { shelf.reset(); duckS = 1.0f; }
+    DeEsser engines[4];
+    Biquad shelf;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> clar;
+    float lastGain = 0.0f, duckS = 1.0f;
+    std::atomic<float> *freq = nullptr, *amt = nullptr, *clarity = nullptr, *target[4] {};
 };
 
 //------------------------------------------------------------------------------ TON

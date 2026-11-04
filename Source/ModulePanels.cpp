@@ -115,11 +115,7 @@ void StarKnob::paint (juce::Graphics& g)
 
     // survol du potard : lueur braise de 14 autour (drop-shadow de la démo)
     if (glow > 0.01f)
-        for (int q = 3; q >= 1; --q)
-        {
-            g.setColour (juce::Colour (229, 56, 74).withAlpha (0.10f * glow / (float) q * alpha));
-            g.fillEllipse (k.expanded (4.5f * u * (float) q).reduced (d * 0.06f));
-        }
+        ui::softGlowEllipse (g, k.reduced (d * 0.1f), juce::Colour (229, 56, 74).withAlpha (0.45f * glow * alpha), 11.0f * u);   // reste dans le potard : pas de bord coupé
 
     // l'arc : piste de rayon 44 (blanc rosé .12), valeur en braise avec sa lueur de 4
     const float R = d * 0.44f, w = std::max (1.0f, d * 0.03f);
@@ -173,7 +169,8 @@ void StarKnob::paint (juce::Graphics& g)
         {
             const auto f = ui::css (ui::Face::mono, 13.0f * uu, 0.12f);
             const float tw = ui::textWidth (f, text) + 28.0f * uu;
-            const auto pill = juce::Rectangle<float> (tw, 30.0f * uu).withCentre ({ c.x, k.getBottom() + (14.0f + 15.0f) * uu });
+            const auto pill = juce::Rectangle<float> (std::min (tw, (float) getWidth() - 4.0f * uu), 30.0f * uu)
+                                  .withCentre ({ c.x, std::min (k.getBottom() + (14.0f + 15.0f) * uu, (float) getHeight() - (2.0f + 15.0f) * uu) });   // toujours en entier dans la cellule
             g.setColour (juce::Colours::black.withAlpha (0.45f));
             g.fillRoundedRectangle (pill, 10.0f * uu);
             g.setColour (juce::Colours::white.withAlpha (0.08f));
@@ -320,7 +317,7 @@ void GlassTabs::paint (juce::Graphics& g)
 {
     const auto r = getLocalBounds().toFloat();
     const float u = ui::unitOf (*this);
-    ui::drawDemoGlass (g, r, 14.0f * u, u, false);
+    ui::drawDemoGlass (g, r, round ? r.getHeight() * 0.5f : 14.0f * u, u, false);
     const int n = labels.size();
     if (n == 0) return;
     // la pastille braise glisse d'un onglet à l'autre
@@ -330,7 +327,16 @@ void GlassTabs::paint (juce::Graphics& g)
     const juce::Rectangle<float> pill (a.getX() + (b.getX() - a.getX()) * t, a.getY(), a.getWidth() + (b.getWidth() - a.getWidth()) * t, a.getHeight());
     for (int i = 0; i < n; ++i)
         if (hot[std::min (i, 15)] > 0.01f && i != selected) ui::drawSeg (g, segment (i), 0.0f, hot[std::min (i, 15)], u);
-    ui::drawSeg (g, pill, 1.0f, 0.0f, u);
+    if (round)
+    {
+        // la pastille en gélule, sa lueur gardée dans la section (pas de bord coupé)
+        const float pr = pill.getHeight() * 0.5f;
+        g.setGradientFill (juce::ColourGradient (juce::Colour (229, 56, 74).withAlpha (0.6f), 0.0f, pill.getY(), juce::Colour (110, 10, 24).withAlpha (0.6f), 0.0f, pill.getBottom(), false));
+        g.fillRoundedRectangle (pill, pr);
+        g.setColour (juce::Colour (255, 120, 135).withAlpha (0.5f));
+        g.drawRoundedRectangle (pill.reduced (0.5f), pr, 1.0f);
+    }
+    else ui::drawSeg (g, pill, 1.0f, 0.0f, u);
     g.setFont (ui::css (ui::Face::mono, 11.0f * u, 0.14f));
     for (int i = 0; i < n; ++i)
     {
@@ -486,6 +492,22 @@ void ui::drawDemoGlass (juce::Graphics& g, juce::Rectangle<float> r, float corne
 }
 
 // le .seg de la démo : rayon 10 ; allumé : dégradé braise (.6), liseré rose (.5) et lueur de 18 ; survol : blanc .05
+void ui::softGlow (juce::Graphics& g, const juce::Path& p, juce::Colour c, float radius, float dy)
+{
+    if (c.getAlpha() == 0 || radius < 0.5f) return;
+    juce::DropShadow (c, std::max (1, juce::roundToInt (radius)), { 0, juce::roundToInt (dy) }).drawForPath (g, p);
+}
+void ui::softGlowRect (juce::Graphics& g, juce::Rectangle<float> r, float corner, juce::Colour c, float radius, float dy)
+{
+    juce::Path p; p.addRoundedRectangle (r, corner);
+    softGlow (g, p, c, radius, dy);
+}
+void ui::softGlowEllipse (juce::Graphics& g, juce::Rectangle<float> r, juce::Colour c, float radius, float dy)
+{
+    juce::Path p; p.addEllipse (r);
+    softGlow (g, p, c, radius, dy);
+}
+
 void ui::drawSeg (juce::Graphics& g, juce::Rectangle<float> r, float lit, float hover, float u)
 {
     const float rad = 10.0f * u;
@@ -495,11 +517,7 @@ void ui::drawSeg (juce::Graphics& g, juce::Rectangle<float> r, float lit, float 
         g.fillRoundedRectangle (r, rad);
     }
     if (lit <= 0.01f) return;
-    for (int q = 3; q >= 1; --q)
-    {
-        g.setColour (juce::Colour (229, 56, 74).withAlpha (0.10f * lit / (float) q));
-        g.fillRoundedRectangle (r.expanded (3.0f * u * (float) q), rad + 3.0f * u * (float) q);
-    }
+    ui::softGlowRect (g, r, rad, juce::Colour (229, 56, 74).withAlpha (0.55f * lit), 18.0f * u);
     g.setGradientFill (juce::ColourGradient (juce::Colour (229, 56, 74).withAlpha (0.6f * lit), 0.0f, r.getY(),
                                              juce::Colour (110, 10, 24).withAlpha (0.6f * lit), 0.0f, r.getBottom(), false));
     g.fillRoundedRectangle (r, rad);

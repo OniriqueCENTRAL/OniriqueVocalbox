@@ -439,7 +439,7 @@ public:
     void mouseUp (const juce::MouseEvent&) override;
 
 private:
-    enum Zone { none = -1, power, listen, close, slopeUp, slopeDown, typeMenu };
+    enum Zone { none = -1, power, listen, close, slopeUp, slopeDown, typeMenu, dragFreq, dragGain, dragQ };
     Zone zoneAt (juce::Point<float>) const noexcept;
     float get (const juce::String& id) const { return apvts.getRawParameterValue (id)->load(); }
     void set (const juce::String& id, float v);
@@ -450,6 +450,10 @@ private:
     bool pointsDown = true, listening = false, listenWas = false;
     bool sweeping = false;
     float sweepStartX = 0.0f;
+    // glisser vers le haut / le bas sur la fréquence, le gain ou le Q : la valeur suit (Maj = fin)
+    Zone dragging = none;
+    float dragFrom = 0.0f;
+    juce::Rectangle<float> zGain, zQ;
     juce::String shownText;
     juce::Rectangle<float> box, zPower, zListen, zClose, zUp, zDown, zType, zFreq, zValue, zSlope;
     juce::String valueText() const;

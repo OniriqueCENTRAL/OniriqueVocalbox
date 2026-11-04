@@ -85,8 +85,8 @@ void drawLitButton (juce::Graphics& g, juce::Rectangle<float> r, float lit, floa
     const float rad = 12.0f * u;
     if (lit > 0.01f)
     {
-        g.setColour (ui::ember.withAlpha (0.18f * lit));
-        g.fillRoundedRectangle (r.translated (0.0f, 6.0f * u).expanded (6.0f * u), rad + 6.0f * u);
+        juce::Path shape; shape.addRoundedRectangle (r, rad);
+        juce::DropShadow (ui::ember.withAlpha (0.45f * lit), juce::roundToInt (16.0f * u), { 0, juce::roundToInt (3.0f * u) }).drawForPath (g, shape);
         g.setGradientFill (juce::ColourGradient (juce::Colour (229, 56, 74).withAlpha (0.55f * lit), 0.0f, r.getY(),
                                                  juce::Colour (120, 12, 28).withAlpha (0.55f * lit), 0.0f, r.getBottom(), false));
         g.fillRoundedRectangle (r, rad);
@@ -264,12 +264,7 @@ void ChainStrip::paint (juce::Graphics& g)
 
         // sélection : lueur braise de 36 autour, ombre portée
         if (t.sel > 0.01f)
-            for (int k = 3; k >= 1; --k)
-            {
-                const float e = 12.0f * u * (float) k;
-                g.setColour (juce::Colour (229, 56, 74).withAlpha (0.13f * t.sel / (float) k));
-                g.fillRoundedRectangle (r.expanded (e * 0.5f), rad + e * 0.5f);
-            }
+            ui::softGlowRect (g, r, rad, juce::Colour (229, 56, 74).withAlpha (0.55f * t.sel), 36.0f * u);
         juce::Graphics::ScopedSaveState state (g);
         g.beginTransparencyLayer (alpha);
         g.setColour (juce::Colour (0xff100b0d));
@@ -306,11 +301,7 @@ void ChainStrip::paint (juce::Graphics& g)
         // témoin 9 x 9 (braise et sa lueur de 10 quand le module tourne)
         const auto led = juce::Rectangle<float> (9.0f * u, 9.0f * u).withPosition (r.getX() + pad, r.getY() + pad + 6.5f * u);
         if (t.on > 0.01f)
-            for (int k = 3; k >= 1; --k)
-            {
-                g.setColour (juce::Colour (229, 56, 74).withAlpha (0.22f * t.on / (float) k));
-                g.fillEllipse (led.expanded (2.5f * u * (float) k));
-            }
+            ui::softGlowEllipse (g, led, juce::Colour (229, 56, 74).withAlpha (0.8f * t.on), 10.0f * u);
         g.setColour (ui::ember.interpolatedWith (juce::Colour (0xff4a3a3e), 1.0f - t.on));
         g.fillEllipse (led);
 
@@ -364,12 +355,7 @@ void ChainStrip::paint (juce::Graphics& g)
     const auto pr0 = plusRect();
     const auto pr = pr0.withSizeKeepingCentre (pr0.getWidth() * (1.0f + 0.06f * plusGlow), pr0.getHeight() * (1.0f + 0.06f * plusGlow));
     if (plusGlow > 0.01f)
-        for (int k = 3; k >= 1; --k)
-        {
-            const float e = 13.0f * u * (float) k;
-            g.setColour (juce::Colour (229, 56, 74).withAlpha (0.14f * plusGlow / (float) k));
-            g.fillRoundedRectangle (pr.expanded (e * 0.5f), 20.0f * u + e * 0.5f);
-        }
+        ui::softGlowRect (g, pr, 20.0f * u, juce::Colour (229, 56, 74).withAlpha (0.55f * plusGlow), 36.0f * u);
     g.setColour (juce::Colour (0xff100b0d));
     g.fillRoundedRectangle (pr, 20.0f * u);
     ui::drawDemoGlass (g, pr, 20.0f * u, u, true);
@@ -616,11 +602,7 @@ void ModulePicker::paint (juce::Graphics& g)
         // pastille de 44 : dégradé braise, liseré rose, lueur ; elle grossit au survol
         auto ic = juce::Rectangle<float> (44.0f * u, 44.0f * u).withPosition (r.getX() + 16.0f * u, r.getCentreY() - 22.0f * u);
         ic = ic.withSizeKeepingCentre (ic.getWidth() * (1.0f + 0.06f * hg), ic.getHeight() * (1.0f + 0.06f * hg));
-        for (int k = 3; k >= 1; --k)
-        {
-            g.setColour (juce::Colour (229, 56, 74).withAlpha ((0.08f + 0.12f * hg) / (float) k));
-            g.fillRoundedRectangle (ic.expanded (3.0f * u * (float) k), 14.0f * u + 3.0f * u * (float) k);
-        }
+        ui::softGlowRect (g, ic, 14.0f * u, juce::Colour (229, 56, 74).withAlpha (0.3f + 0.35f * hg), 16.0f * u);
         juce::ColourGradient grd (juce::Colour (229, 56, 74).withAlpha (0.45f), ic.getX() + ic.getWidth() * 0.3f, ic.getY() + ic.getHeight() * 0.2f,
                                   juce::Colour (90, 8, 20).withAlpha (0.35f), ic.getRight() + ic.getWidth() * 0.2f, ic.getBottom() + ic.getHeight() * 0.2f, true);
         g.setColour (juce::Colour (0xff1a0d10));
@@ -765,11 +747,7 @@ void AutoGainSwitch::paint (juce::Graphics& g)
     g.drawRoundedRectangle (sw.reduced (0.5f), 15.0f * u, 1.0f);
     const auto dot = juce::Rectangle<float> (22.0f * u, 22.0f * u).withPosition (sw.getX() + (4.0f + 28.0f * lit) * u, sw.getY() + 4.0f * u);
     if (lit > 0.01f)
-        for (int k = 3; k >= 1; --k)
-        {
-            g.setColour (juce::Colour (255, 140, 150).withAlpha (0.25f * lit / (float) k));
-            g.fillEllipse (dot.expanded (3.0f * u * (float) k));
-        }
+        ui::softGlowEllipse (g, dot, juce::Colour (255, 140, 150).withAlpha (0.8f * lit), 12.0f * u);
     g.setColour (juce::Colour (0xffd9c6c9).interpolatedWith (juce::Colours::white, lit));
     g.fillEllipse (dot);
 }
@@ -795,6 +773,7 @@ VocalBoxView::VocalBoxView (OniriqueVocalBoxAudioProcessor& p)
     addAndMakeVisible (outStrip);
     addAndMakeVisible (autoGain);
     addAndMakeVisible (oversampling);
+    oversampling.round = true;
     addChildComponent (picker);
 
     strip.onSelect = [this] (int code) { select (code); };
@@ -883,7 +862,7 @@ void VocalBoxView::resized()
     // la chaîne : rangée de 108 sous son libellé (18 + 14 + 10)
     // (la rangée déborde de 20 en haut et en bas : les lueurs et les carrés soulevés ne sont pas coupés)
     strip.setBounds (juce::Rectangle<float> (0.0f, 22.0f * u, (float) getWidth(), 148.0f * u).toNearestInt());
-    oversampling.setBounds (juce::Rectangle<float> (0.0f, 12.0f * u, 210.0f * u, 26.0f * u).withRightX ((float) getWidth() - 24.0f * u - 110.0f * u).toNearestInt());
+    oversampling.setBounds (juce::Rectangle<float> (0.0f, 6.0f * u, 236.0f * u, 36.0f * u).withRightX ((float) getWidth() - 24.0f * u - 110.0f * u).toNearestInt());
     const auto a = panelArea();
     if (panel != nullptr)
         panel->setBounds (juce::Rectangle<float> (a.getX() + 26.0f * u, a.getY() + (22.0f + 36.0f + 16.0f) * u, a.getWidth() - 52.0f * u,
@@ -989,11 +968,7 @@ void VocalBoxView::paint (juce::Graphics& g)
     const auto name = juce::String (inf.name) + (same > 1 ? " " + juce::String (nth) : juce::String());
     const float cy = a.getY() + (22.0f + 18.0f) * u;
     const auto dot = juce::Rectangle<float> (10.0f * u, 10.0f * u).withCentre ({ a.getX() + 26.0f * u + 5.0f * u, cy });
-    for (int k = 3; k >= 1; --k)
-    {
-        g.setColour (juce::Colour (229, 56, 74).withAlpha (0.28f * powerLit / (float) k));
-        g.fillEllipse (dot.expanded (3.5f * u * (float) k));
-    }
+    ui::softGlowEllipse (g, dot, juce::Colour (229, 56, 74).withAlpha (0.9f * powerLit), 12.0f * u);
     g.setColour (ui::ember.interpolatedWith (juce::Colour (0xff4a3a3e), 1.0f - powerLit));
     g.fillEllipse (dot);
     const auto nf = ui::css (ui::Face::display, 22.0f * u, 0.05f);

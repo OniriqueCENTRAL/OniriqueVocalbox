@@ -53,29 +53,73 @@ juce::Path poly (const std::vector<juce::Point<float>>& pts)
     for (size_t i = 0; i < pts.size(); ++i) { if (i == 0) p.startNewSubPath (pts[i]); else p.lineTo (pts[i]); }
     return p;
 }
+// courbe arrondie qui passe par les milieux (comme les courbes de l'analyseur de l'EQ)
+juce::Path smooth (const std::vector<juce::Point<float>>& pts)
+{
+    juce::Path p;
+    if (pts.size() < 3) return poly (pts);
+    p.startNewSubPath (pts[0]);
+    for (size_t i = 1; i + 1 < pts.size(); ++i)
+    {
+        const auto m = (pts[i] + pts[i + 1]) * 0.5f;
+        p.quadraticTo (pts[i], m);
+    }
+    p.lineTo (pts.back());
+    return p;
+}
 juce::Path between (const std::vector<juce::Point<float>>& a, const std::vector<juce::Point<float>>& b)
 {
-    auto p = poly (a);
-    for (size_t i = b.size(); i-- > 0;) p.lineTo (b[i]);
+    auto p = smooth (a);
+    std::vector<juce::Point<float>> rb (b.rbegin(), b.rend());
+    auto q = smooth (rb);
+    p.lineTo (rb.front());
+    juce::Path::Iterator it (q);
+    bool first = true;
+    while (it.next())
+    {
+        if (first) { first = false; continue; }
+        if (it.elementType == juce::Path::Iterator::lineTo) p.lineTo (it.x1, it.y1);
+        else if (it.elementType == juce::Path::Iterator::quadraticTo) p.quadraticTo (it.x1, it.y1, it.x2, it.y2);
+    }
     p.closeSubPath();
     return p;
 }
 
+// le spectre à la façon de l'EQ paramétrique : sortie en surface braise (.55 -> .02), entrée en trait pâle (.35)
+void drawSpectrum (juce::Graphics& g, const std::vector<juce::Point<float>>& in, const std::vector<juce::Point<float>>& out, float bottom, float top)
+{
+    if (out.size() < 2) return;
+    auto surface = smooth (out);
+    surface.lineTo (out.back().x, bottom);
+    surface.lineTo (out.front().x, bottom);
+    surface.closeSubPath();
+    g.setGradientFill (juce::ColourGradient (cEmber.withAlpha (0.55f), 0.0f, top, cEmber.withAlpha (0.02f), 0.0f, bottom, false));
+    g.fillPath (surface);
+    if (! in.empty())
+    {
+        g.setColour (juce::Colour (244, 236, 236).withAlpha (0.35f));
+        g.strokePath (smooth (in), juce::PathStrokeType (1.6f, juce::PathStrokeType::curved));
+    }
+}
+
 // les dernières colonnes de l'oscilloscope d'un module (la plus ancienne à gauche)
-void readScope (const ModuleScope& s, std::vector<float>& in, std::vector<float>& out)
+void readScope (const ModuleScope& s, std::vector<float>& in, std::vector<float>& out, std::vector<float>* gr = nullptr)
 {
     const int n = ModuleScope::kCols, w = s.write.load (std::memory_order_acquire);
     in.resize ((size_t) n); out.resize ((size_t) n);
+    if (gr != nullptr) gr->resize ((size_t) n);
     for (int i = 0; i < n; ++i)
     {
         const int idx = (w + i) % n;
         in[(size_t) i] = s.in[idx].load (std::memory_order_relaxed);
         out[(size_t) i] = s.out[idx].load (std::memory_order_relaxed);
+        if (gr != nullptr) (*gr)[(size_t) i] = s.gr[idx].load (std::memory_order_relaxed);
     }
 }
 
 //==============================================================================
-// Le spectre d'une prise (FFT 4096, fenêtre de Hann), ramené sur nb points logarithmiques entre fa et fb, lissé
+// Le spectre d'une prise (FFT 4096, fenêtre de Hann), ramené sur des points logarithmiques entre fa et fb : énergie moyenne
+// de chaque tranche, lissée entre voisins puis dans le temps (montée vive, retombée douce), comme l'analyseur de l'EQ
 class MiniSpectrum
 {
 public:
@@ -94,16 +138,23 @@ public:
         std::fill (work.begin() + kN, work.end(), 0.0f);
         fft.performFrequencyOnlyForwardTransform (work.data());
         const int n = (int) db.size();
+        std::vector<float> now ((size_t) n);
         for (int k = 0; k < n; ++k)
         {
-            const float f0 = fa * std::pow (fb / fa, (float) k / (float) n), f1 = fa * std::pow (fb / fa, (float) (k + 1) / (float) n);
-            int b0 = (int) (f0 / (float) rate * kN), b1 = std::max (b0 + 1, (int) (f1 / (float) rate * kN));
+            const float fc = fa * std::pow (fb / fa, ((float) k + 0.5f) / (float) n);
+            const float bw = fc * 0.12f;   // une tranche d'1/6 d'octave autour du point
+            int b0 = (int) ((fc - bw) / (float) rate * kN), b1 = (int) ((fc + bw) / (float) rate * kN) + 1;
             b0 = juce::jlimit (1, kN / 2 - 1, b0); b1 = juce::jlimit (b0 + 1, kN / 2, b1);
-            float m = 0.0f;
-            for (int b = b0; b < b1; ++b) m = std::max (m, work[(size_t) b]);
-            const float v = dbOf (m * 4.0f / (float) kN);
+            double e = 0.0;
+            for (int b = b0; b < b1; ++b) e += (double) work[(size_t) b] * work[(size_t) b];
+            now[(size_t) k] = dbOf ((float) std::sqrt (e / (double) (b1 - b0)) * 4.0f / (float) kN);
+        }
+        for (int pass = 0; pass < 2; ++pass)
+            for (int k = 1; k + 1 < n; ++k) now[(size_t) k] = 0.25f * now[(size_t) k - 1] + 0.5f * now[(size_t) k] + 0.25f * now[(size_t) k + 1];
+        for (int k = 0; k < n; ++k)
+        {
             auto& d = db[(size_t) k];
-            d += (v > d ? 0.5f : 0.12f) * (v - d);
+            d += (now[(size_t) k] > d ? 0.45f : 0.10f) * (now[(size_t) k] - d);
         }
     }
     float fa = 20.0f, fb = 20000.0f;
@@ -119,8 +170,8 @@ private:
 
 //==============================================================================
 /*  Le cadre d'un visuel (.viz de la démo) : rayon 22, fond radial (#1d1013 -> #0e0a0c -> #070506), liseré, ombre ; le
-    titre en haut à gauche, la légende en haut à droite, la phrase d'état en bas à gauche. draw() dessine dans le repère
-    1400 x 360 de la démo. */
+    titre en haut à gauche, la légende en haut à droite, la phrase d'état en bas à gauche. draw() dessine dans le repère de la
+    démo : 360 de haut, et au moins 1400 de large (vw) : plus large que la démo, le dessin s'étend, rien n'est coupé ni vide. */
 class Viz : public juce::Component, public Animated
 {
 public:
@@ -132,11 +183,6 @@ public:
         const float u = ui::unitOf (*this);
         const auto r = getLocalBounds().toFloat();
         const float rad = 22.0f * u;
-        for (int k = 3; k >= 1; --k)
-        {
-            g.setColour (juce::Colours::black.withAlpha (0.12f / (float) k));
-            g.fillRoundedRectangle (r.translated (0.0f, 14.0f * u).expanded (8.0f * u * (float) k), rad + 8.0f * u * (float) k);
-        }
         juce::ColourGradient bg (juce::Colour (0xff1d1013), r.getX() + r.getWidth() * 0.15f, r.getY(), juce::Colour (0xff070506),
                                  r.getX() + r.getWidth() * 0.15f + r.getWidth() * 1.2f, r.getY(), true);
         bg.addColour (0.55, juce::Colour (0xff0e0a0c));
@@ -146,11 +192,11 @@ public:
             juce::Graphics::ScopedSaveState s (g);
             juce::Path clip; clip.addRoundedRectangle (r, rad);
             g.reduceClipRegion (clip);
-            const float sc = std::min (r.getWidth() / 1400.0f, r.getHeight() / 360.0f);
-            g.addTransform (juce::AffineTransform::scale (sc).translated (r.getX() + (r.getWidth() - 1400.0f * sc) * 0.5f, r.getY() + (r.getHeight() - 360.0f * sc) * 0.5f));
-            // la grille de fond
+            const auto t = frame();
+            vw = t.second;
+            g.addTransform (t.first);
             g.setColour (juce::Colours::white.withAlpha (0.035f));
-            for (int y = 60; y <= 300; y += 60) g.drawHorizontalLine (y, 0.0f, 1400.0f);
+            for (int y = 60; y <= 300; y += 60) g.drawHorizontalLine (y, 0.0f, vw);
             draw (g);
         }
         g.setColour (juce::Colour (255, 220, 225).withAlpha (0.10f));
@@ -158,10 +204,20 @@ public:
         g.setColour (juce::Colours::white.withAlpha (0.08f));
         g.fillRect (r.withHeight (1.0f).reduced (rad, 0.0f).translated (0.0f, 1.0f));
 
-        // titre, légende, état
-        g.setColour (juce::Colour (0xffd9c6c9));
-        g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.12f));
-        g.drawText (title, juce::Rectangle<float> (r.getX() + 18.0f * u, r.getY() + 14.0f * u, r.getWidth() * 0.6f, 14.0f * u), juce::Justification::centredLeft, false);
+        // titre, légende, état (sur un voile sombre, pour rester lisibles par-dessus le dessin)
+        auto label = [&] (const juce::String& txt, juce::Rectangle<float> area, juce::Justification j, juce::Colour c)
+        {
+            const auto f = ui::css (ui::Face::mono, 10.0f * u, 0.12f);
+            const float tw = ui::textWidth (f, txt);
+            auto back = area.withWidth (tw + 16.0f * u).withSizeKeepingCentre (tw + 16.0f * u, area.getHeight() + 8.0f * u);
+            if (j == juce::Justification::centredRight) back.setX (area.getRight() - back.getWidth() + 8.0f * u); else back.setX (area.getX() - 8.0f * u);
+            g.setColour (juce::Colour (0xff0b0709).withAlpha (0.72f));
+            g.fillRoundedRectangle (back, 8.0f * u);
+            g.setColour (c);
+            g.setFont (f);
+            g.drawText (txt, area, j, false);
+        };
+        if (title.isNotEmpty()) label (title, { r.getX() + 18.0f * u, r.getY() + 14.0f * u, r.getWidth() * 0.62f, 14.0f * u }, juce::Justification::centredLeft, juce::Colour (0xffd9c6c9));
         float x = r.getRight() - 18.0f * u;
         for (auto it = legend.rbegin(); it != legend.rend(); ++it)
         {
@@ -179,21 +235,23 @@ public:
             g.fillRoundedRectangle (chip, 2.0f * u);
             x -= 18.0f * u;
         }
-        g.setColour (juce::Colours::white);
-        g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.12f));
-        g.drawText (stat, juce::Rectangle<float> (r.getX() + 18.0f * u, r.getBottom() - 26.0f * u, r.getWidth() - 36.0f * u, 14.0f * u), juce::Justification::centredLeft, false);
+        if (stat.isNotEmpty()) label (stat, { r.getX() + 18.0f * u, r.getBottom() - 26.0f * u, r.getWidth() - 36.0f * u, 14.0f * u }, juce::Justification::centredLeft, juce::Colours::white);
     }
 
 protected:
     virtual void draw (juce::Graphics&) = 0;
-    // une position de la souris -> le repère de la démo
-    juce::Point<float> toDemo (juce::Point<float> p) const
+    // le repère : 360 de haut ; la largeur suit le cadre (au moins 1400)
+    std::pair<juce::AffineTransform, float> frame() const
     {
         const auto r = getLocalBounds().toFloat();
-        const float sc = std::min (r.getWidth() / 1400.0f, r.getHeight() / 360.0f);
-        return { (p.x - (r.getWidth() - 1400.0f * sc) * 0.5f) / sc, (p.y - (r.getHeight() - 360.0f * sc) * 0.5f) / sc };
+        float sc = r.getHeight() / 360.0f, w = r.getWidth() / std::max (0.001f, sc);
+        if (w < 1400.0f) { sc = r.getWidth() / 1400.0f; w = 1400.0f; }
+        return { juce::AffineTransform::scale (sc).translated (r.getX() + (r.getWidth() - w * sc) * 0.5f, r.getY() + (r.getHeight() - 360.0f * sc) * 0.5f), w };
     }
+    juce::Point<float> toDemo (juce::Point<float> p) const { return p.transformedBy (frame().first.inverted()); }
     float time() const { return (float) (juce::Time::getMillisecondCounterHiRes() * 0.001); }
+    float waveEnd() const { return vw - 400.0f; }   // la forme d'onde à gauche, le spectre dans les 400 de droite
+    float vw = 1400.0f;
 };
 
 // le dégradé braise des parties retirées (#ff6b7a -> #7a0d1c, du haut vers le bas)
@@ -201,15 +259,15 @@ juce::ColourGradient emberFill (float y0, float y1) { return { juce::Colour (0xf
 
 //==============================================================================
 // GATE, DE-ESSER, NOISE, PLOSIVES : la voix qui défile (ce qui est gardé en blanc, ce qui est retiré en braise) ; à droite,
-// le spectre avant (braise, pointillé) et après (blanc), l'écart rempli en braise, le repère de la fréquence réglée
+// le spectre de la sortie (surface braise) et de l'entrée (trait pâle), comme l'EQ, et le repère de la fréquence réglée
 class WaveViz : public Viz
 {
 public:
     WaveViz (OniriqueVocalBoxAudioProcessor& p, int code) : processor (p), module (p.module (code)), type (modules::typeOf (code)), k (modules::instanceOf (code))
     {
         const float fa = type == modules::deess ? 1000.0f : 20.0f, fb = type == modules::deess ? 16000.0f : (type == modules::plosive ? 1000.0f : 20000.0f);
-        specIn.setRange (fa, fb, 70);
-        specOut.setRange (fa, fb, 70);
+        specIn.setRange (fa, fb, 120);
+        specOut.setRange (fa, fb, 120);
         if (type == modules::gate) setMouseCursor (juce::MouseCursor::UpDownResizeCursor);
     }
 
@@ -222,7 +280,6 @@ public:
             specIn.update (*module->tapIn, module->getRate());
             specOut.update (*module->tapOut, module->getRate());
         }
-        // la réduction : la plus forte récente
         red = std::max (red * 0.97f, std::abs (module->getReductionDb()));
         updateText();
         repaint();
@@ -242,11 +299,12 @@ private:
     float norm (float a) const
     {
         if (type == modules::gate) return juce::jlimit (0.0f, 1.0f, (dbOf (a) + 70.0f) / 70.0f);
-        return juce::jlimit (0.0f, 1.0f, a * 1.5f);
+        return juce::jlimit (0.0f, 1.0f, (dbOf (a) + 60.0f) / 60.0f);   // en dB : une voix douce reste lisible
     }
 
     void updateText()
     {
+        const juce::String dot = juce::String::fromUTF8 (" · ");
         switch (type)
         {
             case modules::gate:
@@ -255,24 +313,29 @@ private:
                 for (size_t i = 0; i < in.size(); ++i) if (in[i] > 1.0e-5f && out[i] < in[i] * 0.5f) ++closed;
                 title = utf8 ("NOISE GATE · CE QUI EST COUPÉ ENTRE LES PHRASES");
                 legend = { { "GARDE", cMist }, { utf8 ("COUPÉ"), cEmber } };
-                stat = "SEUIL " + juce::String (juce::roundToInt (get (ids::gateThr))) + " dB · " + juce::String (juce::roundToInt (100.0f * (float) closed / (float) std::max<size_t> (1, in.size())))
+                stat = "SEUIL " + juce::String (juce::roundToInt (get (ids::gateThr))) + " dB" + dot + juce::String (juce::roundToInt (100.0f * (float) closed / (float) std::max<size_t> (1, in.size())))
                      + utf8 (" % DU TEMPS FERMÉ · −") + juce::String (juce::roundToInt (get (ids::gateRange))) + " dB";
                 break;
             }
             case modules::deess:
-                title = utf8 ("DE-ESSER · LES S RETIRÉS EN BRAISE");
+            {
+                juce::StringArray on;
+                for (auto [id, n] : { std::pair { ids::deessS, "S" }, { ids::deessT, "T" }, { ids::deessCH, "CH" }, { ids::deessF, "F" } }) if (get (id) > 0.5f) on.add (n);
+                title = utf8 ("DE-ESSER · CE QUI EST RETIRÉ EN BRAISE");
                 legend = { { utf8 ("GARDÉ"), cMist }, { utf8 ("RETIRÉ"), cEmber } };
-                stat = hz (get (ids::deessFreq)) + utf8 (" · −") + juce::String (red, 1) + " dB SUR LES S";
+                stat = (on.isEmpty() ? juce::String ("AUCUN SON") : on.joinIntoString (" + ")) + dot + hz (get (ids::deessFreq)) + utf8 (" · −") + juce::String (red, 1) + " dB"
+                     + (get (ids::deessClarity) > 0.5f ? dot + "CLARITY " + juce::String (juce::roundToInt (get (ids::deessClarity))) + " %" : juce::String());
                 break;
+            }
             case modules::noise:
                 title = utf8 ("NOISE SUPPRESSOR · LE SOUFFLE RETIRÉ EN BRAISE");
                 legend = { { utf8 ("GARDÉ"), cMist }, { utf8 ("RETIRÉ"), cEmber } };
-                stat = utf8 ("BRUIT DE FOND −") + juce::String (red, 1) + " dB · AMOUNT " + juce::String (juce::roundToInt (get (ids::nsAmount))) + " %";
+                stat = utf8 ("BRUIT DE FOND −") + juce::String (red, 1) + " dB" + dot + "AMOUNT " + juce::String (juce::roundToInt (get (ids::nsAmount))) + " %";
                 break;
             default:
                 title = utf8 ("PLOSIVES · LES P ET LES B RETIRÉS EN BRAISE");
                 legend = { { utf8 ("GARDÉ"), cMist }, { utf8 ("RETIRÉ"), cEmber } };
-                stat = utf8 ("P / B −") + juce::String (red, 1) + " dB · AMOUNT " + juce::String (juce::roundToInt (get (ids::plosive))) + " %";
+                stat = utf8 ("P / B −") + juce::String (red, 1) + " dB" + dot + "AMOUNT " + juce::String (juce::roundToInt (get (ids::plosive))) + " %";
                 break;
         }
     }
@@ -280,12 +343,13 @@ private:
     void draw (juce::Graphics& g) override
     {
         if (module == nullptr || in.empty()) return;
+        const float L = waveEnd();
         std::vector<float> a (in.size()), b (out.size());
         for (size_t i = 0; i < in.size(); ++i) { a[i] = norm (in[i]); b[i] = norm (out[i]); }
-        const auto removed = mirror (a, 0.0f, 1000.0f, 170.0f, 150.0f), kept = mirror (b, 0.0f, 1000.0f, 170.0f, 150.0f);
+        const auto removed = mirror (a, 0.0f, L, 170.0f, 150.0f), kept = mirror (b, 0.0f, L, 170.0f, 150.0f);
         {
             juce::Graphics::ScopedSaveState s (g);
-            g.reduceClipRegion (0, 0, 1000, 360);
+            g.reduceClipRegion (0, 0, (int) L, 360);
             glowPath (g, removed, cEmber, 8.0f, true);
             g.setGradientFill (emberFill (20.0f, 320.0f));
             g.setOpacity (0.9f);
@@ -300,7 +364,7 @@ private:
                 g.setColour (cPink);
                 for (float y : { 170.0f - t, 170.0f + t })
                 {
-                    juce::Path l; l.startNewSubPath (0.0f, y); l.lineTo (1000.0f, y);
+                    juce::Path l; l.startNewSubPath (0.0f, y); l.lineTo (L, y);
                     dashed (g, l, 1.5f, 6.0f, 6.0f);
                 }
                 const int n = (int) in.size();
@@ -310,7 +374,7 @@ private:
                     if (! open) { ++i; continue; }
                     int e = i;
                     while (e + 1 < n && out[(size_t) e + 1] > in[(size_t) e + 1] * 0.5f && in[(size_t) e + 1] > 1.0e-4f) ++e;
-                    const auto bar = juce::Rectangle<float> (1000.0f * (float) i / (float) (n - 1), 338.0f, std::max (2.0f, 1000.0f * (float) (e - i + 1) / (float) (n - 1)), 8.0f);
+                    const auto bar = juce::Rectangle<float> (L * (float) i / (float) (n - 1), 338.0f, std::max (2.0f, L * (float) (e - i + 1) / (float) (n - 1)), 8.0f);
                     g.setColour (cEmber.withAlpha (0.35f));
                     g.fillRoundedRectangle (bar.expanded (3.0f), 6.0f);
                     g.setColour (cEmber);
@@ -320,30 +384,24 @@ private:
             }
         }
         g.setColour (juce::Colours::white.withAlpha (0.08f));
-        g.fillRect (1000.0f, 0.0f, 1.0f, 360.0f);
+        g.fillRect (L, 0.0f, 1.0f, 360.0f);
 
-        // le spectre de droite (1030 -> 1380)
+        // le spectre de droite, comme l'analyseur de l'EQ
         if (specIn.db.empty()) return;
-        auto X = [&] (int i) { return 1030.0f + 350.0f * (float) i / (float) (specIn.db.size() - 1); };
-        auto Y = [] (float d) { return juce::jlimit (40.0f, 330.0f, 40.0f + (-24.0f - d) / 66.0f * 290.0f); };
+        const float x0 = L + 30.0f, x1 = vw - 20.0f;
+        auto X = [&] (size_t i) { return x0 + (x1 - x0) * (float) i / (float) (specIn.db.size() - 1); };
+        auto Y = [] (float d) { return juce::jlimit (50.0f, 320.0f, 50.0f + (-24.0f - d) / 70.0f * 270.0f); };
         std::vector<juce::Point<float>> pin, pout;
-        for (size_t i = 0; i < specIn.db.size(); ++i) { pin.push_back ({ X ((int) i), Y (specIn.db[i]) }); pout.push_back ({ X ((int) i), Y (specOut.db[i]) }); }
-        g.setColour (cEmber.withAlpha (0.28f));
-        g.fillPath (between (pin, pout));
-        g.setColour (cEmber);
-        dashed (g, poly (pin), 2.0f, 5.0f, 5.0f);
-        const auto po = poly (pout);
-        glowPath (g, po, juce::Colour (255, 236, 238).withAlpha (0.5f), 6.0f, false);
-        g.setColour (cBone);
-        g.strokePath (po, juce::PathStrokeType (2.5f, juce::PathStrokeType::curved));
-        // le repère de la fréquence réglée (DE-ESSER)
+        for (size_t i = 0; i < specIn.db.size(); ++i) { pin.push_back ({ X (i), Y (specIn.db[i]) }); pout.push_back ({ X (i), Y (specOut.db[i]) }); }
+        drawSpectrum (g, pin, pout, 320.0f, 50.0f);
+        // le repère de la fréquence réglée (DE-ESSER : les S)
         if (type == modules::deess)
         {
             const float f = get (ids::deessFreq);
-            const float x = 1030.0f + 350.0f * std::log (f / specIn.fa) / std::log (specIn.fb / specIn.fa);
+            const float x = x0 + (x1 - x0) * std::log (f / specIn.fa) / std::log (specIn.fb / specIn.fa);
             g.setColour (cPink);
-            g.drawLine (x, 40.0f, x, 330.0f, 1.5f);
-            const int idx = juce::jlimit (0, (int) specOut.db.size() - 1, juce::roundToInt ((x - 1030.0f) / 350.0f * (float) (specOut.db.size() - 1)));
+            { juce::Path m; m.startNewSubPath (x, 50.0f); m.lineTo (x, 320.0f); dashed (g, m, 1.5f, 4.0f, 5.0f); }
+            const int idx = juce::jlimit (0, (int) specOut.db.size() - 1, juce::roundToInt ((x - x0) / (x1 - x0) * (float) (specOut.db.size() - 1)));
             const auto dot = juce::Rectangle<float> (14.0f, 14.0f).withCentre ({ x, Y (specOut.db[(size_t) idx]) });
             g.setColour (cEmber.withAlpha (0.4f));
             g.fillEllipse (dot.expanded (6.0f));
@@ -363,16 +421,18 @@ private:
 };
 
 //==============================================================================
-// RESONANCE : le spectre en grand (20 Hz - 20 kHz), ce qui est creusé rempli en braise, les zones LOW / MID / HIGH, et leurs
-// poignées (glisser : fréquence à l'horizontale, sensibilité à la verticale)
+// RESONANCE : le spectre en grand sur toute la largeur (20 Hz - 20 kHz) : la sortie en surface braise, l'entrée en trait pâle,
+// ce qui est creusé en braise vive ; les zones LOW / MID / HIGH et leurs poignées (fréquence à l'horizontale, sensibilité à
+// la verticale)
 class ResoViz : public Viz
 {
 public:
     ResoViz (OniriqueVocalBoxAudioProcessor& p, int code) : processor (p), module (dynamic_cast<chainmods::Reso*> (p.module (code))), k (modules::instanceOf (code))
     {
         setMouseCursor (juce::MouseCursor::CrosshairCursor);
-        legend = { { utf8 ("GARDÉ"), cMist }, { utf8 ("CREUSÉ"), cEmber } };
+        legend = { { utf8 ("GARDÉ"), cEmber }, { utf8 ("CREUSÉ"), cPink } };
         title = utf8 ("RESONANCE · LES PICS QUI SIFFLENT OU BOURDONNENT, CREUSÉS EN BRAISE");
+        spec.fill (-120.0f);
     }
     void tick() override
     {
@@ -386,8 +446,9 @@ public:
                 red[(size_t) b] += (rd > red[(size_t) b] ? 0.5f : 0.1f) * (rd - red[(size_t) b]);
             }
         }
-        stat = "AMOUNT " + juce::String (juce::roundToInt (get (ids::resoAmt))) + " % · LOW " + juce::String (juce::roundToInt (get (ids::resoLow)))
-             + " % · MID " + juce::String (juce::roundToInt (get (ids::resoMid))) + " % · HIGH " + juce::String (juce::roundToInt (get (ids::resoHigh))) + " %";
+        const juce::String dot = juce::String::fromUTF8 (" · ");
+        stat = "AMOUNT " + juce::String (juce::roundToInt (get (ids::resoAmt))) + " %" + dot + "LOW " + juce::String (juce::roundToInt (get (ids::resoLow)))
+             + " %" + dot + "MID " + juce::String (juce::roundToInt (get (ids::resoMid))) + " %" + dot + "HIGH " + juce::String (juce::roundToInt (get (ids::resoHigh))) + " %";
         repaint();
     }
     void mouseDown (const juce::MouseEvent& e) override
@@ -404,20 +465,20 @@ public:
         const char* fid[] { ids::resoLowFreq, ids::resoMidFreq, ids::resoHighFreq };
         const char* sid[] { ids::resoLow, ids::resoMid, ids::resoHigh };
         if (auto* p = processor.param (fid[drag], k)) p->setValueNotifyingHost (p->convertTo0to1 (fOf (q.x)));
-        if (auto* p = processor.param (sid[drag], k)) p->setValueNotifyingHost (p->convertTo0to1 (juce::jlimit (0.0f, 100.0f, (330.0f - q.y) / 270.0f * 100.0f)));
+        if (auto* p = processor.param (sid[drag], k)) p->setValueNotifyingHost (p->convertTo0to1 (juce::jlimit (0.0f, 100.0f, (278.0f - q.y) / 220.0f * 100.0f)));
     }
     void mouseUp (const juce::MouseEvent&) override { drag = -1; }
 
 private:
     float get (const char* id) const { return processor.apvts.getRawParameterValue (ids::inst (id, k))->load(); }
-    static float X (float f) { return 40.0f + 1320.0f * std::log (f / 20.0f) / std::log (1000.0f); }
-    static float fOf (float x) { return 20.0f * std::pow (1000.0f, juce::jlimit (0.0f, 1.0f, (x - 40.0f) / 1320.0f)); }
-    static float Y (float d) { return juce::jlimit (40.0f, 340.0f, 50.0f + (-14.0f - d) / 80.0f * 290.0f); }
+    float X (float f) const { return 24.0f + (vw - 48.0f) * std::log (f / 20.0f) / std::log (1000.0f); }
+    float fOf (float x) const { return 20.0f * std::pow (1000.0f, juce::jlimit (0.0f, 1.0f, (x - 24.0f) / (vw - 48.0f))); }
+    static float Y (float d) { return juce::jlimit (50.0f, 278.0f, 50.0f + (-14.0f - d) / 76.0f * 228.0f); }
     juce::Point<float> handle (int b) const
     {
         const char* fid[] { ids::resoLowFreq, ids::resoMidFreq, ids::resoHighFreq };
         const char* sid[] { ids::resoLow, ids::resoMid, ids::resoHigh };
-        return { X (get (fid[b])), 330.0f - get (sid[b]) * 0.01f * 270.0f };
+        return { X (get (fid[b])), 278.0f - get (sid[b]) * 0.01f * 220.0f };
     }
     void draw (juce::Graphics& g) override
     {
@@ -432,30 +493,37 @@ private:
             g.fillRect (juce::Rectangle<float> (x0, 0.0f, x1 - x0, 360.0f));
             g.setColour (juce::Colour (0xff7d6a6e));
             g.setFont (ui::css (ui::Face::mono, 11.0f, 0.12f));
-            g.drawText (names[b], juce::Rectangle<float> (x0, 318.0f, x1 - x0, 20.0f), juce::Justification::centred, false);
+            g.drawText (names[b], juce::Rectangle<float> (x0, 282.0f, x1 - x0, 18.0f), juce::Justification::centred, false);
+        }
+        // les fréquences en bas
+        g.setFont (ui::css (ui::Face::mono, 10.0f, 0.12f));
+        for (auto [f, t] : { std::pair { 50.0f, "50" }, { 100.0f, "100" }, { 200.0f, "200" }, { 500.0f, "500" }, { 1000.0f, "1k" }, { 2000.0f, "2k" }, { 5000.0f, "5k" }, { 10000.0f, "10k" } })
+        {
+            g.setColour (juce::Colours::white.withAlpha (0.04f));
+            g.fillRect (X (f), 40.0f, 1.0f, 238.0f);
+            g.setColour (juce::Colour (0xff7d6a6e));
+            g.drawText (t, juce::Rectangle<float> (60.0f, 14.0f).withCentre ({ X (f), 308.0f }), juce::Justification::centred, false);
         }
         std::vector<juce::Point<float>> pin, pout;
+        bool any = false;
         for (int b = 0; b < ResonanceSuppressor::kBands; ++b)
         {
             const float f = 20.0f * std::pow (1000.0f, ((float) b + 0.5f) / (float) ResonanceSuppressor::kBands);
             pin.push_back ({ X (f), Y (spec[(size_t) b]) });
             pout.push_back ({ X (f), Y (spec[(size_t) b] - red[(size_t) b]) });
+            any = any || spec[(size_t) b] > -100.0f;
         }
-        const auto fill = between (pin, pout);
-        glowPath (g, fill, cEmber, 10.0f, true);
-        g.setGradientFill (emberFill (40.0f, 330.0f));
-        g.setOpacity (0.55f);
-        g.fillPath (fill);
-        g.setOpacity (1.0f);
-        g.setColour (cEmber);
-        dashed (g, poly (pin), 2.0f, 5.0f, 5.0f);
-        const auto po = poly (pout);
-        glowPath (g, po, juce::Colour (255, 236, 238).withAlpha (0.5f), 8.0f, false);
-        g.setColour (cBone.withAlpha (0.85f + 0.15f * std::sin (time() * 2.2f)));
-        g.strokePath (po, juce::PathStrokeType (3.0f, juce::PathStrokeType::curved));
+        if (any)
+        {
+            drawSpectrum (g, pin, pout, 278.0f, 50.0f);
+            // ce qui est creusé : entre l'entrée et la sortie, en braise vive
+            const auto cut = between (pin, pout);
+            g.setColour (cPink.withAlpha (0.45f));
+            g.fillPath (cut);
+        }
         for (int b = 0; b < 3; ++b)
         {
-            const auto dot = juce::Rectangle<float> (12.0f, 12.0f).withCentre (handle (b));
+            const auto dot = juce::Rectangle<float> (14.0f, 14.0f).withCentre (handle (b));
             g.setColour (cEmber.withAlpha (0.4f));
             g.fillEllipse (dot.expanded (6.0f));
             g.setColour (cEmber);
@@ -472,15 +540,15 @@ private:
 };
 
 //==============================================================================
-// MULTIBAND : quatre colonnes ; le niveau de chaque bande, son seuil (glisser dans la bande), la réduction en rideau depuis
-// le haut, les coupures (glisser les poignées blanches)
+// MULTIBAND : quatre colonnes sur toute la largeur ; le niveau de chaque bande, son seuil (glisser dans la bande), sa
+// réduction en rideau depuis le haut avec sa valeur écrite en grand, les coupures (glisser les poignées blanches)
 class MultiViz : public Viz
 {
 public:
     MultiViz (OniriqueVocalBoxAudioProcessor& p, int code) : processor (p), module (dynamic_cast<chainmods::Multi*> (p.module (code))), k (modules::instanceOf (code))
     {
-        spec.setRange (20.0f, 20000.0f, 140);
-        title = "MULTIBAND · GLISSE LES COUPURES, MONTE OU DESCENDS LE SEUIL DANS UNE BANDE";
+        spec.setRange (20.0f, 20000.0f, 160);
+        title = utf8 ("MULTIBAND · GLISSE LES COUPURES, MONTE OU DESCENDS LE SEUIL DANS UNE BANDE");
         legend = { { "NIVEAU", cMist }, { utf8 ("RÉDUCTION"), cEmber } };
     }
     std::function<void (int)> onBand;
@@ -496,10 +564,7 @@ public:
                 gr[b] += (r > gr[b] ? 0.5f : 0.12f) * (r - gr[b]);
             }
         if (++frame % 2 == 0) spec.update (processor.outputTap, processor.getSampleRate() > 0.0 ? processor.getSampleRate() : 48000.0);
-        const char* names[] { "LOW", "LO-MID", "HI-MID", "HIGH" };
-        stat.clear();
-        for (int b = 0; b < 4; ++b) stat << names[b] << utf8 (" −") << juce::String (gr[b], 1) << " dB · ";
-        stat << hz (get (ids::mbX[0])) << " / " << hz (get (ids::mbX[1])) << " / " << hz (get (ids::mbX[2]));
+        stat = hz (get (ids::mbX[0])) + " / " + hz (get (ids::mbX[1])) + " / " + hz (get (ids::mbX[2]));
         repaint();
     }
     void mouseDown (const juce::MouseEvent& e) override
@@ -520,7 +585,7 @@ public:
         {
             if (auto* p = processor.param (ids::mbX[dragX], k))
             {
-                float f = 20.0f * std::pow (1000.0f, juce::jlimit (0.0f, 1.0f, (q.x - 30.0f) / 1340.0f));
+                float f = fOf (q.x);
                 if (dragX > 0) f = std::max (f, get (ids::mbX[dragX - 1]) * 1.3f);
                 if (dragX < 2) f = std::min (f, get (ids::mbX[dragX + 1]) / 1.3f);
                 p->setValueNotifyingHost (p->convertTo0to1 (f));
@@ -528,7 +593,7 @@ public:
         }
         else if (dragB >= 0)
             if (auto* p = processor.param (ids::mbThr[dragB], k))
-                p->setValueNotifyingHost (p->convertTo0to1 (juce::jlimit (-60.0f, 0.0f, -(q.y - 30.0f) / 310.0f * 60.0f)));
+                p->setValueNotifyingHost (p->convertTo0to1 (juce::jlimit (-60.0f, 0.0f, -(q.y - 60.0f) / 270.0f * 60.0f)));
     }
     void mouseUp (const juce::MouseEvent&) override { dragX = dragB = -1; }
     void mouseMove (const juce::MouseEvent& e) override
@@ -542,39 +607,48 @@ public:
 
 private:
     float get (const char* id) const { return processor.apvts.getRawParameterValue (ids::inst (id, k))->load(); }
-    static float X (float f) { return 30.0f + 1340.0f * std::log (f / 20.0f) / std::log (1000.0f); }
-    static float yd (float db) { return 30.0f + (-db) / 60.0f * 310.0f; }
-    std::array<float, 5> edges() const { return { 30.0f, X (get (ids::mbX[0])), X (get (ids::mbX[1])), X (get (ids::mbX[2])), 1370.0f }; }
+    float X (float f) const { return 20.0f + (vw - 40.0f) * std::log (f / 20.0f) / std::log (1000.0f); }
+    float fOf (float x) const { return 20.0f * std::pow (1000.0f, juce::jlimit (0.0f, 1.0f, (x - 20.0f) / (vw - 40.0f))); }
+    static float yd (float db) { return 60.0f + (-db) / 60.0f * 270.0f; }
+    std::array<float, 5> edges() const { return { 20.0f, X (get (ids::mbX[0])), X (get (ids::mbX[1])), X (get (ids::mbX[2])), vw - 20.0f }; }
     void draw (juce::Graphics& g) override
     {
-        // le spectre de la sortie, en trait pâle
+        // le spectre de la sortie, comme l'EQ
         std::vector<juce::Point<float>> sp;
         for (size_t i = 0; i < spec.db.size(); ++i)
-            sp.push_back ({ 30.0f + 1340.0f * (float) i / (float) (spec.db.size() - 1), juce::jlimit (30.0f, 340.0f, 40.0f + (-20.0f - spec.db[i]) / 80.0f * 300.0f) });
-        g.setColour (juce::Colour (244, 236, 236).withAlpha (0.22f));
-        g.strokePath (poly (sp), juce::PathStrokeType (2.0f, juce::PathStrokeType::curved));
+            sp.push_back ({ X (20.0f * std::pow (1000.0f, ((float) i + 0.5f) / (float) spec.db.size())), juce::jlimit (60.0f, 330.0f, 70.0f + (-20.0f - spec.db[i]) / 80.0f * 260.0f) });
+        drawSpectrum (g, {}, sp, 330.0f, 60.0f);
 
         const auto xs = edges();
         int solo = -1;
         for (int b = 0; b < 4; ++b) if (get (ids::mbSolo[b]) > 0.5f) solo = b;
+        static const char* names[] { "LOW", "LO-MID", "HI-MID", "HIGH" };
         for (int b = 0; b < 4; ++b)
         {
             const float x = xs[(size_t) b], w = xs[(size_t) b + 1] - x;
             const bool on = b == band;
-            g.setColour (on ? cEmber.withAlpha (0.10f) : (solo >= 0 && solo != b ? juce::Colours::black.withAlpha (0.35f) : juce::Colours::white.withAlpha (0.015f)));
+            g.setColour (on ? cEmber.withAlpha (0.08f) : (solo >= 0 && solo != b ? juce::Colours::black.withAlpha (0.35f) : juce::Colours::white.withAlpha (0.012f)));
             g.fillRect (juce::Rectangle<float> (x, 0.0f, w, 360.0f));
-            // le rideau de réduction (14 par dB), qui respire
-            const float pulse = 0.9f + 0.1f * std::sin (time() * 4.0f + (float) b);
-            const float gh = std::min (300.0f, gr[b] * 14.0f * pulse);
+            // le rideau de réduction : 10 par dB depuis le haut, bord net braise
+            const float gh = std::min (240.0f, gr[b] * 10.0f);
             if (gh > 0.5f)
             {
-                g.setGradientFill (juce::ColourGradient (cEmber.withAlpha (0.55f), 0.0f, 0.0f, cEmber.withAlpha (0.0f), 0.0f, gh, false));
-                g.fillRect (juce::Rectangle<float> (x, 0.0f, w, gh));
+                g.setGradientFill (juce::ColourGradient (cEmber.withAlpha (0.65f), 0.0f, 50.0f, cEmber.withAlpha (0.12f), 0.0f, 50.0f + gh, false));
+                g.fillRect (juce::Rectangle<float> (x + 2.0f, 50.0f, w - 4.0f, gh));
+                g.setColour (cEmber);
+                g.fillRect (juce::Rectangle<float> (x + 2.0f, 50.0f + gh - 2.0f, w - 4.0f, 2.0f));
             }
+            // la valeur de la réduction de la bande, en grand, et son nom
+            g.setColour (gr[b] > 0.1f ? juce::Colours::white : juce::Colour (0xff7d6a6e));
+            g.setFont (ui::css (ui::Face::display, 20.0f, 0.04f));
+            g.drawText ((gr[b] >= 0.05f ? utf8 ("−") : juce::String()) + juce::String (gr[b] >= 0.05f ? gr[b] : 0.0f, 1) + " dB", juce::Rectangle<float> (x, 56.0f, w, 28.0f), juce::Justification::centred, false);
+            g.setColour (on ? cBone : juce::Colour (0xffa8939a));
+            g.setFont (ui::css (ui::Face::mono, 11.0f, 0.12f));
+            g.drawText (names[b], juce::Rectangle<float> (x, 312.0f, w, 18.0f), juce::Justification::centred, false);
             // le niveau de la bande
             const float ly = yd (juce::jlimit (-60.0f, 0.0f, lv[b]));
             g.setColour (juce::Colour (244, 236, 236).withAlpha (0.75f));
-            g.fillRoundedRectangle (juce::Rectangle<float> (x + w * 0.5f - 11.0f, ly, 22.0f, std::max (0.0f, 340.0f - ly)), 5.0f);
+            g.fillRoundedRectangle (juce::Rectangle<float> (x + w * 0.5f - 11.0f, ly, 22.0f, std::max (0.0f, 306.0f - ly)), 5.0f);
             // le seuil
             const float ty = yd (get (ids::mbThr[b]));
             juce::Path tl; tl.startNewSubPath (x + 4.0f, ty); tl.lineTo (x + w - 4.0f, ty);
@@ -613,13 +687,14 @@ class AnalogViz : public Viz
 public:
     AnalogViz (OniriqueVocalBoxAudioProcessor& p, int code) : processor (p), k (modules::instanceOf (code))
     {
-        title = "EQ ANALOG · COULEUR DE CONSOLE";
+        title = utf8 ("EQ ANALOG · COULEUR DE CONSOLE");
         legend = { { "COURBE", cEmber } };
     }
     void tick() override
     {
         auto v = [&] (const char* id) { const float x = get (id); return (x > 0.0f ? "+" : "") + juce::String (x, 1); };
-        stat = "LOW " + v (ids::low) + " · MUD " + v (ids::mud) + " · HI " + v (ids::high) + " · AIR " + v (ids::air);
+        const juce::String dot = juce::String::fromUTF8 (" · ");
+        stat = "LOW " + v (ids::low) + dot + "MUD " + v (ids::mud) + dot + "HI " + v (ids::high) + dot + "AIR " + v (ids::air);
         repaint();
     }
 
@@ -639,27 +714,27 @@ private:
     void draw (juce::Graphics& g) override
     {
         g.setColour (juce::Colours::white.withAlpha (0.14f));
-        g.drawHorizontalLine (180, 0.0f, 1400.0f);
+        g.drawHorizontalLine (180, 0.0f, vw);
         g.setColour (juce::Colours::white.withAlpha (0.04f));
-        for (float x : { 140.0f, 420.0f, 700.0f, 980.0f, 1260.0f }) g.drawVerticalLine ((int) x, 0.0f, 360.0f);
+        for (float x : { 0.1f, 0.3f, 0.5f, 0.7f, 0.9f }) g.drawVerticalLine ((int) (x * vw), 0.0f, 360.0f);
         std::vector<juce::Point<float>> pts;
         for (int i = 0; i <= 140; ++i)
         {
             const float f = 20.0f * std::pow (1000.0f, (float) i / 140.0f);
-            pts.push_back ({ (float) i * 10.0f, 180.0f - juce::jlimit (-15.0f, 15.0f, dbAt (f)) * 11.0f });
+            pts.push_back ({ (float) i * vw / 140.0f, 180.0f - juce::jlimit (-15.0f, 15.0f, dbAt (f)) * 11.0f });
         }
-        auto fill = poly (pts);
-        fill.lineTo (1400.0f, 360.0f); fill.lineTo (0.0f, 360.0f); fill.closeSubPath();
+        auto fill = smooth (pts);
+        fill.lineTo (vw, 360.0f); fill.lineTo (0.0f, 360.0f); fill.closeSubPath();
         g.setGradientFill (juce::ColourGradient (cEmber.withAlpha (0.55f), 0.0f, 0.0f, cEmber.withAlpha (0.0f), 0.0f, 360.0f, false));
         g.fillPath (fill);
-        const auto curve = poly (pts);
+        const auto curve = smooth (pts);
         glowPath (g, curve, cEmber.withAlpha (0.85f), 10.0f, false);
         g.setColour (cEmber);
         g.strokePath (curve, juce::PathStrokeType (4.0f, juce::PathStrokeType::curved));
         for (float x : { 0.1f, 0.4f, 0.68f, 0.92f })
         {
             const float f = 20.0f * std::pow (1000.0f, x);
-            const auto dot = juce::Rectangle<float> (18.0f, 18.0f).withCentre ({ x * 1400.0f, 180.0f - juce::jlimit (-15.0f, 15.0f, dbAt (f)) * 11.0f });
+            const auto dot = juce::Rectangle<float> (18.0f, 18.0f).withCentre ({ x * vw, 180.0f - juce::jlimit (-15.0f, 15.0f, dbAt (f)) * 11.0f });
             g.setColour (juce::Colour (0xff120c0e));
             g.fillEllipse (dot);
             g.setColour (cPink);
@@ -684,8 +759,8 @@ public:
         static const char* modes[] { "TUBE", "ANALOG", "TAPE", "TRANSFORMER" };
         static const char* sub[] { "H2 DOMINANT · CHAUD", "H3 · CONSOLE", "COMPRESSION DE BANDE · DOUX", "H2 + H3 · GRAS" };
         const int m = juce::jlimit (0, 3, juce::roundToInt (get (ids::satType)));
-        title = juce::String ("SATURATION · ") + modes[m];
-        stat = utf8 (sub[m]) + " · DRIVE " + juce::String (get (ids::drive), 1);
+        title = utf8 ("SATURATION · ") + modes[m];
+        stat = utf8 (sub[m]) + utf8 (" · DRIVE ") + juce::String (get (ids::drive), 1);
         phase += 0.012f;
         repaint();
     }
@@ -715,18 +790,19 @@ private:
         { juce::Path d; d.startNewSubPath (40.0f, 340.0f); d.lineTo (360.0f, 20.0f); dashed (g, d, 1.0f, 4.0f, 6.0f); }
         std::vector<juce::Point<float>> c, pin, pout;
         for (int i = 0; i <= 60; ++i) { const float x = -1.0f + (float) i / 30.0f; c.push_back ({ 200.0f + x * 160.0f, 180.0f - fx (x) * 160.0f }); }
+        const float x0 = 420.0f, step = (vw - 20.0f - x0) / 160.0f;
         for (int i = 0; i <= 160; ++i)
         {
             const float x = 0.9f * std::sin ((float) i / 160.0f * 4.0f * kPi + phase);
-            pin.push_back ({ 420.0f + (float) i * 6.0f, 180.0f - x * 150.0f });
-            pout.push_back ({ 420.0f + (float) i * 6.0f, 180.0f - fx (x) * 150.0f });
+            pin.push_back ({ x0 + (float) i * step, 180.0f - x * 150.0f });
+            pout.push_back ({ x0 + (float) i * step, 180.0f - fx (x) * 150.0f });
         }
         const auto curve = poly (c);
         glowPath (g, curve, cEmber.withAlpha (0.85f), 10.0f, false);
         g.setColour (cEmber);
         g.strokePath (curve, juce::PathStrokeType (4.0f, juce::PathStrokeType::curved));
         g.setColour (juce::Colours::white.withAlpha (0.08f));
-        g.drawLine (420.0f, 180.0f, 1380.0f, 180.0f, 1.0f);
+        g.drawLine (x0, 180.0f, vw - 20.0f, 180.0f, 1.0f);
         g.setColour (juce::Colour (244, 236, 236).withAlpha (0.35f));
         dashed (g, poly (pin), 2.0f, 5.0f, 5.0f);
         g.setColour (cEmber.withAlpha (0.16f));
@@ -759,9 +835,10 @@ public:
     {
         const auto names = delayNoteNames();
         const bool sync = get (ids::delaySync) > 0.5f;
+        const juce::String dot = juce::String::fromUTF8 (" · ");
         stat = (sync ? names[juce::jlimit (0, names.size() - 1, juce::roundToInt (get (ids::delayNote)))] : juce::String (juce::roundToInt (get (ids::delayTime))) + " ms")
-             + " · " + juce::String (count - 1) + utf8 (" ÉCHOS · ") + (get (ids::delayPingPong) > 0.5f ? "PING-PONG" : "MONO")
-             + " · " + hz (get (ids::delayLowCut)) + utf8 (" → ") + hz (get (ids::delayHighCut));
+             + dot + juce::String (count - 1) + utf8 (" ÉCHOS") + dot + (get (ids::delayPingPong) > 0.5f ? "PING-PONG" : "MONO")
+             + dot + hz (get (ids::delayLowCut)) + utf8 (" → ") + hz (get (ids::delayHighCut));
         repaint();
     }
 
@@ -769,9 +846,10 @@ private:
     float get (const char* id) const { return processor.apvts.getRawParameterValue (ids::inst (id, k))->load(); }
     void draw (juce::Graphics& g) override
     {
+        const float cx = vw * 0.5f, spread = vw / 1400.0f;
         g.setColour (juce::Colour (255, 140, 150).withAlpha (0.10f));
-        for (int x = -1400; x <= 2800; x += 200) g.drawLine ((float) x, 360.0f, 700.0f, 60.0f, 1.0f);
-        for (int q = 1; q < 9; ++q) { const float y = 60.0f + 300.0f / (1.0f + (float) q * 0.7f); g.drawHorizontalLine ((int) y, 0.0f, 1400.0f); }
+        for (float x = -vw; x <= 2.0f * vw; x += 200.0f) g.drawLine (x, 360.0f, cx, 60.0f, 1.0f);
+        for (int q = 1; q < 9; ++q) { const float y = 60.0f + 300.0f / (1.0f + (float) q * 0.7f); g.drawHorizontalLine ((int) y, 0.0f, vw); }
         const bool sync = get (ids::delaySync) > 0.5f;
         const float beats = sync ? delayNoteBeats (juce::roundToInt (get (ids::delayNote))) : get (ids::delayTime) / 500.0f;
         const float fb = get (ids::delayFeedback) * 0.01f, mix = get (ids::delayMix) * 0.01f, step = beats * 1.3f;
@@ -783,13 +861,12 @@ private:
             const float op = q == 0 ? 1.0f : std::pow (fb, (float) q * 0.55f) * (0.45f + mix * 0.55f);
             if (op < 0.05f) break;
             const float sc = 1.0f / (1.0f + (float) q * step * 0.9f), sd = q == 0 ? 0.0f : (ping ? (q % 2 ? -1.0f : 1.0f) : 0.0f);
-            ec.push_back ({ 700.0f + sd * 420.0f * sc, 60.0f + 250.0f * sc, sc, op, q == 0, (float) q * beats * 0.5f });
+            ec.push_back ({ cx + sd * 420.0f * spread * sc, 60.0f + 250.0f * sc, sc, op, q == 0, (float) q * beats * 0.5f });
         }
         count = (int) ec.size();
         const float t = time();
         for (auto it = ec.rbegin(); it != ec.rend(); ++it)
         {
-            // chaque écho s'allume à son tour (2.4 s, sommet à 30 %)
             const float ph = std::fmod (t - it->delay + 100.0f, 2.4f) / 2.4f;
             const float pulse = ph < 0.3f ? 0.55f + 0.45f * ph / 0.3f : 1.0f - 0.45f * (ph - 0.3f) / 0.7f;
             auto p = burst;
@@ -815,15 +892,16 @@ public:
     {
         legend = { { "VOIX", cMist }, { "QUEUE DE REVERB", cEmber } };
         juce::Random r (5);
-        for (auto& s : sparks) s = { 40.0f + r.nextFloat() * 940.0f, 180.0f + (r.nextFloat() - 0.5f) * 240.0f, 1.0f + r.nextFloat() * 1.8f, r.nextFloat() * 3.0f };
+        for (auto& s : sparks) s = { r.nextFloat(), 180.0f + (r.nextFloat() - 0.5f) * 240.0f, 1.0f + r.nextFloat() * 1.8f, r.nextFloat() * 3.0f };
     }
     void tick() override
     {
         static const char* modes[] { "ROOM", "PLATE 1", "PLATE 2", "HALL", "SHIMMER" };
         const int m = juce::jlimit (0, 4, juce::roundToInt (get (ids::reverbMode)));
-        title = juce::String ("REVERB · ") + modes[m] + utf8 (" · LA VOIX ET SA QUEUE, L'ENVELOPPE À DROITE");
-        stat = "PRE-DELAY " + juce::String (juce::roundToInt (get (ids::reverbPreDelay))) + " ms · DECAY " + juce::String (get (ids::reverbDecay), 1) + " s · CLEAN "
-             + juce::String (juce::roundToInt (get (ids::reverbClean))) + " % · " + hz (get (ids::reverbLowCut)) + utf8 (" → ") + hz (get (ids::reverbHighCut));
+        const juce::String dot = juce::String::fromUTF8 (" · ");
+        title = "REVERB" + dot + modes[m] + utf8 (" · LA VOIX ET SA QUEUE, L'ENVELOPPE À DROITE");
+        stat = "PRE-DELAY " + juce::String (juce::roundToInt (get (ids::reverbPreDelay))) + " ms" + dot + "DECAY " + juce::String (get (ids::reverbDecay), 1) + " s" + dot + "CLEAN "
+             + juce::String (juce::roundToInt (get (ids::reverbClean))) + " %" + dot + hz (get (ids::reverbLowCut)) + utf8 (" → ") + hz (get (ids::reverbHighCut));
         if (module != nullptr) readScope (module->scope, in, out);
         repaint();
     }
@@ -832,20 +910,20 @@ private:
     float get (const char* id) const { return processor.apvts.getRawParameterValue (ids::inst (id, k))->load(); }
     void draw (juce::Graphics& g) override
     {
+        const float L = waveEnd();
         if (! in.empty())
         {
             juce::Graphics::ScopedSaveState s (g);
-            g.reduceClipRegion (0, 0, 1000, 360);
+            g.reduceClipRegion (0, 0, (int) L, 360);
             std::vector<float> a (in.size()), b (out.size());
             for (size_t i = 0; i < in.size(); ++i) { a[i] = juce::jlimit (0.0f, 1.0f, in[i] * 1.3f); b[i] = juce::jlimit (0.0f, 1.0f, out[i] * 4.0f); }
-            const auto tail = mirror (b, 0.0f, 1000.0f, 180.0f, 150.0f), voice = mirror (a, 0.0f, 1000.0f, 180.0f, 150.0f);
+            const auto tail = mirror (b, 0.0f, L, 180.0f, 150.0f), voice = mirror (a, 0.0f, L, 180.0f, 150.0f);
             glowPath (g, tail, cEmber.withAlpha (0.6f), 14.0f, true);
-            juce::ColourGradient tg (cEmber.withAlpha (0.75f), 0.0f, 0.0f, juce::Colour (0xffff9aa5).withAlpha (0.35f), 1000.0f, 0.0f, false);
+            juce::ColourGradient tg (cEmber.withAlpha (0.75f), 0.0f, 0.0f, juce::Colour (0xffff9aa5).withAlpha (0.35f), L, 0.0f, false);
             g.setGradientFill (tg);
             g.fillPath (tail);
             g.setColour (juce::Colour (244, 236, 236).withAlpha (0.95f));
             g.fillPath (voice);
-            // étincelles
             const int n = juce::roundToInt (get (ids::reverbMode)) == 4 ? 34 : juce::roundToInt (get (ids::reverbModDepth) / 100.0f * 16.0f);
             const float t = time();
             for (int i = 0; i < std::min (n, (int) sparks.size()); ++i)
@@ -853,20 +931,19 @@ private:
                 const auto& sp = sparks[(size_t) i];
                 const float a2 = 0.5f - 0.5f * std::cos ((t + sp[3]) * 2.0f * kPi / 2.6f);
                 g.setColour (juce::Colour (0xffffd6db).withAlpha (a2));
-                g.fillEllipse (juce::Rectangle<float> (2.0f * sp[2], 2.0f * sp[2]).withCentre ({ sp[0], sp[1] }));
+                g.fillEllipse (juce::Rectangle<float> (2.0f * sp[2], 2.0f * sp[2]).withCentre ({ 40.0f + sp[0] * (L - 60.0f), sp[1] }));
             }
         }
         g.setColour (juce::Colours::white.withAlpha (0.08f));
-        g.fillRect (1000.0f, 0.0f, 1.0f, 360.0f);
-        // l'enveloppe : plat pendant le pre-delay, puis la décroissance jusqu'à -60 dB
+        g.fillRect (L, 0.0f, 1.0f, 360.0f);
         const float pre = get (ids::reverbPreDelay) / 1000.0f, dec = std::max (0.2f, get (ids::reverbDecay));
-        const float T = std::max (1.5f, pre + dec * 1.15f);
-        auto X = [&] (float sec) { return 1030.0f + sec / T * 350.0f; };
+        const float T = std::max (1.5f, pre + dec * 1.15f), x0 = L + 30.0f, x1 = vw - 20.0f;
+        auto X = [&] (float sec) { return x0 + sec / T * (x1 - x0); };
         auto Y = [] (float db) { return 50.0f + (-db) / 60.0f * 270.0f; };
-        std::vector<juce::Point<float>> env { { 1030.0f, 320.0f }, { X (pre), 320.0f }, { X (pre), Y (0.0f) } };
+        std::vector<juce::Point<float>> env { { x0, 320.0f }, { X (pre), 320.0f }, { X (pre), Y (0.0f) } };
         for (int i = 1; i <= 40; ++i) { const float sec = dec * (float) i / 40.0f; env.push_back ({ X (pre + sec), Y (-60.0f * sec / dec) }); }
         auto fill = poly (env);
-        fill.lineTo (1380.0f, 320.0f); fill.closeSubPath();
+        fill.lineTo (x1, 320.0f); fill.closeSubPath();
         g.setGradientFill (juce::ColourGradient (cEmber.withAlpha (0.55f), 0.0f, 40.0f, cEmber.withAlpha (0.0f), 0.0f, 330.0f, false));
         g.fillPath (fill);
         const auto line = poly (env);
@@ -915,12 +992,12 @@ private:
             r[i] = juce::jlimit (0.0f, 1.0f, in[(i + n - 8) % n] * 1.3f * (0.9f + 0.1f * std::sin ((float) i * 0.3f + 1.0f)));
         }
         g.setColour (juce::Colours::white.withAlpha (0.08f));
-        g.drawHorizontalLine ((int) (180.0f - off), 0.0f, 1400.0f);
-        g.drawHorizontalLine ((int) (180.0f + off), 0.0f, 1400.0f);
+        g.drawHorizontalLine ((int) (180.0f - off), 0.0f, vw);
+        g.drawHorizontalLine ((int) (180.0f + off), 0.0f, vw);
         const float op = 0.25f + amt * 0.75f;
         for (const auto* lane : { &l, &r })
         {
-            const auto p = mirror (*lane, 0.0f, 1400.0f, lane == &l ? 180.0f - off : 180.0f + off, 50.0f);
+            const auto p = mirror (*lane, 0.0f, vw, lane == &l ? 180.0f - off : 180.0f + off, 50.0f);
             glowPath (g, p, cEmber.withAlpha (0.7f * op), 8.0f, true);
             g.setGradientFill (emberFill (0.0f, 360.0f));
             g.setOpacity (op);
@@ -928,7 +1005,7 @@ private:
             g.setOpacity (1.0f);
         }
         g.setColour (juce::Colour (244, 236, 236).withAlpha (0.92f));
-        g.fillPath (mirror (c, 0.0f, 1400.0f, 180.0f, 70.0f));
+        g.fillPath (mirror (c, 0.0f, vw, 180.0f, 70.0f));
     }
     OniriqueVocalBoxAudioProcessor& processor;
     ChainModule* module;
@@ -1051,18 +1128,13 @@ private:
     float angle = 20.0f;
 };
 
-// la compression en direct (bas des façades) : la voix qui entre (pâle), qui sort (blanche), la réduction en braise
+// la compression en direct (bas des façades) : la voix qui entre (pâle), qui sort (blanche), et la réduction en braise
+// depuis le haut, colonne par colonne avec la forme d'onde (même horloge : ce qu'on voit au même endroit est le même instant)
 class CompStrip : public juce::Component, public Animated
 {
 public:
     explicit CompStrip (ChainModule* m) : module (m) { setInterceptsMouseClicks (false, false); }
-    void tick() override
-    {
-        if (module == nullptr) return;
-        gr[(size_t) pos] = std::abs (module->getReductionDb());
-        pos = (pos + 1) % (int) gr.size();
-        repaint();
-    }
+    void tick() override { if (module != nullptr) repaint(); }
     void paint (juce::Graphics& g) override
     {
         const float u = ui::unitOf (*this);
@@ -1072,13 +1144,15 @@ public:
         g.setColour (juce::Colours::white.withAlpha (0.08f));
         g.drawRoundedRectangle (r.reduced (0.5f), 14.0f * u, 1.0f);
         if (module == nullptr) return;
+        std::vector<float> in, out, gr;
+        readScope (module->scope, in, out, &gr);
+        mx = 0.0f;
+        for (float v : gr) mx = std::max (mx, v);
         juce::Graphics::ScopedSaveState s (g);
         juce::Path clip; clip.addRoundedRectangle (r, 14.0f * u);
         g.reduceClipRegion (clip);
         // repère de la démo : 1400 x 112, étiré (preserveAspectRatio none)
         g.addTransform (juce::AffineTransform::scale (r.getWidth() / 1400.0f, r.getHeight() / 112.0f).translated (r.getX(), r.getY()));
-        std::vector<float> in, out;
-        readScope (module->scope, in, out);
         auto norm = [] (float a) { return juce::jlimit (0.0f, 1.0f, (dbOf (a) + 50.0f) / 50.0f); };
         std::vector<float> a (in.size()), b (out.size());
         for (size_t i = 0; i < in.size(); ++i) { a[i] = norm (in[i]); b[i] = norm (out[i]); }
@@ -1089,7 +1163,7 @@ public:
         juce::Path curtain;
         curtain.startNewSubPath (0.0f, 0.0f);
         const int m = (int) gr.size();
-        for (int i = 0; i < m; ++i) curtain.lineTo (1400.0f * (float) i / (float) (m - 1), std::min (56.0f, gr[(size_t) ((pos + i) % m)] * 4.0f));
+        for (int i = 0; i < m; ++i) curtain.lineTo (1400.0f * (float) i / (float) (m - 1), std::min (56.0f, gr[(size_t) i] * 4.0f));
         curtain.lineTo (1400.0f, 0.0f);
         curtain.closeSubPath();
         g.setGradientFill (juce::ColourGradient (cEmber.withAlpha (0.85f), 0.0f, 0.0f, cEmber.withAlpha (0.05f), 0.0f, 112.0f, false));
@@ -1101,8 +1175,6 @@ public:
     {
         const float u = ui::unitOf (*this);
         const auto r = getLocalBounds().toFloat().reduced (14.0f * u, 10.0f * u);
-        float mx = 0.0f;
-        for (float v : gr) mx = std::max (mx, v);
         g.setFont (ui::css (ui::Face::mono, 9.0f * u, 0.12f));
         g.setColour (juce::Colour (0xffd9b8bd));
         g.drawText (utf8 ("RÉDUCTION DE GAIN"), r, juce::Justification::topLeft, false);
@@ -1112,8 +1184,7 @@ public:
 
 private:
     ChainModule* module = nullptr;
-    std::array<float, 260> gr {};
-    int pos = 0;
+    float mx = 0.0f;
 };
 
 //==============================================================================
@@ -1639,7 +1710,9 @@ std::unique_ptr<ModulePanel> createModulePanel (OniriqueVocalBoxAudioProcessor& 
         case modules::deess:
         {
             auto s = stdPanel (p, code, std::make_unique<WaveViz> (p, code));
-            s->knobs = { &s->knob (ids::deessFreq, "FREQ"), &s->knob (ids::deessAmt, "AMOUNT") };
+            s->knobs = { &s->knob (ids::deessFreq, "FREQ"), &s->knob (ids::deessAmt, "AMOUNT"), &s->knob (ids::deessClarity, "CLARITY") };
+            s->topRow = { &s->toggle (ids::deessS, "S"), &s->toggle (ids::deessT, "T"), &s->toggle (ids::deessCH, "CH"), &s->toggle (ids::deessF, "F") };
+            s->note = juce::String::fromUTF8 ("COCHE LES SONS À TRAITER · CLARITY REDONNE DE L'ÉCLAT SANS LES RAMENER");
             return s;
         }
         case modules::noise:
@@ -1708,13 +1781,13 @@ std::unique_ptr<ModulePanel> createModulePanel (OniriqueVocalBoxAudioProcessor& 
         }
         case modules::chorus:
         {
-            auto s = stdPanel (p, code, std::make_unique<FxViz> (p, code, FxVisual::Kind::chorus, "CHORUS · LA VOIX QUI ONDULE"));
+            auto s = stdPanel (p, code, std::make_unique<FxViz> (p, code, FxVisual::Kind::chorus, "CHORUS \xb7 LA VOIX QUI ONDULE"));
             s->knobs = { &s->knob (ids::chorusRate, "RATE"), &s->knob (ids::chorusDepth, "DEPTH"), &s->knob (ids::chorusMix, "MIX") };
             return s;
         }
         case modules::flanger:
         {
-            auto s = stdPanel (p, code, std::make_unique<FxViz> (p, code, FxVisual::Kind::flanger, "FLANGER · LE PEIGNE QUI GLISSE"));
+            auto s = stdPanel (p, code, std::make_unique<FxViz> (p, code, FxVisual::Kind::flanger, "FLANGER \xb7 LE PEIGNE QUI GLISSE"));
             s->knobs = { &s->knob (ids::flangerRate, "RATE"), &s->knob (ids::flangerDepth, "DEPTH"), &s->knob (ids::flangerFeedback, "FEEDBACK"), &s->knob (ids::flangerMix, "MIX") };
             return s;
         }

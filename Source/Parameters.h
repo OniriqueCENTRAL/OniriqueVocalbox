@@ -121,6 +121,8 @@ namespace ids
     inline constexpr const char* satAir    = "satAir";
     inline constexpr const char* satBias   = "satBias";
     inline constexpr const char* satDynamics = "satDynamics";
+    // DE-ESSER : les sons traités (S, T, CH, F) et CLARITY
+    inline constexpr const char* deessS = "deessS", *deessT = "deessT", *deessCH = "deessCH", *deessF = "deessF", *deessClarity = "deessClarity";
     inline constexpr const char* slot[16] { "slot1", "slot2", "slot3", "slot4", "slot5", "slot6", "slot7", "slot8",
                                             "slot9", "slot10", "slot11", "slot12", "slot13", "slot14", "slot15", "slot16" };
     // identifiant d'un réglage pour l'exemplaire k (0 = le premier, qui garde l'identifiant d'origine)
@@ -640,6 +642,12 @@ inline void addParams (std::vector<std::unique_ptr<juce::RangedAudioParameter>>&
     p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::satBias, 1 }, "Saturation Bias",
         NormalisableRange<float> (-100.0f, 100.0f, 0.1f), 0.0f, Attr().withLabel ("%").withStringFromValueFunction (bipolarPct)));
     p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::satDynamics, 1 }, "Saturation Dynamics",
+        NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f, Attr().withLabel ("%").withStringFromValueFunction (pctText)));
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::deessS, 1 }, "De-Ess S", true));
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::deessT, 1 }, "De-Ess T", false));
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::deessCH, 1 }, "De-Ess CH", false));
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::deessF, 1 }, "De-Ess F", false));
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::deessClarity, 1 }, "De-Ess Clarity",
         NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f, Attr().withLabel ("%").withStringFromValueFunction (pctText)));
 
     // les emplacements de la chaîne : ni automation (le DAW ne doit pas reconstruire la chaîne en lecture), ni nom de module

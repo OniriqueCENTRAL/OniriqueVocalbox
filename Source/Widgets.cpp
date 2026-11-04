@@ -2500,6 +2500,19 @@ void BandBubble::resized()
     zFreq = { x, y, ui::textWidth (mf, "20.00 kHz"), h };
     x += zFreq.getWidth() + 10.0f * u;
     zValue = { x, y, ui::textWidth (mf, valueText()) + 2.0f, h };
+    {
+        const float q = get (P (ids::peqQ[band])), gd = get (P (ids::peqGain[band]));
+        const juce::String gain = (gd > 0.0f ? "+" : "") + juce::String (gd, 1) + " dB";
+        if (type == ParametricEQ::bell)
+        {
+            const float gw = ui::textWidth (mf, gain + juce::String::fromUTF8 (" ·"));
+            zGain = zValue.withWidth (gw);
+            zQ = zValue.withTrimmedLeft (gw);
+        }
+        else if (ParametricEQ::hasGain (type)) { zGain = zValue; zQ = {}; }
+        else { zGain = {}; zQ = zValue; }
+        juce::ignoreUnused (q);
+    }
     x += zValue.getWidth() + 10.0f * u;
     if (ParametricEQ::isCut (type))
     {
@@ -2525,6 +2538,9 @@ BandBubble::Zone BandBubble::zoneAt (juce::Point<float> p) const noexcept
     if (cut && zUp.contains (p)) return slopeUp;
     if (cut && zDown.contains (p)) return slopeDown;
     if (zType.contains (p)) return typeMenu;
+    if (zFreq.contains (p)) return dragFreq;
+    if (zGain.contains (p)) return dragGain;
+    if (zQ.contains (p)) return dragQ;
     return none;
 }
 
@@ -2598,7 +2614,7 @@ void BandBubble::mouseMove (const juce::MouseEvent& e)
 {
     const int z = (int) zoneAt (e.position);
     if (z != hover) { hover = z; repaint(); }
-    setMouseCursor (z >= 0 ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
+    setMouseCursor (z >= (int) dragFreq ? juce::MouseCursor::UpDownResizeCursor : z >= 0 ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
 }
 
 void BandBubble::mouseDown (const juce::MouseEvent& e)
@@ -2626,12 +2642,31 @@ void BandBubble::mouseDown (const juce::MouseEvent& e)
         case slopeUp:   set (P (ids::peqSlope[band]), (float) juce::jmin (3, juce::roundToInt (get (P (ids::peqSlope[band]))) + 1)); break;
         case slopeDown: set (P (ids::peqSlope[band]), (float) juce::jmax (0, juce::roundToInt (get (P (ids::peqSlope[band]))) - 1)); break;
         case typeMenu:  SpectrumAnalyzer::showBandMenu (*this, apvts, inst, band, e.getScreenPosition()); break;
+        case dragFreq: case dragGain: case dragQ:
+        {
+            dragging = zoneAt (e.position);
+            const auto id = P (dragging == dragFreq ? ids::peqFreq[band] : dragging == dragGain ? ids::peqGain[band] : ids::peqQ[band]);
+            if (auto* p = apvts.getParameter (id)) { dragFrom = p->getValue(); p->beginChangeGesture(); }
+            e.source.enableUnboundedMouseMovement (true);
+            break;
+        }
         case none: default: break;
     }
 }
 
 void BandBubble::mouseDrag (const juce::MouseEvent& e)
 {
+    if (dragging != none)
+    {
+        const auto id = P (dragging == dragFreq ? ids::peqFreq[band] : dragging == dragGain ? ids::peqGain[band] : ids::peqQ[band]);
+        if (auto* p = apvts.getParameter (id))
+        {
+            // 200 px pour toute la course (800 avec Maj), vers le haut = plus
+            const float span = e.mods.isShiftDown() ? 800.0f : 200.0f;
+            p->setValueNotifyingHost (juce::jlimit (0.0f, 1.0f, dragFrom - (float) e.getDistanceFromDragStartY() / (span * ui::unitOf (*this) * 1600.0f / 1600.0f)));
+        }
+        return;
+    }
     // casque tenu et souris déplacée : la bande suit la souris en fréquence, on l'entend seule pendant tout le geste
     if (! listening || xOfHz == nullptr || hzOfX == nullptr) return;
     auto* p = apvts.getParameter (P (ids::peqFreq[band]));
@@ -2648,8 +2683,16 @@ void BandBubble::mouseDrag (const juce::MouseEvent& e)
     p->setValueNotifyingHost (p->convertTo0to1 (hz));
 }
 
-void BandBubble::mouseUp (const juce::MouseEvent&)
+void BandBubble::mouseUp (const juce::MouseEvent& e)
 {
+    if (dragging != none)
+    {
+        const auto id = P (dragging == dragFreq ? ids::peqFreq[band] : dragging == dragGain ? ids::peqGain[band] : ids::peqQ[band]);
+        if (auto* p = apvts.getParameter (id)) p->endChangeGesture();
+        e.source.enableUnboundedMouseMovement (false);
+        dragging = none;
+        return;
+    }
     if (! listening) return;
     if (sweeping)
     {

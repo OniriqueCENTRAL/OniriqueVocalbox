@@ -18,6 +18,10 @@ void drawDemoGlass (juce::Graphics&, juce::Rectangle<float>, float corner, float
 
 // un onglet / bouton segmenté de la démo (.seg), allumé (lit) ou survolé
 void drawSeg (juce::Graphics&, juce::Rectangle<float>, float lit, float hover, float u);
+// une lueur floue et douce (box-shadow / drop-shadow de la démo), sans les anneaux en marches
+void softGlow (juce::Graphics&, const juce::Path&, juce::Colour, float radius, float dy = 0.0f);
+void softGlowRect (juce::Graphics&, juce::Rectangle<float>, float corner, juce::Colour, float radius, float dy = 0.0f);
+void softGlowEllipse (juce::Graphics&, juce::Rectangle<float>, juce::Colour, float radius, float dy = 0.0f);
 
 // verre sombre : le panneau de la nouvelle interface (fond translucide, liseré clair, reflet en haut)
 void drawGlass (juce::Graphics&, juce::Rectangle<float>, float corner, float u, float lit = 0.0f);
@@ -92,6 +96,7 @@ public:
     GlassTabs (juce::AudioProcessorValueTreeState&, const juce::String& paramId, const juce::StringArray& labels);
     // sans réglage : un choix de l'interface (la bande affichée du MULTIBAND...)
     explicit GlassTabs (const juce::StringArray& labels) : labels (labels) { setMouseCursor (juce::MouseCursor::PointingHandCursor); }
+    bool round = false;   // en gélule (bords tout ronds), comme la section OS
     std::function<void (int)> onChange;
     void setSelected (int i) { if (i != selected) { selected = i; repaint(); } }
     int getSelected() const noexcept { return selected; }
