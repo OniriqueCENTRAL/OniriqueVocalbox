@@ -14,7 +14,7 @@ env:
 
 jobs:
   mac:
-    runs-on: macos-latest
+    runs-on: macos-15-intel   # les machines Apple Silicon de GitHub sont saturées ; Xcode sort quand même un binaire universel
     steps:
       - uses: actions/checkout@v4
       - name: Modèle de séparation de la voix (demucs.cpp htdemucs_ft vocals, MIT, 84 Mo)
