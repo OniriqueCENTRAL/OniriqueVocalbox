@@ -2,3 +2,4 @@ build/
 dist/
 *.zip
 site/
+Resources/models/*.bin

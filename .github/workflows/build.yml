@@ -14,9 +14,18 @@ env:
 
 jobs:
   mac:
-    runs-on: macos-14
+    # EN PAUSE (05/11/2026) : le Mac se compile sur une vraie machine Mac de l'équipe ; enlever « if: false » pour le rallumer
+    if: false
+    runs-on: macos-15-intel   # les machines Apple Silicon de GitHub sont saturées ; Xcode sort quand même un binaire universel
     steps:
       - uses: actions/checkout@v4
+      - name: Modèle de séparation de la voix (demucs.cpp htdemucs_ft vocals, MIT, 84 Mo)
+        shell: bash
+        run: |
+          mkdir -p Resources/models
+          M=Resources/models/ggml-model-htdemucs_ft_vocals-4s-f16.bin
+          curl -L --fail --retry 3 -o "$M" https://huggingface.co/datasets/Retrobear/demucs.cpp/resolve/main/ggml-model-htdemucs_ft_vocals-4s-f16.bin
+          echo "19186500a45a551a034d96e9500415ebe73c8bd570bf55337ddc8cc8f53a9120  $M" | (command -v sha256sum >/dev/null && sha256sum -c - || shasum -a 256 -c -)
       - name: Compiler (universel arm64 + x86_64)
         run: |
           cmake -B build -G Xcode
@@ -44,6 +53,13 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Modèle de séparation de la voix (demucs.cpp htdemucs_ft vocals, MIT, 84 Mo)
+        shell: bash
+        run: |
+          mkdir -p Resources/models
+          M=Resources/models/ggml-model-htdemucs_ft_vocals-4s-f16.bin
+          curl -L --fail --retry 3 -o "$M" https://huggingface.co/datasets/Retrobear/demucs.cpp/resolve/main/ggml-model-htdemucs_ft_vocals-4s-f16.bin
+          echo "19186500a45a551a034d96e9500415ebe73c8bd570bf55337ddc8cc8f53a9120  $M" | (command -v sha256sum >/dev/null && sha256sum -c - || shasum -a 256 -c -)
       - name: Compiler
         run: |
           cmake -B build
@@ -57,12 +73,10 @@ jobs:
         with: { name: win, path: dist/win }
 
   publish:
-    needs: [mac, windows]
+    needs: [windows]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
-        with: { name: mac, path: version/mac }
       - uses: actions/download-artifact@v4
         with: { name: win, path: version/win }
       - name: Publier dans ONIRIQUE CENTRAL

@@ -1,4 +1,5 @@
 #pragma once
+#include "OniriqueTheme.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
@@ -31,10 +32,14 @@ using namespace juce;
 
 namespace colours
 {
-    inline const Colour bar { 0xff120a0c }, card { 0xff1a0c0f }, ember { 0xffe23444 }, emberLit { 0xffff5a68 },
-                        starLit { 0xffff8d97 }, mist { 0xfff6eeee }, chip { 0xffd9c3c6 }, haze { 0xffa88f92 },
-                        rose { 0xffffd2d6 }, bone { 0xffffecee }, brandName { 0xffc9afb3 },
-                        litTop { 0xff5a0d17 }, litBottom { 0xff33060b };
+    inline const Colour bar { 0xff120a0c }, card { 0xff1a0c0f }, mist { 0xfff6eeee }, chip { 0xffd9c3c6 }, haze { 0xffa88f92 },
+                        rose { 0xffffd2d6 }, bone { 0xffffecee }, brandName { 0xffc9afb3 };
+    // l'accent : la couleur de l'interface (OniriqueTheme.h)
+    inline const Colour& ember = onirique::look::emberBar;
+    inline const Colour& emberLit = onirique::look::emberLit;
+    inline const Colour& starLit = onirique::look::emberPink;
+    inline const Colour& litTop = onirique::look::litTop;
+    inline const Colour& litBottom = onirique::look::litBottom;
 }
 
 using Fonts = license::theme::Fonts;
@@ -982,6 +987,58 @@ private:
 };
 
 //==============================================================================
+/** INTERFACE COLOUR : une pastille par teinte (OniriqueTheme.h) ; la choisie a un anneau blanc. */
+class Swatches final : public Component
+{
+public:
+    Swatches() { setMouseCursor (MouseCursor::PointingHandCursor); }
+    std::function<void()> onChange;
+
+    void paint (Graphics& g) override
+    {
+        const auto cur = onirique::look::ember.getARGB() | 0xff000000u;
+        for (int i = 0; i < onirique::look::numSwatches; ++i)
+        {
+            const auto r = dot (i);
+            const Colour c (onirique::look::swatches[i].argb);
+            const bool sel = (onirique::look::swatches[i].argb | 0xff000000u) == cur;
+            if (i == hover || sel)
+            {
+                g.setColour (c.withAlpha (sel ? 0.35f : 0.2f));
+                g.fillEllipse (r.expanded (4.0f));
+            }
+            g.setGradientFill (ColourGradient (c.brighter (0.25f), r.getX(), r.getY(), c.darker (0.45f), r.getRight(), r.getBottom(), false));
+            g.fillEllipse (r);
+            g.setColour (sel ? Colours::white : Colours::white.withAlpha (0.12f));
+            g.drawEllipse (r.expanded (sel ? 2.0f : 0.0f), sel ? 1.6f : 1.0f);
+        }
+    }
+    void mouseMove (const MouseEvent& e) override { const int h = at (e.position); if (h != hover) { hover = h; repaint(); } }
+    void mouseExit (const MouseEvent&) override { hover = -1; repaint(); }
+    void mouseDown (const MouseEvent& e) override
+    {
+        const int i = at (e.position);
+        if (i < 0) return;
+        onirique::look::choose (onirique::look::swatches[i].argb);
+        repaint();
+        if (onChange) onChange();
+    }
+
+private:
+    Rectangle<float> dot (int i) const
+    {
+        const float n = (float) onirique::look::numSwatches, w = (float) getWidth() / n, d = jmin (18.0f, w - 10.0f);
+        return Rectangle<float> (d, d).withCentre ({ w * ((float) i + 0.5f), (float) getHeight() * 0.5f });
+    }
+    int at (Point<float> p) const
+    {
+        for (int i = 0; i < onirique::look::numSwatches; ++i) if (dot (i).expanded (4.0f).contains (p)) return i;
+        return -1;
+    }
+    int hover = -1;
+};
+
+//==============================================================================
 /** Le menu ⋯ : comparer, importer, la taille de la fenêtre. */
 class Menu final : public Component
 {
@@ -1018,6 +1075,9 @@ public:
         copySettings.setVisible (clipboard);
         pasteSettings.setVisible (clipboard);
 
+        addAndMakeVisible (swatches);
+        swatches.onChange = [this] { if (onTheme) onTheme(); };
+
         for (int i = 0; i < kNumZooms; ++i)
         {
             zooms[i].setButtonText (String (kZooms[i]));
@@ -1032,6 +1092,7 @@ public:
     std::function<float()> getZoom;              // où elle en est
     std::function<bool (float)> fitsOnScreen;    // une taille plus grande que l'écran n'est pas proposée
     std::function<Point<int>()> getPixels;       // sa taille, en pixels
+    std::function<void()> onTheme;                // une autre couleur d'interface : la fenêtre se redessine
 
     void refresh()
     {
@@ -1049,7 +1110,7 @@ public:
         repaint();
     }
 
-    int idealHeight() const   { return 6 + (clipboard ? 5 : 3) * 33 + (withZoom ? 11 + 70 : 0) + 6; }
+    int idealHeight() const   { return 6 + (clipboard ? 5 : 3) * 33 + (withZoom ? 11 + 70 : 0) + 11 + 62 + 6; }
 
     /** Sans la taille de la fenêtre (une application, qui a la sienne). */
     void setZoomVisible (bool shouldShow)
@@ -1072,12 +1133,20 @@ public:
         g.drawRoundedRectangle (r.reduced (0.5f), 14.0f, 1.0f);
 
         if (! withZoom)
+        {
+            drawHeading (g, *fonts, "INTERFACE COLOUR", colourHeading.toFloat(), false);
+            g.setColour (colours::rose.withAlpha (0.1f));
+            g.fillRect (separator2.toFloat());
             return;
+        }
 
         g.setColour (colours::rose.withAlpha (0.1f));
         g.fillRect (separator.toFloat());
 
         drawHeading (g, *fonts, "RESIZE", resizeHeading.toFloat(), false);
+        drawHeading (g, *fonts, "INTERFACE COLOUR", colourHeading.toFloat(), false);
+        g.setColour (colours::rose.withAlpha (0.1f));
+        g.fillRect (separator2.toFloat());
 
         if (getPixels)
         {
@@ -1116,6 +1185,14 @@ public:
             zooms[i].setBounds (inner.removeFromLeft (i < kNumZooms - 1 ? w : inner.getWidth()));
             inner.removeFromLeft (2);
         }
+
+        // la couleur de l'interface, sous la taille de la fenêtre
+        if (! withZoom) r = getLocalBounds().reduced (6).withTrimmedTop (separator.getY() - 6);
+        separator2 = r.removeFromTop (11).withSizeKeepingCentre (r.getWidth() - 16, 1);
+        auto cb = r.removeFromTop (62).reduced (10, 6);
+        colourHeading = cb.removeFromTop (14);
+        cb.removeFromTop (6);
+        swatches.setBounds (cb.removeFromTop (30));
     }
 
     void mouseDown (const MouseEvent&) override {}
@@ -1136,7 +1213,8 @@ private:
     Segment zooms[kNumZooms];
     std::unique_ptr<FileChooser> chooser;
 
-    Rectangle<int> separator, resizeHeading, zoomWell;
+    Rectangle<int> separator, resizeHeading, zoomWell, separator2, colourHeading;
+    Swatches swatches;
 
     JUCE_DECLARE_NON_COPYABLE (Menu)
 };
@@ -1201,6 +1279,7 @@ public:
         browser.onClose = [this] { panelsChanged(); };
         menu.onDone = [this] { closePanels(); };
         menu.onZoom = [this] (float zoom) { setZoom (zoom); };
+        menu.onTheme = [this] { repaint(); if (onThemeChanged) onThemeChanged(); };
         menu.getZoom = [this] { auto* e = editor(); return e != nullptr ? (float) e->getWidth() / (float) defaultWidth : 1.0f; };
         menu.getPixels = [this] { auto* e = editor(); return e != nullptr ? Point<int> (e->getWidth(), e->getHeight()) : Point<int>(); };
         menu.fitsOnScreen = [this] (float zoom)
@@ -1252,6 +1331,9 @@ public:
         resized();
     }
 
+    /** Une autre couleur d'interface vient d'être choisie dans le menu ⋯ : l'éditeur se redessine. */
+    std::function<void()> onThemeChanged;
+
     /** Dans une application plutôt qu'un plugin : la fenêtre a sa propre taille, le menu ⋯ ne la propose pas. */
     void setWithoutZoom()   { menu.setZoomVisible (false); layoutPanels(); }
 
@@ -1292,7 +1374,7 @@ public:
         // Le noir de la barre, et la lueur rouge seulement derrière la marque.
         g.setColour (colours::bar);
         g.fillRect (r);
-        g.setGradientFill (ColourGradient (Colour (0x99780c1c), 110.0f, -20.0f, Colour (0x00780c1c), 430.0f, -20.0f, true));
+        g.setGradientFill (ColourGradient (onirique::look::emberDeep.withMultipliedBrightness (1.1f).withAlpha (0.6f), 110.0f, -20.0f, onirique::look::emberDeep.withAlpha (0.0f), 430.0f, -20.0f, true));
         g.fillRect (r);
 
         g.setColour (colours::rose.withAlpha (0.1f));

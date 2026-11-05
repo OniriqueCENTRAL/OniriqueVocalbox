@@ -5,13 +5,15 @@
 
 #include "License/LicenseGuard.h"
 #include "Parameters.h"
-#include "DSP/VocalChain.h"
+#include "Modules.h"
+#include "DSP/ModularChain.h"
 #include "DSP/SpectrumTap.h"
 #include "StockPresets.h"
 
 class OniriqueVocalBoxAudioProcessor : public juce::AudioProcessor,
                                        private juce::AudioProcessorValueTreeState::Listener,
-                                       private juce::AsyncUpdater
+                                       private juce::AsyncUpdater,
+                                       private juce::Timer
 {
 public:
     OniriqueVocalBoxAudioProcessor();
@@ -51,98 +53,59 @@ public:
                                    onirique::vocalbox::notStored() };
     onirique::SpectrumTap inputTap, outputTap;   // analyseur : entrée et sortie du plugin (mono)
 
+    // ---- la chaîne, côté interface (thread de l'interface)
+    onirique::modules::Chain getChain() const;
+    void setChain (const onirique::modules::Chain&);
+    /** Ajoute un module (exemplaire libre suivant) en fin de chaîne, réglages d'usine, allumé ; rend son code (0 : plus de place). */
+    int addModule (int type);
+    void removeModule (int code);
+    void moveModule (int fromIndex, int toIndex);
+    onirique::ChainModule* module (int code) const noexcept
+    {
+        return chain.module (onirique::modules::typeOf (code), onirique::modules::instanceOf (code));
+    }
+    juce::RangedAudioParameter* param (const char* id, int instance) const { return apvts.getParameter (onirique::ids::inst (id, instance)); }
+
     // lus par l'éditeur (thread GUI) : crête de sortie depuis le dernier appel, correction d'Auto Gain
     float consumeOutputPeak() noexcept { return outPeak.exchange (0.0f); }
     float getAutoGainDb() const noexcept { return autoGainDbShown.load(); }
-    const onirique::ResonanceSuppressor::Meter& getResonanceMeter() const noexcept { return chain.getResonanceMeter(); }
-    float get1176ReductionDb() const noexcept { return chain.get1176ReductionDb(); }
-    float getLA2AReductionDb() const noexcept { return chain.getLA2AReductionDb(); }
-    float getPlosiveReductionDb() const noexcept { return chain.getPlosiveReductionDb(); }
-    float getParallelReductionDb() const noexcept { return chain.getParallelReductionDb(); }
-    float getDeEssReductionDb() const noexcept { return chain.getDeEssReductionDb(); }
-    float getDeEss2ReductionDb() const noexcept { return chain.getDeEss2ReductionDb(); }
-    float getPeqBandGainDb (int b) const noexcept { return chain.getPeqBandGainDb (b); }
-    const onirique::NoiseGate::Meter& getGateMeter() const noexcept { return chain.getGateMeter(); }
-    float getSuppressorReductionDb() const noexcept { return chain.getSuppressorReductionDb(); }
-    float getSuppressorFloorDb() const noexcept { return chain.getSuppressorFloorDb(); }
-    float getReverbTail() const noexcept { return chain.getReverbTail(); }
-    const onirique::mini::VoiceReverb& getReverbEngine() const noexcept { return chain.getReverbEngine(); }
-    float getParallelDeEssDb() const noexcept { return chain.getParallelDeEssDb(); }
     float consumeInputLevel (int c) noexcept  { return chain.consumeInputLevel (c); }
-
     float consumeOutputLevel (int c) noexcept { return chain.consumeOutputLevel (c); }
-    const onirique::MultibandOpto::Meter& getMultibandMeter() const noexcept { return chain.getMultibandMeter(); }
+    double getHostBpm() const noexcept { return hostBpm.load(); }
 
-private:
-    onirique::VocalChain::Params readParams() const noexcept;
-    void readExtras (onirique::VocalChain::Params&) const noexcept;
-
-    std::atomic<float>* pInput = nullptr;
-    std::atomic<float>* pLow = nullptr;
-    std::atomic<float>* pMud = nullptr;
-    std::atomic<float>* pHigh = nullptr;
-    std::atomic<float>* pDeessFreq = nullptr;
-    std::atomic<float>* pDeessAmt = nullptr;
-    std::atomic<float>* pDrive = nullptr;
-    std::atomic<float>* pSatType = nullptr;
-    std::atomic<float>* pLowFreq = nullptr;
-    std::atomic<float>* pAir = nullptr;
-    std::atomic<float>* pLowCut = nullptr;
-    std::atomic<float>* pMbOn = nullptr;
-    std::atomic<float>* pCompMaster = nullptr;
-    std::atomic<float>* pParOn = nullptr;
-    std::atomic<float>* pParAmount = nullptr;
-    std::atomic<float> *pParAuto = nullptr, *pParThresh = nullptr, *pParAttack = nullptr, *pParRelease = nullptr;
-    std::atomic<float> *pDeess2On = nullptr, *pDeess2Freq = nullptr, *pDeess2Amt = nullptr;
-    std::atomic<float>* pMbX[3] {};
-    std::atomic<float>* pMbThr[4] {};
-    std::atomic<float>* pMbGain[4] {};
-    std::atomic<float>* pMbAttack = nullptr;
-    std::atomic<float>* pMbRelease = nullptr;
-    std::atomic<float>* pPeq[8][8] {};   // on, type, freq, gain, q, pente, dynamique, seuil
-    std::atomic<float>* pPeqPower = nullptr;
-    std::atomic<float>* pGate[7] {};     // on, seuil, range, attaque, hold, relâchement, hystérésis
-    // NOISE SUPPRESSOR, écoute d'une bande de l'EQ, FX (voir kFxIds dans le .cpp)
-    static constexpr int kNumFx = 43;
-public:
-    static constexpr int kNumFxParams = kNumFx;
-private:
-    std::atomic<float>* pFx[kNumFx] {};
-    std::atomic<double> hostBpm { 120.0 };
-public:
-    // écoute d'une bande : vraie seulement pendant qu'on tient une bande (casque armé ou non : voir readExtras)
+    // écoute d'une bande de l'EQ paramétrique : vraie seulement pendant qu'on tient une bande
     std::atomic<bool> peqListenHold { false };
+
+    // CRÉER LE MIX : la prise écoutée (mono, 10 s de voix ; les blocs silencieux ne comptent pas)
+    void startCapture() noexcept { capPos.store (0); capturing.store (capLen > 0, std::memory_order_release); }
+    void stopCapture() noexcept { capturing.store (false); }
+    float captureProgress() const noexcept { return capLen > 0 ? (float) capPos.load() / (float) capLen : 0.0f; }
+    bool captureDone() const noexcept { return capLen > 0 && capPos.load (std::memory_order_acquire) >= capLen; }
+    // à lire seulement quand captureDone() (le thread audio n'y écrit plus)
+    const std::vector<float>& capturedTake() const noexcept { return capBuf; }
+    double captureRate() const noexcept { return currentRate; }
+
 private:
-    std::atomic<float>* pComp[11] {};   // compOn, mode, order, 1176 in/out/attack/release/ratio, LA-2A gain/peak/limit
-    std::atomic<float>* pResoAmt = nullptr;
-    std::atomic<float>* pResoLow = nullptr;
-    std::atomic<float>* pResoMid = nullptr;
-    std::atomic<float>* pResoHigh = nullptr;
-    std::atomic<float>* pResoFreq[3] {};
-    std::atomic<float>* pResoWidth[3] {};
-    std::atomic<float>* pEqOn = nullptr;
-    std::atomic<float>* pResoOn = nullptr;
-    std::atomic<float>* pDeessOn = nullptr;
-    std::atomic<float>* pSatOn = nullptr;
-    std::atomic<float>* pOutput = nullptr;
-    std::atomic<float>* pAutoGain = nullptr;
     std::atomic<float>* pBypass = nullptr;
     std::atomic<float>* pOversampling = nullptr;
-    std::atomic<float>* pPlosive = nullptr;
-    std::atomic<float>* pResoListen = nullptr;
-    std::atomic<float>* pChainOrder = nullptr;
-    std::atomic<float>* pMbSolo[4] {};
+    std::atomic<double> hostBpm { 120.0 };
 
-    // MIX / LIVE et suréchantillonnage changent la latence : la chaîne est reconfigurée sur le thread
-    // de l'interface (audio suspendu le temps du changement), puis la nouvelle latence est annoncée au DAW
+    // le suréchantillonnage change la latence : la chaîne est reconfigurée sur le thread de l'interface (audio suspendu le
+    // temps du changement), puis la nouvelle latence est annoncée au DAW
     void parameterChanged (const juce::String&, float) override { triggerAsyncUpdate(); }
     void handleAsyncUpdate() override;
     void configureChain (double sampleRate);
+    // la chaîne change : sa latence est annoncée au DAW (thread de l'interface)
+    void timerCallback() override;
     int osNow = 3;
     double currentRate = 0.0;
 
-    onirique::VocalChain chain;
+    onirique::ModularChain chain { apvts, hostBpm, peqListenHold };
     std::atomic<float> outPeak { 0.0f }, autoGainDbShown { 0.0f };
+    std::vector<float> capBuf;
+    std::atomic<int> capPos { 0 };
+    std::atomic<bool> capturing { false };
+    int capLen = 0;
 
 public:
     /** Licence ONIRIQUE (acheté, essai, démo) : voir License/LicenseGuard.h. */

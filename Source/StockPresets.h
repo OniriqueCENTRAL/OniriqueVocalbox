@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Parameters.h"
+#include "Modules.h"
 #include "ui/OniriquePresets.h"
 
 namespace onirique
@@ -27,7 +28,7 @@ inline juce::StringArray notStored()
     return s;
 }
 
-inline std::vector<PresetBank::Stock> stockPresets()
+inline std::vector<PresetBank::Stock> legacyStockPresets()
 {
     return {
         { "Init", 0, {} },
@@ -132,6 +133,37 @@ inline std::vector<PresetBank::Stock> stockPresets()
             { "compMode", 2 }, { "fetInput", 8 }, { "laPeakReduction", 50 }, { "mbOn", 1 }, { "satType", 1 }, { "drive", 1.5f },
             { "autoGain", 1 } } },
     };
+}
+
+/** Presets et projets d'avant la chaîne modulaire (aucun emplacement enregistré) : la chaîne se déduit de l'ancien ordre et
+    des interrupteurs, et les nouveaux interrupteurs reprennent ce qu'on entendait. Le son ne change pas. */
+inline void upgradeSnapshot (juce::ValueTree& s)
+{
+    if (s.hasProperty (ids::slot[0]))
+        return;
+    const auto chain = modules::legacyChain ([&s] (const char* id, float def) { return s.hasProperty (id) ? (float) s[id] : def; },
+                                             [&s] (const char* id, float v) { s.setProperty (id, v, nullptr); });
+    for (int k = 0; k < kSlots; ++k)
+        s.setProperty (ids::slot[k], chain[(size_t) k], nullptr);
+}
+
+/** Les presets d'usine : écrits avec les réglages d'avant la refonte, complétés de leur chaîne. */
+inline std::vector<PresetBank::Stock> stockPresets()
+{
+    auto list = legacyStockPresets();
+    for (auto& p : list)
+    {
+        juce::ValueTree s ("Snapshot");
+        for (const auto& [id, v] : p.values) s.setProperty (id, v, nullptr);
+        upgradeSnapshot (s);
+        p.values.clear();
+        for (int k = 0; k < s.getNumProperties(); ++k)
+        {
+            const auto name = s.getPropertyName (k);
+            p.values.push_back ({ name.toString(), (float) s[name] });
+        }
+    }
+    return list;
 }
 
 /** Les presets enregistrés avec l'ancienne barre (fichiers .ovbpreset du même dossier) passent dans le navigateur,
