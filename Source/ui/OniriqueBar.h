@@ -35,11 +35,11 @@ namespace colours
     inline const Colour bar { 0xff120a0c }, card { 0xff1a0c0f }, mist { 0xfff6eeee }, chip { 0xffd9c3c6 }, haze { 0xffa88f92 },
                         rose { 0xffffd2d6 }, bone { 0xffffecee }, brandName { 0xffc9afb3 };
     // l'accent : la couleur de l'interface (OniriqueTheme.h)
-    inline const Colour& ember = onirique::theme::emberBar;
-    inline const Colour& emberLit = onirique::theme::emberLit;
-    inline const Colour& starLit = onirique::theme::emberPink;
-    inline const Colour& litTop = onirique::theme::litTop;
-    inline const Colour& litBottom = onirique::theme::litBottom;
+    inline const Colour& ember = onirique::look::emberBar;
+    inline const Colour& emberLit = onirique::look::emberLit;
+    inline const Colour& starLit = onirique::look::emberPink;
+    inline const Colour& litTop = onirique::look::litTop;
+    inline const Colour& litBottom = onirique::look::litBottom;
 }
 
 using Fonts = license::theme::Fonts;
@@ -996,12 +996,12 @@ public:
 
     void paint (Graphics& g) override
     {
-        const auto cur = onirique::theme::ember.getARGB() | 0xff000000u;
-        for (int i = 0; i < onirique::theme::numSwatches; ++i)
+        const auto cur = onirique::look::ember.getARGB() | 0xff000000u;
+        for (int i = 0; i < onirique::look::numSwatches; ++i)
         {
             const auto r = dot (i);
-            const Colour c (onirique::theme::swatches[i].argb);
-            const bool sel = (onirique::theme::swatches[i].argb | 0xff000000u) == cur;
+            const Colour c (onirique::look::swatches[i].argb);
+            const bool sel = (onirique::look::swatches[i].argb | 0xff000000u) == cur;
             if (i == hover || sel)
             {
                 g.setColour (c.withAlpha (sel ? 0.35f : 0.2f));
@@ -1019,7 +1019,7 @@ public:
     {
         const int i = at (e.position);
         if (i < 0) return;
-        onirique::theme::choose (onirique::theme::swatches[i].argb);
+        onirique::look::choose (onirique::look::swatches[i].argb);
         repaint();
         if (onChange) onChange();
     }
@@ -1027,12 +1027,12 @@ public:
 private:
     Rectangle<float> dot (int i) const
     {
-        const float n = (float) onirique::theme::numSwatches, w = (float) getWidth() / n, d = jmin (18.0f, w - 10.0f);
+        const float n = (float) onirique::look::numSwatches, w = (float) getWidth() / n, d = jmin (18.0f, w - 10.0f);
         return Rectangle<float> (d, d).withCentre ({ w * ((float) i + 0.5f), (float) getHeight() * 0.5f });
     }
     int at (Point<float> p) const
     {
-        for (int i = 0; i < onirique::theme::numSwatches; ++i) if (dot (i).expanded (4.0f).contains (p)) return i;
+        for (int i = 0; i < onirique::look::numSwatches; ++i) if (dot (i).expanded (4.0f).contains (p)) return i;
         return -1;
     }
     int hover = -1;
@@ -1374,7 +1374,7 @@ public:
         // Le noir de la barre, et la lueur rouge seulement derrière la marque.
         g.setColour (colours::bar);
         g.fillRect (r);
-        g.setGradientFill (ColourGradient (onirique::theme::emberDeep.withMultipliedBrightness (1.1f).withAlpha (0.6f), 110.0f, -20.0f, onirique::theme::emberDeep.withAlpha (0.0f), 430.0f, -20.0f, true));
+        g.setGradientFill (ColourGradient (onirique::look::emberDeep.withMultipliedBrightness (1.1f).withAlpha (0.6f), 110.0f, -20.0f, onirique::look::emberDeep.withAlpha (0.0f), 430.0f, -20.0f, true));
         g.fillRect (r);
 
         g.setColour (colours::rose.withAlpha (0.1f));

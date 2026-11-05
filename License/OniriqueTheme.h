@@ -12,7 +12,7 @@
 //
 //  Ce fichier se copie tel quel dans chaque plugin, à côté d'OniriqueBar.h.
 //==============================================================================
-namespace onirique::theme
+namespace onirique::look
 {
 struct Swatch { const char* name; juce::uint32 argb; };
 inline constexpr Swatch swatches[] { { "Ember", 0xffE5384A }, { "Rose", 0xffFF4F8B }, { "Violet", 0xff9B6BFF }, { "Blue", 0xff3D8BFF },
@@ -67,6 +67,19 @@ inline bool poll()
     return ember != before;
 }
 
+/** À appeler depuis le minuteur de chaque fenêtre (seen : un entier gardé par la fenêtre, -1 au départ) : relit le choix
+    au plus une fois par seconde et rend true quand la fenêtre doit se redessiner dans la nouvelle teinte. */
+inline juce::uint32 lastPoll = 0;
+inline bool changedSince (int& seen)
+{
+    const auto now = juce::Time::getMillisecondCounter();
+    if (seen < 0 || now - lastPoll >= 1000) { lastPoll = now; if (seen < 0) load(); else poll(); }
+    const int v = version.load();
+    if (v == seen) return false;
+    seen = v;
+    return true;
+}
+
 /** La teinte choisie dans le menu : appliquée ici et gardée pour les autres plugins. */
 inline void choose (juce::uint32 argb)
 {
@@ -76,6 +89,6 @@ inline void choose (juce::uint32 argb)
     f.replaceWithText (juce::String::toHexString ((int) (argb & 0xffffffu)).paddedLeft ('0', 6));
     seenStamp = f.getLastModificationTime().toMilliseconds();
 }
-} // namespace onirique::theme
+} // namespace onirique::look
 
 #endif

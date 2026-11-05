@@ -1913,8 +1913,8 @@ void SpectrumAnalyzer::paintEq (juce::Graphics& g)
             p.lineTo (plot.getRight(), yEq (0.0f));
             p.lineTo (plot.getX(), yEq (0.0f));
             p.closeSubPath();
-            g.setGradientFill (juce::ColourGradient (onirique::theme::emberPink.withAlpha (0.28f * eqAmt), 0.0f, plot.getY(),
-                                                     onirique::theme::emberPink.withAlpha (0.04f * eqAmt), 0.0f, plot.getBottom(), false));
+            g.setGradientFill (juce::ColourGradient (onirique::look::emberPink.withAlpha (0.28f * eqAmt), 0.0f, plot.getY(),
+                                                     onirique::look::emberPink.withAlpha (0.04f * eqAmt), 0.0f, plot.getBottom(), false));
             g.fillPath (p);
         }
 
@@ -1942,7 +1942,7 @@ void SpectrumAnalyzer::paintEq (juce::Graphics& g)
             juce::Path dashed;
             const float dash[] { 3.0f * u, 5.0f * u };
             juce::PathStrokeType (1.5f * u).createDashedStroke (dashed, smoothPath (ym, false, 0.0f), dash, 2);
-            g.setColour (onirique::theme::emberPink.withAlpha (0.9f * eqAmt));
+            g.setColour (onirique::look::emberPink.withAlpha (0.9f * eqAmt));
             g.fillPath (dashed);
         }
 
@@ -1976,7 +1976,7 @@ void SpectrumAnalyzer::paintEq (juce::Graphics& g)
             juce::Path dashed;
             const float dash[] { 4.0f * u, 4.0f * u };
             juce::PathStrokeType (1.5f * u).createDashedStroke (dashed, ring, dash, 2);
-            g.setColour (onirique::theme::emberPink.withAlpha (0.8f));
+            g.setColour (onirique::look::emberPink.withAlpha (0.8f));
             g.fillPath (dashed);
         }
         // ombre 0 4 12 noir .6, lueur
@@ -1989,11 +1989,11 @@ void SpectrumAnalyzer::paintEq (juce::Graphics& g)
                 g.fillEllipse (dot.expanded (5.0f * u * (float) k));
             }
         const juce::Point<float> hc (dot.getX() + dot.getWidth() * 0.35f, dot.getY() + dot.getHeight() * 0.30f);
-        juce::ColourGradient fill (sel ? onirique::theme::emberLit : onirique::theme::litTop.withMultipliedBrightness (0.7f), hc.x, hc.y,
-                                   sel ? onirique::theme::emberDeep : onirique::theme::litBottom.withMultipliedBrightness (0.5f), hc.x + dot.getWidth() * 0.75f, hc.y, true);
+        juce::ColourGradient fill (sel ? onirique::look::emberLit : onirique::look::litTop.withMultipliedBrightness (0.7f), hc.x, hc.y,
+                                   sel ? onirique::look::emberDeep : onirique::look::litBottom.withMultipliedBrightness (0.5f), hc.x + dot.getWidth() * 0.75f, hc.y, true);
         g.setGradientFill (fill);
         g.fillEllipse (dot);
-        g.setColour (sel || gl > 0.5f ? juce::Colours::white : onirique::theme::emberPink.withAlpha (0.75f));
+        g.setColour (sel || gl > 0.5f ? juce::Colours::white : onirique::look::emberPink.withAlpha (0.75f));
         g.drawEllipse (dot.reduced (1.0f * u), 2.0f * u);
         g.setColour (juce::Colours::white);
         g.setFont (ui::css (ui::Face::display, 10.0f * u));
@@ -2013,7 +2013,7 @@ void SpectrumAnalyzer::paintEq (juce::Graphics& g)
         g.fillRoundedRectangle (box, 10.0f * u);
         g.setColour (juce::Colour (255, 235, 238).withAlpha (0.12f * a));
         g.drawRoundedRectangle (box, 10.0f * u, 1.0f);
-        g.setColour (onirique::theme::emberPink.withAlpha (a));
+        g.setColour (onirique::look::emberPink.withAlpha (a));
         g.setFont (f);
         g.drawText (txt, box, juce::Justification::centred, false);
     }
@@ -2571,9 +2571,9 @@ void BandBubble::paint (juce::Graphics& g)
     {
         if (lit)
         {
-            g.setColour (onirique::theme::ember.withAlpha (0.3f));
+            g.setColour (onirique::look::ember.withAlpha (0.3f));
             g.fillRoundedRectangle (r.expanded (3.0f * u), 12.0f * u);
-            g.setColour (onirique::theme::ember.withAlpha (0.55f));
+            g.setColour (onirique::look::ember.withAlpha (0.55f));
             g.fillRoundedRectangle (r, 9.0f * u);
         }
         else if (hover == (int) z)
@@ -2594,7 +2594,7 @@ void BandBubble::paint (juce::Graphics& g)
     g.setFont (ui::css (ui::Face::mono, 11.0f * u, 0.12f));
     g.setColour (juce::Colours::white);
     g.drawText (hzText (get (P (ids::peqFreq[band]))), zFreq, juce::Justification::centredLeft, false);
-    g.setColour (onirique::theme::emberPink);
+    g.setColour (onirique::look::emberPink);
     g.drawText (valueText(), zValue, juce::Justification::centredLeft, false);
     if (ParametricEQ::isCut (type))
     {

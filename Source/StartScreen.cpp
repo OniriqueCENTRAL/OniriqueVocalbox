@@ -7,8 +7,8 @@ using namespace onirique;
 namespace
 {
 constexpr float kPi = juce::MathConstants<float>::pi;
-const juce::Colour& cEmber = onirique::theme::ember;
-const juce::Colour& cPink = onirique::theme::emberPink;
+const juce::Colour& cEmber = onirique::look::ember;
+const juce::Colour& cPink = onirique::look::emberPink;
 const juce::Colour cBone { 0xffF4ECEC }, cHaze { 0xffa8939a };
 juce::String utf8 (const char* s) { return juce::String::fromUTF8 (s); }
 constexpr int kDots = 1500;
@@ -274,12 +274,12 @@ void StartScreen::paint (juce::Graphics& g)
     {
         // le bouton en gélule : dégradé braise, liseré rose doux, reflet en haut ; il s'éclaire au survol
         const float rad = go.getHeight() * 0.5f, k = 0.85f + 0.15f * goHot;
-        g.setGradientFill (juce::ColourGradient (onirique::theme::ember.withAlpha (0.78f * k), 0.0f, go.getY(),
-                                                 onirique::theme::emberDeep.withAlpha (0.85f * k), 0.0f, go.getBottom(), false));
+        g.setGradientFill (juce::ColourGradient (onirique::look::ember.withAlpha (0.78f * k), 0.0f, go.getY(),
+                                                 onirique::look::emberDeep.withAlpha (0.85f * k), 0.0f, go.getBottom(), false));
         g.fillRoundedRectangle (go, rad);
         g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.16f), 0.0f, go.getY(), juce::Colours::white.withAlpha (0.0f), 0.0f, go.getCentreY(), false));
         g.fillRoundedRectangle (go.reduced (1.0f), rad);
-        g.setColour (onirique::theme::emberLit.withAlpha (0.45f + 0.25f * goHot));
+        g.setColour (onirique::look::emberLit.withAlpha (0.45f + 0.25f * goHot));
         g.drawRoundedRectangle (go.reduced (0.5f), rad, 1.0f);
     }
     g.setColour (juce::Colours::white);

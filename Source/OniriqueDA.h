@@ -24,8 +24,8 @@ namespace onirique::da
 {
 inline const juce::Colour night { 0xff09080A }, deep { 0xff120c0e }, bone { 0xffF4ECEC }, haze { 0xffa8939a }, mist { 0xffd9c6c9 },
                           line { 0x1affdcE1 };
-inline const juce::Colour& ember = onirique::theme::ember;      // la couleur de l'interface (menu ⋯)
-inline const juce::Colour& pink = onirique::theme::emberPink;
+inline const juce::Colour& ember = onirique::look::ember;      // la couleur de l'interface (menu ⋯)
+inline const juce::Colour& pink = onirique::look::emberPink;
 
 /** Une lueur floue et douce autour d'une forme (box-shadow / drop-shadow). */
 inline void softGlow (juce::Graphics& g, const juce::Path& p, juce::Colour c, float radius, float dy = 0.0f)
@@ -55,9 +55,9 @@ inline juce::Image backdrop (int width, int height, float u)
         bg.setGradientFill (gr);
         bg.fillEllipse (cx - rx, cy - rx, 2.0f * rx, 2.0f * rx);
     };
-    blob (-160.0f, -260.0f, 0.45f * W, 0.55f * H, onirique::theme::emberBlood.withAlpha (0.55f));
-    blob (0.6f * W, 0.62f * H, 0.4f * W, 0.55f * H, onirique::theme::emberDeep.withAlpha (0.45f));
-    blob (0.4f * W, 0.3f * H, 0.26f * W, 0.34f * H, onirique::theme::emberLit.withAlpha (0.10f));
+    blob (-160.0f, -260.0f, 0.45f * W, 0.55f * H, onirique::look::emberBlood.withAlpha (0.55f));
+    blob (0.6f * W, 0.62f * H, 0.4f * W, 0.55f * H, onirique::look::emberDeep.withAlpha (0.45f));
+    blob (0.4f * W, 0.3f * H, 0.26f * W, 0.34f * H, onirique::look::emberLit.withAlpha (0.10f));
     return img;
 }
 
@@ -98,10 +98,10 @@ inline void seg (juce::Graphics& g, juce::Rectangle<float> r, float lit, float h
         g.fillRoundedRectangle (r, rad);
     }
     if (lit <= 0.01f) return;
-    g.setGradientFill (juce::ColourGradient (onirique::theme::ember.withAlpha (0.6f * lit), 0.0f, r.getY(),
-                                             onirique::theme::emberDeep.withAlpha (0.6f * lit), 0.0f, r.getBottom(), false));
+    g.setGradientFill (juce::ColourGradient (onirique::look::ember.withAlpha (0.6f * lit), 0.0f, r.getY(),
+                                             onirique::look::emberDeep.withAlpha (0.6f * lit), 0.0f, r.getBottom(), false));
     g.fillRoundedRectangle (r, rad);
-    g.setColour (onirique::theme::emberLit.withAlpha (0.5f * lit));
+    g.setColour (onirique::look::emberLit.withAlpha (0.5f * lit));
     g.drawRoundedRectangle (r.reduced (0.5f), rad, 1.0f);
 }
 
@@ -120,8 +120,8 @@ inline void toggle (juce::Graphics& g, juce::Rectangle<float> r, float on, float
     g.fillRoundedRectangle (r, rad);
     if (on > 0.01f)
     {
-        g.setGradientFill (juce::ColourGradient (onirique::theme::ember.withAlpha (0.75f * on), 0.0f, r.getY(),
-                                                 onirique::theme::emberDeep.withAlpha (0.75f * on), 0.0f, r.getBottom(), false));
+        g.setGradientFill (juce::ColourGradient (onirique::look::ember.withAlpha (0.75f * on), 0.0f, r.getY(),
+                                                 onirique::look::emberDeep.withAlpha (0.75f * on), 0.0f, r.getBottom(), false));
         g.fillRoundedRectangle (r, rad);
     }
     g.setColour (juce::Colours::white.withAlpha (0.10f));

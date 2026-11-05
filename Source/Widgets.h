@@ -17,13 +17,13 @@ namespace onirique::ui
 // blanc cassé pour les textes, gris doux pour le secondaire. Pas de néon : des lueurs discrètes, du verre sombre.
 // (Les noms historiques sont gardés : « ember » est l'accent, « lilac » le reflet clair.)
 inline const juce::Colour night  { 0xff09080A };   // noir profond (fond)
-inline const juce::Colour& blood = onirique::theme::litBottom;   // rouge sombre (dégradés, profondeur)
+inline const juce::Colour& blood = onirique::look::litBottom;   // rouge sombre (dégradés, profondeur)
 inline const juce::Colour deep   { 0xff121012 };   // charbon très sombre (panneaux)
 inline const juce::Colour deep2  { 0xff1C1517 };   // charbon chaud (menus, info-bulles, panneaux ouverts)
 inline const juce::Colour mist   { 0xffF2ECEC };   // blanc cassé (textes)
 inline const juce::Colour haze   { 0xffAEA3A6 };   // gris doux (informations secondaires) : assez clair pour se lire au premier regard
-inline const juce::Colour& ember = onirique::theme::ember;   // rouge ONIRIQUE (accent)  (la couleur de l'interface)
-inline const juce::Colour& lilac = onirique::theme::emberPink;   // rose pâle (queues de reverb, reflets, extrémités d'arcs)
+inline const juce::Colour& ember = onirique::look::ember;   // rouge ONIRIQUE (accent)  (la couleur de l'interface)
+inline const juce::Colour& lilac = onirique::look::emberPink;   // rose pâle (queues de reverb, reflets, extrémités d'arcs)
 inline const juce::Colour bone   { 0xffFFF4F5 };   // blanc le plus clair (aiguilles, crêtes)
 inline const juce::Colour mint   { 0xff7DE3B6 };   // témoin discret « ça agit » (comme le voyant d'un rack)
 inline const juce::Colour line   { (juce::uint8) 255, (juce::uint8) 214, (juce::uint8) 218, 0.10f };

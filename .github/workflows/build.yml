@@ -14,6 +14,8 @@ env:
 
 jobs:
   mac:
+    # EN PAUSE (05/11/2026) : le Mac se compile sur une vraie machine Mac de l'équipe ; enlever « if: false » pour le rallumer
+    if: false
     runs-on: macos-15-intel   # les machines Apple Silicon de GitHub sont saturées ; Xcode sort quand même un binaire universel
     steps:
       - uses: actions/checkout@v4
@@ -71,12 +73,10 @@ jobs:
         with: { name: win, path: dist/win }
 
   publish:
-    needs: [mac, windows]
+    needs: [windows]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
-        with: { name: mac, path: version/mac }
       - uses: actions/download-artifact@v4
         with: { name: win, path: version/win }
       - name: Publier dans ONIRIQUE CENTRAL

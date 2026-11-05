@@ -13,12 +13,12 @@ namespace onirique::license::theme
 
 namespace palette
 {
-    inline const juce::Colour& deep  = onirique::theme::deepTint;    // teintés par la couleur de l'interface
-    inline const juce::Colour& deep2 = onirique::theme::deepTint2;
+    inline const juce::Colour& deep  = onirique::look::deepTint;    // teintés par la couleur de l'interface
+    inline const juce::Colour& deep2 = onirique::look::deepTint2;
     inline const juce::Colour mist     { 0xfff6eeee };
     inline const juce::Colour haze     { 0xffa88f92 };
-    inline const juce::Colour& ember    = onirique::theme::emberBar;
-    inline const juce::Colour& emberHot = onirique::theme::emberLit;
+    inline const juce::Colour& ember    = onirique::look::emberBar;
+    inline const juce::Colour& emberHot = onirique::look::emberLit;
     inline const juce::Colour bone     { 0xffffecee };
     inline const juce::Colour rose     { 0xffffd2d6 };
     inline const juce::Colour active   { 0xff6fdc9c }; // le témoin « ACTIVÉ »
