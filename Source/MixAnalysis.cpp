@@ -297,6 +297,18 @@ juce::File modelFile()
                            juce::File::getSpecialLocation (juce::File::commonApplicationDataDirectory).getChildFile ("Onirique/models").getChildFile (name),
                            juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("Onirique/models").getChildFile (name) })
         if (f.existsAsFile() && f.getSize() > 1000000) return f;
+   #if JUCE_WINDOWS
+    // le modèle livré dans le plugin : écrit une fois dans AppDataOniriquemodels (même taille = déjà fait)
+    void* module = juce::Process::getCurrentModuleInstanceHandle();
+    const auto size = sep::embeddedModelSize (module);
+    if (size > 1000000)
+    {
+        const auto dir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("Onirique/models");
+        const auto f = dir.getChildFile (name);
+        if (f.existsAsFile() && f.getSize() == size) return f;
+        if (dir.createDirectory() && sep::extractEmbeddedModel (module, f.getFullPathName().toWideCharPointer()) && f.getSize() == size) return f;
+    }
+   #endif
     return {};
 }
 
@@ -385,6 +397,7 @@ Hints parseHints (const juce::String& text)
     if (has ({ "tube", "lampe", "lampes", "valve" })) { h.sat += 0.4f; h.satType = 0; note ("lampe"); }
     if (has ({ "analog", "analogique", "console" })) { h.sat += 0.3f; h.satType = 1; note ("analogique"); }
     // tenue
+    if (has ({ "multiband", "multibande", "multi band", "multi bande", "multibandes" })) { h.controlled = true; note ("multiband"); }
     if (has ({ "controle", "controlee", "maitrise", "maitrisee", "carre", "carree", "propre", "pro", "professionnel", "radio", "commercial", "commerciale", "stable", "controlled", "polished", "clean" })) { h.controlled = true; h.comp += 0.2f; note ("bien contrôlée"); }
     if (has ({ "parallele", "parallel", "densite", "epais", "epaisse", "punch", "punchy", "gros", "grosse", "massive", "massif", "fat" })) { h.parallel = true; note ("dense"); }
     // effets
@@ -397,7 +410,7 @@ Hints parseHints (const juce::String& text)
     static const juce::StringArray stop { "de", "la", "le", "les", "du", "des", "voix", "voice", "vocal", "vocals", "type", "facon", "style", "comme", "like",
         "un", "une", "et", "and", "avec", "with", "mix", "mixe", "mixee", "very", "tres", "plus", "more", "a", "en", "au", "aux", "sur", "pour", "the", "of",
         "sound", "son", "ma", "mon", "ta", "ton", "sa", "ses", "mes", "tes", "je", "veux", "want", "qui", "que", "dans", "in", "on", "my", "your", "un", "peu",
-        "bit", "little", "fa", "ex", "fr", "us", "uk", "bien", "well", "bon", "bonne", "beaucoup", "lot", "pas", "trop", "too", "not", "no", "sans", "without" };
+        "bit", "little", "fa", "ex", "fr", "us", "uk", "bien", "well", "compression", "compresseur", "voix", "chaine", "chain", "bon", "bonne", "beaucoup", "lot", "pas", "trop", "too", "not", "no", "sans", "without" };
     for (auto& w : words)
         if (w.length() >= 3 && ! stop.contains (w) && ! used.contains (w) && ! w.containsOnly ("0123456789"))
             h.unknown.addIfNotAlreadyThere (w);
@@ -445,8 +458,8 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
         target[(size_t) b] = v;
     }
 
-    // ---- le niveau : la voix entre dans la chaîne au niveau d'une voix mixée (tous les seuils en dépendent), AUTO GAIN la
-    //      garde ensuite à ce niveau : elle sort « prête », en avant, quel que soit le niveau d'enregistrement
+    // ---- le niveau : la voix entre dans la chaîne au niveau d'une voix mixée (tous les seuils en dépendent), chaque module
+    //      compense sa réduction : elle sort « prête », en avant, quel que soit le niveau d'enregistrement
     const float tgtLoud = tgtDyn ? juce::jlimit (-24.0f, -12.0f, tgt.loudDb) : kDefaultLoud;
     plan.inputDb = src.valid ? juce::jlimit (-24.0f, 24.0f, std::round (tgtLoud - src.loudDb)) : 0.0f;
     const float L = src.valid ? src.loudDb + plan.inputDb : tgtLoud;          // phrases fortes, à l'entrée de la chaîne
@@ -606,19 +619,7 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
         rep.add (u8 ("Couleur : saturation ") + u8 (names[type]) + (h.sat > 0.4f ? u8 (" marquée") : u8 (" légère")));
     }
 
-    // ---- 9. COMPRESSION PARALLÈLE en fin de traitement : de la densité et du punch quand la voix doit passer devant
-    if (h.parallel || h.comp > 0.4f)
-    {
-        Setting s { modules::parallel, 0, {} };
-        put (s, ids::parAmount, juce::jlimit (20.0f, 55.0f, 25.0f + 25.0f * juce::jmax (0.0f, h.comp)));
-        put (s, ids::parThresh, juce::jlimit (-57.0f, -9.0f, L - 14.0f));
-        put (s, ids::parAttack, 5.5f);
-        put (s, ids::parRelease, 6.0f);
-        plan.modules.push_back (s);
-        rep.add (u8 ("Compression parallèle : la voix gagne en densité et passe devant la prod"));
-    }
-
-    // ---- 9 bis. EQ ANALOG en fin de traitement : la série de compressions remonte la boue et ternit le haut ; on renettoie
+    // ---- 9. EQ ANALOG après les compressions : la série de compressions remonte la boue et ternit le haut ; on renettoie
     //      légèrement (MUD, coupe-bas 85 Hz) et on rend la clarté (HI, AIR), sans empiler sur l'air déjà ajouté par l'EQ
     {
         Setting s { modules::analog, 0, {} };
@@ -630,8 +631,20 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
         put (s, ids::air, std::round (air * 10.0f) / 10.0f);
         put (s, ids::lowCut, 1.0f);
         plan.modules.push_back (s);
-        rep.add (u8 ("EQ analog en fin de traitement : boue retirée (MUD ") + juce::String (mud, 1) + u8 ("), clarté HI +") + juce::String (hi, 1)
+        rep.add (u8 ("EQ analog après les compressions : boue retirée (MUD ") + juce::String (mud, 1) + u8 ("), clarté HI +") + juce::String (hi, 1)
                  + " et AIR +" + juce::String (air, 1));
+    }
+
+    // ---- 9 bis. COMPRESSION PARALLÈLE en fin de traitement : de la densité et du punch quand la voix doit passer devant
+    if (h.parallel || h.comp > 0.4f)
+    {
+        Setting s { modules::parallel, 0, {} };
+        put (s, ids::parAmount, juce::jlimit (20.0f, 55.0f, 25.0f + 25.0f * juce::jmax (0.0f, h.comp)));
+        put (s, ids::parThresh, juce::jlimit (-57.0f, -9.0f, L - 14.0f));
+        put (s, ids::parAttack, 5.5f);
+        put (s, ids::parRelease, 6.0f);
+        plan.modules.push_back (s);
+        rep.add (u8 ("Compression parallèle : la voix gagne en densité et passe devant la prod"));
     }
 
     // ---- 10. REVERB : la queue de la référence, sinon l'espace demandé, sinon celui d'une voix mixée (plate ~1,8 s)

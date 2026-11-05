@@ -11,3 +11,12 @@ namespace onirique::sep
 bool separateVocals (const std::string& modelFile, const float* left, const float* right, int numSamples, int threads,
                      std::vector<float>& vocals, std::function<bool (float)> progress);
 }
+
+#ifdef _WIN32
+namespace onirique::sep
+{
+// le modèle intégré au plugin Windows (ressource) : sa taille (-1 s'il n'y est pas), et son écriture sur le disque
+long long embeddedModelSize (void* module);
+bool extractEmbeddedModel (void* module, const std::wstring& destination);
+}
+#endif

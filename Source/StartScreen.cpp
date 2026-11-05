@@ -416,9 +416,9 @@ void StartScreen::apply()
         for (const auto& [id, v] : s.params) set (ids::inst (id.toRawUTF8(), k), v);
         chain[n++] = modules::code (s.type, k);
     }
-    // la voix amenée au niveau d'une voix mixée à l'entrée ; AUTO GAIN la garde à ce niveau en sortie
+    // la voix amenée au niveau d'une voix mixée à l'entrée (les modules compensent leur réduction) ; AUTO GAIN reste coupé
     set (ids::input, plan.inputDb);
     set (ids::output, 0.0f);
-    set (ids::autoGain, 1.0f);
+    set (ids::autoGain, 0.0f);
     processor.setChain (chain);
 }
