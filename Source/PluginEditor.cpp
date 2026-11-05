@@ -88,10 +88,10 @@ void drawLitButton (juce::Graphics& g, juce::Rectangle<float> r, float lit, floa
     {
         juce::Path shape; shape.addRoundedRectangle (r, rad);
         juce::DropShadow (ui::ember.withAlpha (0.45f * lit), juce::roundToInt (16.0f * u), { 0, juce::roundToInt (3.0f * u) }).drawForPath (g, shape);
-        g.setGradientFill (juce::ColourGradient (juce::Colour (229, 56, 74).withAlpha (0.55f * lit), 0.0f, r.getY(),
-                                                 juce::Colour (120, 12, 28).withAlpha (0.55f * lit), 0.0f, r.getBottom(), false));
+        g.setGradientFill (juce::ColourGradient (onirique::theme::ember.withAlpha (0.55f * lit), 0.0f, r.getY(),
+                                                 onirique::theme::emberDeep.withAlpha (0.55f * lit), 0.0f, r.getBottom(), false));
         g.fillRoundedRectangle (r, rad);
-        g.setColour (juce::Colour (255, 110, 125).withAlpha (0.55f * lit));
+        g.setColour (onirique::theme::emberLit.withAlpha (0.55f * lit));
         g.drawRoundedRectangle (r.reduced (0.5f), rad, 1.0f);
     }
     if (hover > 0.01f && lit < 0.99f)
@@ -265,7 +265,7 @@ void ChainStrip::paint (juce::Graphics& g)
 
         // sélection : lueur braise de 36 autour, ombre portée
         if (t.sel > 0.01f)
-            ui::softGlowRect (g, r, rad, juce::Colour (229, 56, 74).withAlpha (0.55f * t.sel), 36.0f * u);
+            ui::softGlowRect (g, r, rad, onirique::theme::ember.withAlpha (0.55f * t.sel), 36.0f * u);
         juce::Graphics::ScopedSaveState state (g);
         g.beginTransparencyLayer (alpha);
         g.setColour (juce::Colour (0xff100b0d));
@@ -274,14 +274,14 @@ void ChainStrip::paint (juce::Graphics& g)
         // liseré : rgba(255,140,150,.35) au survol, rgba(255,110,125,.75) sélectionné (+ anneau intérieur)
         if (t.hover > 0.01f && t.sel < 0.99f)
         {
-            g.setColour (juce::Colour (255, 140, 150).withAlpha (0.35f * t.hover * (1.0f - t.sel)));
+            g.setColour (onirique::theme::emberPink.withAlpha (0.35f * t.hover * (1.0f - t.sel)));
             g.drawRoundedRectangle (r.reduced (0.5f), rad, 1.0f);
         }
         if (t.sel > 0.01f)
         {
-            g.setColour (juce::Colour (255, 110, 125).withAlpha (0.75f * t.sel));
+            g.setColour (onirique::theme::emberLit.withAlpha (0.75f * t.sel));
             g.drawRoundedRectangle (r.reduced (0.5f), rad, 1.0f);
-            g.setColour (juce::Colour (255, 110, 125).withAlpha (0.5f * t.sel));
+            g.setColour (onirique::theme::emberLit.withAlpha (0.5f * t.sel));
             g.drawRoundedRectangle (r.reduced (1.5f), rad - 1.0f, 1.0f);
         }
         // le reflet qui traverse au survol (115°, blanc .16 au milieu)
@@ -302,7 +302,7 @@ void ChainStrip::paint (juce::Graphics& g)
         // témoin 9 x 9 (braise et sa lueur de 10 quand le module tourne)
         const auto led = juce::Rectangle<float> (9.0f * u, 9.0f * u).withPosition (r.getX() + pad, r.getY() + pad + 6.5f * u);
         if (t.on > 0.01f)
-            ui::softGlowEllipse (g, led, juce::Colour (229, 56, 74).withAlpha (0.8f * t.on), 10.0f * u);
+            ui::softGlowEllipse (g, led, onirique::theme::ember.withAlpha (0.8f * t.on), 10.0f * u);
         g.setColour (ui::ember.interpolatedWith (juce::Colour (0xff4a3a3e), 1.0f - t.on));
         g.fillEllipse (led);
 
@@ -329,7 +329,7 @@ void ChainStrip::paint (juce::Graphics& g)
         const float subY = r.getBottom() - pad - subF.getHeight();
         const float nameH = 18.0f * u, nameY = subY - 3.0f * u - nameH;
         ui::drawModuleIcon (g, type, juce::Rectangle<float> (16.0f * u, 16.0f * u).withPosition (r.getX() + pad, nameY + (nameH - 16.0f * u) * 0.5f),
-                            juce::Colour (0xffff8e9a), 1.8f * 16.0f * u / 24.0f);
+                            onirique::theme::emberPink, 1.8f * 16.0f * u / 24.0f);
         g.setColour (cBone);
         g.setFont (ui::css (ui::Face::display, 12.0f * u, 0.02f));
         g.drawText (name, juce::Rectangle<float> (r.getX() + pad + 23.0f * u, nameY, r.getWidth() - 2.0f * pad - 23.0f * u, nameH),
@@ -356,13 +356,13 @@ void ChainStrip::paint (juce::Graphics& g)
     const auto pr0 = plusRect();
     const auto pr = pr0.withSizeKeepingCentre (pr0.getWidth() * (1.0f + 0.06f * plusGlow), pr0.getHeight() * (1.0f + 0.06f * plusGlow));
     if (plusGlow > 0.01f)
-        ui::softGlowRect (g, pr, 20.0f * u, juce::Colour (229, 56, 74).withAlpha (0.55f * plusGlow), 36.0f * u);
+        ui::softGlowRect (g, pr, 20.0f * u, onirique::theme::ember.withAlpha (0.55f * plusGlow), 36.0f * u);
     g.setColour (juce::Colour (0xff100b0d));
     g.fillRoundedRectangle (pr, 20.0f * u);
     ui::drawDemoGlass (g, pr, 20.0f * u, u, true);
     if (plusGlow > 0.01f)
     {
-        g.setColour (juce::Colour (255, 110, 125).withAlpha (0.6f * plusGlow));
+        g.setColour (onirique::theme::emberLit.withAlpha (0.6f * plusGlow));
         g.drawRoundedRectangle (pr.reduced (0.5f), 20.0f * u, 1.0f);
     }
     {
@@ -372,7 +372,7 @@ void ChainStrip::paint (juce::Graphics& g)
         p.startNewSubPath (c.x, c.y - s); p.lineTo (c.x, c.y + s);
         p.startNewSubPath (c.x - s, c.y); p.lineTo (c.x + s, c.y);
         p.applyTransform (juce::AffineTransform::rotation (plusGlow * kPi * 0.5f, c.x, c.y));
-        g.setColour (juce::Colour (0xffffb3bb).interpolatedWith (juce::Colours::white, plusGlow));
+        g.setColour (onirique::theme::emberPink.interpolatedWith (juce::Colours::white, 0.25f).interpolatedWith (juce::Colours::white, plusGlow));
         g.strokePath (p, juce::PathStrokeType (2.0f * 34.0f * u / 24.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
     if (tiles.empty())
@@ -597,24 +597,24 @@ void ModulePicker::paint (juce::Graphics& g)
         ui::drawDemoGlass (g, r, 16.0f * u, u, true);
         if (hg > 0.01f)
         {
-            g.setColour (juce::Colour (229, 56, 74).withAlpha (0.16f * hg));
+            g.setColour (onirique::theme::ember.withAlpha (0.16f * hg));
             g.fillRoundedRectangle (r, 16.0f * u);
-            g.setColour (juce::Colour (255, 110, 125).withAlpha (0.45f * hg));
+            g.setColour (onirique::theme::emberLit.withAlpha (0.45f * hg));
             g.drawRoundedRectangle (r.reduced (0.5f), 16.0f * u, 1.0f);
         }
         // pastille de 44 : dégradé braise, liseré rose, lueur ; elle grossit au survol
         auto ic = juce::Rectangle<float> (44.0f * u, 44.0f * u).withPosition (r.getX() + 16.0f * u, r.getCentreY() - 22.0f * u);
         ic = ic.withSizeKeepingCentre (ic.getWidth() * (1.0f + 0.06f * hg), ic.getHeight() * (1.0f + 0.06f * hg));
-        ui::softGlowRect (g, ic, 14.0f * u, juce::Colour (229, 56, 74).withAlpha (0.3f + 0.35f * hg), 16.0f * u);
-        juce::ColourGradient grd (juce::Colour (229, 56, 74).withAlpha (0.45f), ic.getX() + ic.getWidth() * 0.3f, ic.getY() + ic.getHeight() * 0.2f,
-                                  juce::Colour (90, 8, 20).withAlpha (0.35f), ic.getRight() + ic.getWidth() * 0.2f, ic.getBottom() + ic.getHeight() * 0.2f, true);
-        g.setColour (juce::Colour (0xff1a0d10));
+        ui::softGlowRect (g, ic, 14.0f * u, onirique::theme::ember.withAlpha (0.3f + 0.35f * hg), 16.0f * u);
+        juce::ColourGradient grd (onirique::theme::ember.withAlpha (0.45f), ic.getX() + ic.getWidth() * 0.3f, ic.getY() + ic.getHeight() * 0.2f,
+                                  onirique::theme::emberDeep.withAlpha (0.35f), ic.getRight() + ic.getWidth() * 0.2f, ic.getBottom() + ic.getHeight() * 0.2f, true);
+        g.setColour (onirique::theme::litBottom.withMultipliedBrightness (0.55f));
         g.fillRoundedRectangle (ic, 14.0f * u);
         g.setGradientFill (grd);
         g.fillRoundedRectangle (ic, 14.0f * u);
-        g.setColour (juce::Colour (255, 140, 150).withAlpha (0.35f + 0.35f * hg));
+        g.setColour (onirique::theme::emberPink.withAlpha (0.35f + 0.35f * hg));
         g.drawRoundedRectangle (ic.reduced (0.5f), 14.0f * u, 1.0f);
-        ui::drawModuleIcon (g, t, ic.withSizeKeepingCentre (22.0f * u, 22.0f * u), juce::Colour (0xffffd6db).interpolatedWith (juce::Colours::white, hg),
+        ui::drawModuleIcon (g, t, ic.withSizeKeepingCentre (22.0f * u, 22.0f * u), onirique::theme::emberPink.interpolatedWith (juce::Colours::white, 0.55f).interpolatedWith (juce::Colours::white, hg),
                             1.8f * 22.0f * u / 24.0f);
 
         const auto tr = juce::Rectangle<float> (ic.getRight() + 12.0f * u, r.getY() + 12.0f * u, r.getRight() - ic.getRight() - 28.0f * u, r.getHeight() - 24.0f * u);
@@ -697,8 +697,8 @@ void GainStrip::paint (juce::Graphics& g)
     const float n = juce::jlimit (0.0f, 1.0f, (level + 60.0f) / 62.0f);
     if (n > 0.0f)
     {
-        juce::ColourGradient gr (juce::Colour (0xff7a0d1c), bar.getX(), 0.0f, juce::Colour (0xffffc4ca), bar.getRight(), 0.0f, false);
-        gr.addColour (0.5, juce::Colour (0xffE5384A));
+        juce::ColourGradient gr (onirique::theme::emberDeep, bar.getX(), 0.0f, onirique::theme::emberPink.interpolatedWith (juce::Colours::white, 0.35f), bar.getRight(), 0.0f, false);
+        gr.addColour (0.5, onirique::theme::ember);
         g.setGradientFill (gr);
         juce::Graphics::ScopedSaveState s (g);
         g.reduceClipRegion (bar.withWidth (bar.getWidth() * n).toNearestInt());
@@ -742,7 +742,7 @@ void AutoGainSwitch::paint (juce::Graphics& g)
     g.fillRoundedRectangle (sw, 15.0f * u);
     if (lit > 0.01f)
     {
-        g.setGradientFill (juce::ColourGradient (juce::Colour (229, 56, 74).withAlpha (0.75f * lit), sw.getX(), 0.0f,
+        g.setGradientFill (juce::ColourGradient (onirique::theme::ember.withAlpha (0.75f * lit), sw.getX(), 0.0f,
                                                  juce::Colour (140, 16, 32).withAlpha (0.75f * lit), sw.getRight(), 0.0f, false));
         g.fillRoundedRectangle (sw, 15.0f * u);
     }
@@ -750,7 +750,7 @@ void AutoGainSwitch::paint (juce::Graphics& g)
     g.drawRoundedRectangle (sw.reduced (0.5f), 15.0f * u, 1.0f);
     const auto dot = juce::Rectangle<float> (22.0f * u, 22.0f * u).withPosition (sw.getX() + (4.0f + 28.0f * lit) * u, sw.getY() + 4.0f * u);
     if (lit > 0.01f)
-        ui::softGlowEllipse (g, dot, juce::Colour (255, 140, 150).withAlpha (0.8f * lit), 12.0f * u);
+        ui::softGlowEllipse (g, dot, onirique::theme::emberPink.withAlpha (0.8f * lit), 12.0f * u);
     g.setColour (juce::Colour (0xffd9c6c9).interpolatedWith (juce::Colours::white, lit));
     g.fillEllipse (dot);
 }
@@ -811,6 +811,14 @@ bool VocalBoxView::isOn (int code) const
     if (! modules::valid (code)) return false;
     auto* prm = processor.apvts.getRawParameterValue (ids::inst (modules::info (modules::typeOf (code)).onId, modules::instanceOf (code)));
     return prm != nullptr && prm->load() > 0.5f;
+}
+
+void VocalBoxView::themeChanged()
+{
+    backdrop = {};
+    start.themeChanged();
+    if (panel != nullptr) { const int s = selected; removeChildComponent (panel.get()); panel.reset(); selected = -1; select (s); }
+    repaint();
 }
 
 void VocalBoxView::select (int code)
@@ -944,9 +952,9 @@ void VocalBoxView::paint (juce::Graphics& g)
             bg.fillEllipse (cx - rx, cy - rx, 2.0f * rx, 2.0f * rx);
             bg.addTransform (juce::AffineTransform::scale (1.0f, rx / ry, cx, cy));
         };
-        blob (-160.0f, -200.0f, 720.0f, 520.0f, juce::Colour (150, 10, 30).withAlpha (0.55f));
-        blob (1600.0f + 200.0f - 640.0f, 1000.0f + 220.0f - 520.0f, 640.0f, 520.0f, juce::Colour (120, 8, 26).withAlpha (0.45f));
-        blob (640.0f, 380.0f, 420.0f, 320.0f, juce::Colour (255, 90, 110).withAlpha (0.10f));
+        blob (-160.0f, -200.0f, 720.0f, 520.0f, onirique::theme::emberBlood.withAlpha (0.55f));
+        blob (1600.0f + 200.0f - 640.0f, 1000.0f + 220.0f - 520.0f, 640.0f, 520.0f, onirique::theme::emberDeep.withAlpha (0.45f));
+        blob (640.0f, 380.0f, 420.0f, 320.0f, onirique::theme::emberLit.withAlpha (0.10f));
     }
     g.drawImageAt (backdrop, 0, 0);
 
@@ -977,7 +985,7 @@ void VocalBoxView::paint (juce::Graphics& g)
     const auto name = juce::String (inf.name) + (same > 1 ? " " + juce::String (nth) : juce::String());
     const float cy = a.getY() + (22.0f + 18.0f) * u;
     const auto dot = juce::Rectangle<float> (10.0f * u, 10.0f * u).withCentre ({ a.getX() + 26.0f * u + 5.0f * u, cy });
-    ui::softGlowEllipse (g, dot, juce::Colour (229, 56, 74).withAlpha (0.9f * powerLit), 12.0f * u);
+    ui::softGlowEllipse (g, dot, onirique::theme::ember.withAlpha (0.9f * powerLit), 12.0f * u);
     g.setColour (ui::ember.interpolatedWith (juce::Colour (0xff4a3a3e), 1.0f - powerLit));
     g.fillEllipse (dot);
     const auto nf = ui::css (ui::Face::display, 22.0f * u, 0.05f);
@@ -1007,6 +1015,14 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
            (int) kBarUnits, (int) kBarUnits)
 {
     jassert (nuit::Bar::heightFor ((int) kBarUnits) == (int) kBarH);
+    onirique::theme::load();
+   #if ONIRIQUE_UI_TEST
+    // essais locaux : ONIRIQUE_UI_THEME=RRGGBB pour une capture dans une autre teinte (sans toucher au choix gardé)
+    if (const auto t = juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_THEME", {}); t.isNotEmpty())
+        onirique::theme::apply (juce::Colour ((juce::uint32) (0xff000000u | (t.getHexValue32() & 0xffffffu))));
+   #endif
+    bar.onThemeChanged = [this] { refreshTheme(); };
+    startTimer (1000);
     setOpaque (true);
     addAndMakeVisible (view);
     addAndMakeVisible (bar);
@@ -1098,4 +1114,15 @@ void OniriqueVocalBoxAudioProcessorEditor::paintTitle (juce::Graphics& g, juce::
     g.drawText ("VOCALBOX", juce::Rectangle<float> (x + w1, 0.0f, ui::textWidth (f, "VOCALBOX") + 10.0f, kBarH), juce::Justification::centredLeft, false);
 }
 
-void OniriqueVocalBoxAudioProcessorEditor::timerCallback() {}
+void OniriqueVocalBoxAudioProcessorEditor::refreshTheme()
+{
+    view.themeChanged();
+    bar.repaint();
+    repaint();
+}
+
+// une fois par seconde : la couleur a-t-elle été changée dans un autre plugin ONIRIQUE ?
+void OniriqueVocalBoxAudioProcessorEditor::timerCallback()
+{
+    if (onirique::theme::poll()) refreshTheme();
+}

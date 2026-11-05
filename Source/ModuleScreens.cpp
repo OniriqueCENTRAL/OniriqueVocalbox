@@ -9,7 +9,9 @@ using namespace onirique;
 namespace
 {
 constexpr float kPi = juce::MathConstants<float>::pi;
-const juce::Colour cEmber { 0xffE5384A }, cBone { 0xffF4ECEC }, cPink { 0xffff8e9a }, cMist { 0xfff4ecec };
+const juce::Colour& cEmber = onirique::theme::ember;
+const juce::Colour& cPink = onirique::theme::emberPink;
+const juce::Colour cBone { 0xffF4ECEC }, cMist { 0xfff4ecec };
 
 juce::String utf8 (const char* s) { return juce::String::fromUTF8 (s); }
 float dbOf (float a) { return a > 1.0e-6f ? 20.0f * std::log10 (a) : -120.0f; }
@@ -286,7 +288,7 @@ protected:
 };
 
 // le dégradé braise des parties retirées (#ff6b7a -> #7a0d1c, du haut vers le bas)
-juce::ColourGradient emberFill (float y0, float y1) { return { juce::Colour (0xffff6b7a), 0.0f, y0, juce::Colour (0xff7a0d1c), 0.0f, y1, false }; }
+juce::ColourGradient emberFill (float y0, float y1) { return { onirique::theme::emberLit, 0.0f, y0, onirique::theme::emberDeep, 0.0f, y1, false }; }
 
 //==============================================================================
 // GATE, DE-ESSER, NOISE, PLOSIVES : la voix qui défile (ce qui est gardé en blanc, ce qui est retiré en braise) ; à droite,
@@ -942,7 +944,7 @@ private:
     void draw (juce::Graphics& g) override
     {
         const float cx = vw * 0.5f, spread = vw / 1400.0f;
-        g.setColour (juce::Colour (255, 140, 150).withAlpha (0.10f));
+        g.setColour (onirique::theme::emberPink.withAlpha (0.10f));
         for (float x = -vw; x <= 2.0f * vw; x += 200.0f) g.drawLine (x, 360.0f, cx, 60.0f, 1.0f);
         for (int q = 1; q < 9; ++q) { const float y = 60.0f + 300.0f / (1.0f + (float) q * 0.7f); g.drawHorizontalLine ((int) y, 0.0f, vw); }
         const bool sync = get (ids::delaySync) > 0.5f;
@@ -1014,7 +1016,7 @@ private:
             for (size_t i = 0; i < in.size(); ++i) { a[i] = juce::jlimit (0.0f, 1.0f, in[i] * 1.3f); b[i] = juce::jlimit (0.0f, 1.0f, out[i] * 4.0f); }
             const auto tail = mirror (b, 0.0f, L, 180.0f, 150.0f), voice = mirror (a, 0.0f, L, 180.0f, 150.0f);
             glowPath (g, tail, cEmber.withAlpha (0.6f), 14.0f, true);
-            juce::ColourGradient tg (cEmber.withAlpha (0.75f), 0.0f, 0.0f, juce::Colour (0xffff9aa5).withAlpha (0.35f), L, 0.0f, false);
+            juce::ColourGradient tg (cEmber.withAlpha (0.75f), 0.0f, 0.0f, onirique::theme::emberPink.withAlpha (0.35f), L, 0.0f, false);
             g.setGradientFill (tg);
             g.fillPath (tail);
             g.setColour (juce::Colour (244, 236, 236).withAlpha (0.95f));
@@ -1025,7 +1027,7 @@ private:
             {
                 const auto& sp = sparks[(size_t) i];
                 const float a2 = 0.5f - 0.5f * std::cos ((t + sp[3]) * 2.0f * kPi / 2.6f);
-                g.setColour (juce::Colour (0xffffd6db).withAlpha (a2));
+                g.setColour (onirique::theme::emberPink.interpolatedWith (juce::Colours::white, 0.55f).withAlpha (a2));
                 g.fillEllipse (juce::Rectangle<float> (2.0f * sp[2], 2.0f * sp[2]).withCentre ({ 40.0f + sp[0] * (L - 60.0f), sp[1] }));
             }
         }
@@ -1152,7 +1154,7 @@ public:
             // la lueur floue ne change qu'avec la taille : calculée une fois, l'aiguille bouge par-dessus
             glowCache = juce::Image (juce::Image::ARGB, std::max (1, getWidth()), std::max (1, getHeight()), true, juce::SoftwareImageType());
             juce::Graphics cg (glowCache);
-            ui::softGlowRect (cg, frame, 16.0f * s, juce::Colour (229, 56, 74).withAlpha (0.32f), pad * 0.9f);
+            ui::softGlowRect (cg, frame, 16.0f * s, onirique::theme::ember.withAlpha (0.32f), pad * 0.9f);
         }
         g.drawImageAt (glowCache, 0, 0);
         g.setColour (juce::Colour (0xff050405));

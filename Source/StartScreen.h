@@ -12,6 +12,7 @@ public:
     explicit StartScreen (OniriqueVocalBoxAudioProcessor&);
     ~StartScreen() override;
     void tick() override;
+    void themeChanged() { halo = {}; repaint(); }
     void paint (juce::Graphics&) override;
     void resized() override;
     void mouseDown (const juce::MouseEvent&) override;

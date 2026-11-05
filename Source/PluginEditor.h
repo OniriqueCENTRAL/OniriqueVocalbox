@@ -126,6 +126,7 @@ class VocalBoxView : public juce::Component, private juce::Timer
 public:
     explicit VocalBoxView (OniriqueVocalBoxAudioProcessor&);
     ~VocalBoxView() override;
+    void themeChanged();   // une autre couleur d'interface : fonds en cache et écran du module refaits
     void paint (juce::Graphics&) override;
     void resized() override;
     void mouseDown (const juce::MouseEvent&) override;
@@ -171,6 +172,7 @@ private:
     void timerCallback() override;
     float titleWidth() const;
     void paintTitle (juce::Graphics&, juce::Rectangle<float> area) const;   // le titre, dans la barre (en points)
+    void refreshTheme();
 
     OniriqueVocalBoxAudioProcessor& processor;
     onirique::ui::FontScope fontScope;   // polices de la charte, le temps que l'interface est ouverte

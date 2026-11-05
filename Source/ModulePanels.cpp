@@ -101,7 +101,7 @@ void StarKnob::paint (juce::Graphics& g)
         const auto cr = getLocalBounds().toFloat().reduced (1.0f);
         g.setColour (juce::Colours::white.withAlpha (0.035f * cell));
         g.fillRoundedRectangle (cr, 18.0f * uu);
-        g.setColour (juce::Colour (255, 140, 150).withAlpha (0.18f * cell));
+        g.setColour (onirique::theme::emberPink.withAlpha (0.18f * cell));
         g.drawRoundedRectangle (cr.reduced (0.5f), 18.0f * uu, 1.0f);
     }
 
@@ -115,7 +115,7 @@ void StarKnob::paint (juce::Graphics& g)
 
     // survol du potard : lueur braise de 14 autour (drop-shadow de la démo)
     if (glow > 0.01f)
-        ui::softGlowEllipse (g, k.reduced (d * 0.1f), juce::Colour (229, 56, 74).withAlpha (0.45f * glow * alpha), 11.0f * u);   // reste dans le potard : pas de bord coupé
+        ui::softGlowEllipse (g, k.reduced (d * 0.1f), onirique::theme::ember.withAlpha (0.45f * glow * alpha), 11.0f * u);   // reste dans le potard : pas de bord coupé
 
     // le potard B (graduations) : 21 repères autour (un grand tous les 5), allumés en braise jusqu'à la valeur, depuis le
     // zéro pour un réglage qui va du négatif au positif ; au centre un capuchon mat et un trait blanc pour la position
@@ -133,7 +133,7 @@ void StarKnob::paint (juce::Graphics& g)
         const float r0 = d * (big ? 0.385f : 0.415f), r1 = d * 0.475f;
         const juce::Line<float> tick (c.x + r0 * std::sin (ang), c.y - r0 * std::cos (ang), c.x + r1 * std::sin (ang), c.y - r1 * std::cos (ang));
         const float w = std::max (1.0f, d * (big ? 0.024f : 0.016f));
-        g.setColour ((lit ? juce::Colour (0xffE5384A) : juce::Colour (255, 236, 238).withAlpha (0.18f)).withMultipliedAlpha (alpha));
+        g.setColour ((lit ? onirique::theme::ember : juce::Colour (255, 236, 238).withAlpha (0.18f)).withMultipliedAlpha (alpha));
         juce::Path p;
         p.startNewSubPath (tick.getStart()); p.lineTo (tick.getEnd());
         g.strokePath (p, juce::PathStrokeType (w, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
@@ -332,9 +332,9 @@ void GlassTabs::paint (juce::Graphics& g)
     {
         // la pastille en gélule, sa lueur gardée dans la section (pas de bord coupé)
         const float pr = pill.getHeight() * 0.5f;
-        g.setGradientFill (juce::ColourGradient (juce::Colour (229, 56, 74).withAlpha (0.6f), 0.0f, pill.getY(), juce::Colour (110, 10, 24).withAlpha (0.6f), 0.0f, pill.getBottom(), false));
+        g.setGradientFill (juce::ColourGradient (onirique::theme::ember.withAlpha (0.6f), 0.0f, pill.getY(), onirique::theme::emberDeep.withAlpha (0.6f), 0.0f, pill.getBottom(), false));
         g.fillRoundedRectangle (pill, pr);
-        g.setColour (juce::Colour (255, 120, 135).withAlpha (0.5f));
+        g.setColour (onirique::theme::emberLit.withAlpha (0.5f));
         g.drawRoundedRectangle (pill.reduced (0.5f), pr, 1.0f);
     }
     else ui::drawSeg (g, pill, 1.0f, 0.0f, u);
@@ -518,11 +518,11 @@ void ui::drawSeg (juce::Graphics& g, juce::Rectangle<float> r, float lit, float 
         g.fillRoundedRectangle (r, rad);
     }
     if (lit <= 0.01f) return;
-    ui::softGlowRect (g, r, rad, juce::Colour (229, 56, 74).withAlpha (0.55f * lit), 18.0f * u);
-    g.setGradientFill (juce::ColourGradient (juce::Colour (229, 56, 74).withAlpha (0.6f * lit), 0.0f, r.getY(),
-                                             juce::Colour (110, 10, 24).withAlpha (0.6f * lit), 0.0f, r.getBottom(), false));
+    ui::softGlowRect (g, r, rad, onirique::theme::ember.withAlpha (0.55f * lit), 18.0f * u);
+    g.setGradientFill (juce::ColourGradient (onirique::theme::ember.withAlpha (0.6f * lit), 0.0f, r.getY(),
+                                             onirique::theme::emberDeep.withAlpha (0.6f * lit), 0.0f, r.getBottom(), false));
     g.fillRoundedRectangle (r, rad);
-    g.setColour (juce::Colour (255, 120, 135).withAlpha (0.5f * lit));
+    g.setColour (onirique::theme::emberLit.withAlpha (0.5f * lit));
     g.drawRoundedRectangle (r.reduced (0.5f), rad, 1.0f);
 }
 
