@@ -32,6 +32,7 @@ struct Profile
     float dynRange = 0.0f;                // loudDb - softDb
     float peak50Db = -60.0f;              // fenêtres de 50 ms : 95e centile (ce que voit un compresseur rapide)
     float noiseFloorDb = -90.0f;          // le fond entre les phrases
+    float floorSpreadDb = 20.0f;          // écart-type du fond : faible = souffle stable, fort = queues de réverbe / respirations
     float sibilance = -30.0f;             // part des aigus (4,5 .. 10 kHz) dans les trames les plus sifflantes, dB
     float sibFreq = 6000.0f;              // où sifflent les S
     float plosivesPerMin = 0.0f;          // bouffées de graves (P, B)
@@ -71,6 +72,8 @@ struct Hints
     float sat = 0.0f;            // 0 .. 1
     int satType = -1;            // -1 : au choix ; 0 tube, 1 analog, 2 tape, 3 transformer
     float phone = 0.0f, doubler = 0.0f, chorus = 0.0f, flanger = 0.0f;
+    bool controlled = false;     // « bien contrôlé » : MULTIBAND
+    bool parallel = false;       // densité, punch : COMPRESSION PARALLÈLE
     juce::StringArray understood;   // ce qui a été compris (pour le compte rendu)
     juce::StringArray unknown;      // les mots non compris (des noms d'artistes, souvent)
 };
@@ -80,12 +83,14 @@ Hints parseHints (const juce::String& text);
 struct Setting
 {
     int type = -1;
+    int instance = 0;                                     // exemplaire (deux SATURATION : préampli et couleur)
     std::vector<std::pair<juce::String, float>> params;   // identifiants du premier exemplaire, valeurs réelles
 };
 
 struct Plan
 {
     std::vector<Setting> modules;     // dans l'ordre de la chaîne
+    float inputDb = 0.0f;             // gain d'entrée : la voix amenée au niveau d'une voix mixée
     juce::StringArray report;         // ce qui a été entendu et décidé, en clair
 };
 

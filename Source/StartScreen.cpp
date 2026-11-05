@@ -409,13 +409,16 @@ void StartScreen::apply()
     {
         if (n >= chain.size()) break;
         // réglages d'usine, allumé, puis les réglages décidés
+        const int k = juce::jlimit (0, kInstances - 1, s.instance);
         for (const auto& id : modules::paramIds (s.type))
-            if (auto* p = apvts.getParameter (id)) p->setValueNotifyingHost (p->getDefaultValue());
-        set (modules::info (s.type).onId, 1.0f);
-        for (const auto& [id, v] : s.params) set (id, v);
-        chain[n++] = modules::code (s.type, 0);
+            if (auto* p = apvts.getParameter (ids::inst (id.toRawUTF8(), k))) p->setValueNotifyingHost (p->getDefaultValue());
+        set (ids::inst (modules::info (s.type).onId, k), 1.0f);
+        for (const auto& [id, v] : s.params) set (ids::inst (id.toRawUTF8(), k), v);
+        chain[n++] = modules::code (s.type, k);
     }
-    // AUTO GAIN : la voix sort au niveau où elle entre, on juge le son et pas le volume
+    // la voix amenée au niveau d'une voix mixée à l'entrée ; AUTO GAIN la garde à ce niveau en sortie
+    set (ids::input, plan.inputDb);
+    set (ids::output, 0.0f);
     set (ids::autoGain, 1.0f);
     processor.setChain (chain);
 }

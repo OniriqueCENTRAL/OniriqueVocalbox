@@ -56,6 +56,16 @@ Profile analyse (const float* x, int n, double sr)
 
     p.noiseFloorDb = juce::jmax (-100.0f, pct (env, 0.08f));
     const float thr = juce::jmax (p.noiseFloorDb + 12.0f, pct (w400, 0.95f) - 30.0f);
+    {
+        // le fond : les trames sous le seuil (hors silence numérique) ; stable = souffle, variable = réverbe, respirations
+        std::vector<float> gaps;
+        for (float v : env) if (v < thr && v > -100.0f) gaps.push_back (v);
+        if (gaps.size() > 20)
+        {
+            const float lo = pct (gaps, 0.1f), hi = pct (gaps, 0.6f);
+            p.floorSpreadDb = hi - lo;
+        }
+    }
     std::vector<float> act400, act50;
     for (float v : w400) if (v >= thr) act400.push_back (v);
     for (float v : w50) if (v >= thr) act50.push_back (v);
@@ -374,6 +384,9 @@ Hints parseHints (const juce::String& text)
     if (has ({ "tape", "bande", "cassette", "lofi", "lo fi", "vintage", "retro", "old school" })) { h.sat += 0.4f; h.satType = 2; h.dark += 0.2f; note ("bande / vintage"); }
     if (has ({ "tube", "lampe", "lampes", "valve" })) { h.sat += 0.4f; h.satType = 0; note ("lampe"); }
     if (has ({ "analog", "analogique", "console" })) { h.sat += 0.3f; h.satType = 1; note ("analogique"); }
+    // tenue
+    if (has ({ "controle", "controlee", "maitrise", "maitrisee", "carre", "carree", "propre", "pro", "professionnel", "radio", "commercial", "commerciale", "stable", "controlled", "polished", "clean" })) { h.controlled = true; h.comp += 0.2f; note ("bien contrôlée"); }
+    if (has ({ "parallele", "parallel", "densite", "epais", "epaisse", "punch", "punchy", "gros", "grosse", "massive", "massif", "fat" })) { h.parallel = true; note ("dense"); }
     // effets
     if (has ({ "telephone", "phone", "radio", "megaphone", "talkie" })) { h.phone = 0.7f; note ("téléphone"); }
     if (has ({ "double", "doublee", "doubled", "doubleur", "doubler", "stereo", "large", "wide", "epaisse", "thick" })) { h.doubler = juce::jmax (h.doubler, 0.6f); note ("doublée"); }
@@ -384,7 +397,7 @@ Hints parseHints (const juce::String& text)
     static const juce::StringArray stop { "de", "la", "le", "les", "du", "des", "voix", "voice", "vocal", "vocals", "type", "facon", "style", "comme", "like",
         "un", "une", "et", "and", "avec", "with", "mix", "mixe", "mixee", "very", "tres", "plus", "more", "a", "en", "au", "aux", "sur", "pour", "the", "of",
         "sound", "son", "ma", "mon", "ta", "ton", "sa", "ses", "mes", "tes", "je", "veux", "want", "qui", "que", "dans", "in", "on", "my", "your", "un", "peu",
-        "bit", "little", "fa", "ex", "fr", "us", "uk", "beaucoup", "lot", "pas", "trop", "too", "not", "no", "sans", "without" };
+        "bit", "little", "fa", "ex", "fr", "us", "uk", "bien", "well", "bon", "bonne", "beaucoup", "lot", "pas", "trop", "too", "not", "no", "sans", "without" };
     for (auto& w : words)
         if (w.length() >= 3 && ! stop.contains (w) && ! used.contains (w) && ! w.containsOnly ("0123456789"))
             h.unknown.addIfNotAlreadyThere (w);
@@ -401,9 +414,13 @@ Hints parseHints (const juce::String& text)
 //==============================================================================
 namespace
 {
-// la courbe d'une voix mixée « commerciale » (moyenne de voix pop / rap / R&B mixées), même normalisation que Profile::bands
-constexpr float kDefaultTarget[kBands] { -40, -36, -32, -26, -20, -14, -9, -5, -2, 0, 1, 1.5f, 1.5f, 1, 0.5f, 0, -0.5f, -1, -1.5f, -2,
-                                         -2.5f, -2.8f, -3.2f, -4.2f, -5.2f, -6.5f, -8, -9.5f, -11.5f, -14.5f, -20 };
+/*  La cible par défaut : une voix bien mixée (la « VOIX MIX » de référence de Nov, lissée pour ne garder que l'équilibre,
+    pas les formants propres à cette voix) : graves coupés sous 125 Hz, corps 160 .. 500 Hz, médiums neutres, présence 2 .. 5 kHz
+    tenue, beaucoup d'air 6 .. 10 kHz. Même normalisation que Profile::bands (moyenne 200 Hz .. 5 kHz à 0). */
+constexpr float kDefaultTarget[kBands] { -40, -36, -32, -28, -24, -21, -18, -11, -5, 1.5f, 3, 3, 3, 3, 2.5f, 1.5f, 1, 0.5f, 0, -1,
+                                         -2, -2.5f, -3, -4, -4, -3, -2.5f, -3.5f, -6, -12, -20 };
+// ce que mesure la même voix : très tenue (2,8 dB de dynamique), phrases fortes à -18,6 dBFS, réverbe plate ~1,9 s présente
+constexpr float kDefaultDyn = 3.0f, kDefaultLoud = -18.5f, kDefaultSib = -6.5f;
 
 void put (Setting& s, const char* id, float v) { s.params.emplace_back (juce::String (id), v); }
 }
@@ -412,161 +429,244 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
 {
     Plan plan;
     auto& rep = plan.report;
+    const bool tgtDyn = tgt.valid && ! tgt.fromMix;   // dynamique, niveau et sifflantes de la référence : voix vraiment seule
 
-    // ---- la cible : le timbre de la référence, sinon celui d'une voix mixée ; puis les couleurs demandées
+    // ---- la cible : le timbre de la référence, sinon celui d'une voix bien mixée ; puis les couleurs demandées
     std::array<float, kBands> target {};
     for (int b = 0; b < kBands; ++b)
     {
         float v = kDefaultTarget[b];
-        if (tgt.valid) v = ! tgt.fromMix ? tgt.bands[(size_t) b] : (b < 10 ? kDefaultTarget[b] : 0.7f * tgt.bands[(size_t) b] + 0.3f * kDefaultTarget[b]);
-        target[(size_t) b] = v;
-    }
-    const bool tgtDyn = tgt.valid && ! tgt.fromMix;   // dynamique et sifflantes de la référence : seulement si la voix est vraiment seule
-    for (int b = 0; b < kBands; ++b)
-    {
+        if (tgt.valid) v = ! tgt.fromMix ? 0.8f * tgt.bands[(size_t) b] + 0.2f * kDefaultTarget[b]
+                                         : (b < 10 ? kDefaultTarget[b] : 0.7f * tgt.bands[(size_t) b] + 0.3f * kDefaultTarget[b]);
         const float f = kCentres[b];
         const float oct2k = juce::jmax (0.0f, std::log2 (f / 2000.0f)), oct8k = juce::jmax (0.0f, std::log2 (f / 8000.0f) + 1.0f);
-        target[(size_t) b] += h.bright * 1.2f * juce::jmin (2.0f, oct2k) + h.air * 2.5f * juce::jmin (1.5f, oct8k)
-                              - h.dark * 1.5f * juce::jmin (2.0f, oct2k);
-        if (f >= 150.0f && f <= 450.0f) target[(size_t) b] += 1.5f * h.warm;
+        v += h.bright * 1.2f * juce::jmin (2.0f, oct2k) + h.air * 2.0f * juce::jmin (1.5f, oct8k) - h.dark * 1.5f * juce::jmin (2.0f, oct2k);
+        if (f >= 150.0f && f <= 450.0f) v += 1.5f * h.warm;
+        target[(size_t) b] = v;
     }
 
-    // ---- 1. NOISE / GATE : le fond entre les phrases
+    // ---- le niveau : la voix entre dans la chaîne au niveau d'une voix mixée (tous les seuils en dépendent), AUTO GAIN la
+    //      garde ensuite à ce niveau : elle sort « prête », en avant, quel que soit le niveau d'enregistrement
+    const float tgtLoud = tgtDyn ? juce::jlimit (-24.0f, -12.0f, tgt.loudDb) : kDefaultLoud;
+    plan.inputDb = src.valid ? juce::jlimit (-24.0f, 24.0f, std::round (tgtLoud - src.loudDb)) : 0.0f;
+    const float L = src.valid ? src.loudDb + plan.inputDb : tgtLoud;          // phrases fortes, à l'entrée de la chaîne
+    const float P = src.valid ? src.peak50Db + plan.inputDb : tgtLoud + 2.0f; // crêtes de 50 ms
+    if (src.valid && std::abs (plan.inputDb) >= 1.0f)
+        rep.add (u8 ("Niveau : ") + dbText (plan.inputDb) + u8 (" à l'entrée, la voix travaille et sort au niveau d'une voix mixée"));
+
+    // ---- 1. NETTOYAGE en tête : souffle, bruit entre les phrases, plosives
     if (src.valid)
     {
-        const float gap = src.loudDb - src.noiseFloorDb;
-        if (src.noiseFloorDb > -64.0f && gap < 50.0f)
+        const float floorIn = src.noiseFloorDb + plan.inputDb, gap = src.loudDb - src.noiseFloorDb;
+        const bool steady = src.floorSpreadDb < 6.0f;   // un vrai souffle, pas une queue de réverbe
+        if (steady && gap < 62.0f && src.noiseFloorDb > -78.0f)
         {
-            Setting s { modules::noise, {} };
-            const float amt = juce::jlimit (20.0f, 75.0f, 20.0f + (src.noiseFloorDb + 64.0f) * 2.8f);
-            put (s, ids::nsAmount, amt);
+            Setting s { modules::noise, 0, {} };
+            const float amt = juce::jlimit (15.0f, 70.0f, 15.0f + (62.0f - gap) * 2.2f);
+            put (s, ids::nsAmount, std::round (amt));
             plan.modules.push_back (s);
-            rep.add (u8 ("Souffle de fond à ") + juce::String (juce::roundToInt (src.noiseFloorDb)) + " dB : noise suppressor " + juce::String (juce::roundToInt (amt)) + " %");
+            rep.add (u8 ("Fond à ") + juce::String (juce::roundToInt (gap)) + u8 (" dB sous la voix : noise suppressor ") + juce::String (juce::roundToInt (amt)) + " %");
         }
-        if (src.noiseFloorDb > -56.0f && gap > 18.0f)
+        if (steady && gap < 52.0f && gap > 16.0f)
         {
-            Setting s { modules::gate, {} };
-            put (s, ids::gateThr, juce::jlimit (-70.0f, -20.0f, src.noiseFloorDb + 8.0f));
-            put (s, ids::gateRange, 18.0f);
+            Setting s { modules::gate, 0, {} };
+            put (s, ids::gateThr, juce::jlimit (-75.0f, -25.0f, floorIn + 0.45f * gap));
+            put (s, ids::gateRange, gap < 35.0f ? 20.0f : 14.0f);
             plan.modules.push_back (s);
-            rep.add (u8 ("Bruit entre les phrases : gate léger (−18 dB)"));
+            rep.add (u8 ("Bruit entre les phrases : gate (−") + juce::String (gap < 35.0f ? 20 : 14) + " dB)");
         }
-        if (src.plosivesPerMin > 3.0f)
+        if (src.plosivesPerMin > 1.5f)
         {
-            Setting s { modules::plosive, {} };
-            put (s, ids::plosive, juce::jlimit (30.0f, 70.0f, 25.0f + src.plosivesPerMin * 2.0f));
+            Setting s { modules::plosive, 0, {} };
+            put (s, ids::plosive, juce::jlimit (30.0f, 70.0f, 30.0f + src.plosivesPerMin * 2.5f));
             plan.modules.push_back (s);
             rep.add (u8 ("Des P et des B qui claquent : plosives"));
         }
     }
 
-    // ---- 2. EQ : l'écart entre la prise et la cible (au plus ±6 dB, lissé), sinon les couleurs demandées
+    // ---- 2. PRÉAMPLI (au choix) : une saturation légère quand la voix doit gagner en chaleur et en densité
+    const bool thin = src.valid && (src.bands[11] + src.bands[12] + src.bands[13]) / 3.0f < (target[11] + target[12] + target[13]) / 3.0f - 3.0f;
+    const bool preamp = h.warm > 0.3f || h.satType == 0 || h.satType == 2 || thin;
+    int satInstance = 0;
+    if (preamp)
     {
-        Setting s { modules::peq, {} };
+        Setting s { modules::sat, 0, {} };
+        put (s, ids::satType, h.satType == 2 ? 2.0f : 0.0f);
+        put (s, ids::drive, 2.0f);
+        put (s, ids::satMix, 60.0f);
+        put (s, ids::satWarmth, 35.0f + 30.0f * h.warm);
+        plan.modules.push_back (s);
+        satInstance = 1;
+        rep.add (u8 ("Préampli : saturation ") + (h.satType == 2 ? u8 ("bande") : u8 ("lampe")) + u8 (" légère en entrée") + (thin ? u8 (" (voix un peu fine)") : juce::String()));
+    }
+
+    // ---- 3. EQ : l'écart entre la prise et la cible (±4 dB lissés), présence pour la mettre en avant
+    float highBoost = 0.0f;
+    {
+        Setting s { modules::peq, 0, {} };
         put (s, ids::peqPower, 1.0f);
         std::array<float, kBands> diff {};
         if (src.valid)
         {
             std::array<float, kBands> raw {};
             for (int b = 7; b <= 29; ++b) raw[(size_t) b] = target[(size_t) b] - src.bands[(size_t) b];
-            for (int b = 8; b <= 28; ++b) diff[(size_t) b] = juce::jlimit (-4.0f, 4.0f, 0.6f * (0.25f * raw[(size_t) b - 1] + 0.5f * raw[(size_t) b] + 0.25f * raw[(size_t) b + 1]));
+            for (int b = 8; b <= 28; ++b) diff[(size_t) b] = juce::jlimit (-4.0f, 4.0f, 0.65f * (0.25f * raw[(size_t) b - 1] + 0.5f * raw[(size_t) b] + 0.25f * raw[(size_t) b + 1]));
         }
         else
-        {
             for (int b = 8; b <= 28; ++b) diff[(size_t) b] = juce::jlimit (-4.0f, 4.0f, target[(size_t) b] - kDefaultTarget[b]);
-        }
         auto avg = [&diff] (int a, int b) { float v = 0.0f; for (int i = a; i <= b; ++i) v += diff[(size_t) i]; return v / (float) (b - a + 1); };
-        // bande 1 : coupe-bas (là où la prise n'a plus que du grondement)
         float cut = 90.0f;
         if (src.valid && src.bands[7] > target[7] + 3.0f) cut = 110.0f;
         put (s, ids::peqOn[0], 1.0f); put (s, ids::peqType[0], 3.0f); put (s, ids::peqFreq[0], cut); put (s, ids::peqSlope[0], 1.0f); put (s, ids::peqQ[0], 0.71f);
-        // bandes 2 .. 7 : cloches à 160, 315, 630, 1250, 2500, 5000 Hz ; bande 8 : étagère d'air à 10 kHz
         const int centre[6] { 9, 12, 15, 18, 21, 24 };
         juce::StringArray moves;
         for (int i = 0; i < 6; ++i)
         {
-            const float g = juce::jlimit (-4.0f, 4.0f, avg (centre[i] - 1, centre[i] + 1));
+            float g = avg (centre[i] - 1, centre[i] + 1);
+            if (i == 4 || i == 5) g += 0.6f + 0.8f * juce::jmax (0.0f, h.comp);   // présence : la voix passe devant la prod
+            g = juce::jlimit (-4.0f, 4.0f, g);
             const int bnd = i + 1;
             const bool on = std::abs (g) >= 0.7f;
-            put (s, ids::peqOn[bnd], on ? 1.0f : 0.0f);
-            put (s, ids::peqType[bnd], 0.0f);
-            put (s, ids::peqFreq[bnd], kCentres[centre[i]]);
-            put (s, ids::peqGain[bnd], std::round (g * 10.0f) / 10.0f);
-            put (s, ids::peqQ[bnd], 1.1f);
+            put (s, ids::peqOn[bnd], on ? 1.0f : 0.0f); put (s, ids::peqType[bnd], 0.0f); put (s, ids::peqFreq[bnd], kCentres[centre[i]]);
+            put (s, ids::peqGain[bnd], std::round (g * 10.0f) / 10.0f); put (s, ids::peqQ[bnd], 1.1f);
             if (on) moves.add (dbText (g) + " " + hzText (kCentres[centre[i]]));
+            if (i >= 4) highBoost = juce::jmax (highBoost, g);
         }
-        const float shelf = juce::jlimit (-4.0f, 4.0f, avg (27, 28));
+        const float shelf = juce::jlimit (-4.0f, 4.0f, avg (26, 28) + 0.8f);   // un peu d'air en plus : une voix mixée brille
         put (s, ids::peqOn[7], std::abs (shelf) >= 0.7f ? 1.0f : 0.0f);
         put (s, ids::peqType[7], 2.0f); put (s, ids::peqFreq[7], 10000.0f); put (s, ids::peqGain[7], std::round (shelf * 10.0f) / 10.0f); put (s, ids::peqQ[7], 0.71f);
         if (std::abs (shelf) >= 0.7f) moves.add ("air " + dbText (shelf));
+        highBoost = juce::jmax (highBoost, shelf);
         plan.modules.push_back (s);
         rep.add ("EQ : coupe-bas " + hzText (cut) + (moves.isEmpty() ? juce::String() : u8 (" · ") + moves.joinIntoString (u8 (" · "))));
     }
 
-    // ---- 3. COMPRESSION : la dynamique de la prise ramenée vers celle de la cible (1176 pour les crêtes, LA-2A pour lisser)
+    // ---- 4. 1176 puis 5. LA-2A : la dynamique de la prise ramenée vers celle d'une voix mixée (très tenue)
+    const float srcDr = src.valid ? src.dynRange : 12.0f;
+    const float tgtDr = juce::jlimit (2.0f, 10.0f, (tgtDyn ? tgt.dynRange : kDefaultDyn) - 0.8f * h.comp);
+    const float need = juce::jlimit (0.0f, 18.0f, srcDr - tgtDr);
     {
-        const float srcDr = src.valid ? src.dynRange : 12.0f;
-        const float tgtDr = juce::jlimit (2.5f, 12.0f, tgtDyn ? tgt.dynRange : 5.5f - 1.8f * h.comp);
-        const float need = juce::jlimit (0.0f, 16.0f, srcDr - tgtDr);
-        const float peak = src.valid ? src.peak50Db : -18.0f;
-        const float loud = src.valid ? src.loudDb : -22.0f;
-        const float grFet = juce::jlimit (2.0f, 9.0f, 2.0f + 0.45f * need + 1.5f * juce::jmax (0.0f, h.comp));
-        // 1176 (ratio 4) : seuil à -20 dBFS, réduction ≈ 3/4 du dépassement
-        const float in = juce::jlimit (-12.0f, 36.0f, grFet / 0.75f - 20.0f - peak);
-        Setting fet { modules::fet, {} };
+        const float grFet = juce::jlimit (3.0f, 10.0f, 3.0f + 0.5f * need + 1.5f * juce::jmax (0.0f, h.comp));
+        const float in = juce::jlimit (-12.0f, 36.0f, grFet / 0.75f - 20.0f - P);   // 1176 ratio 4 : seuil -20 dBFS
+        Setting fet { modules::fet, 0, {} };
         put (fet, ids::fetIn, std::round (in * 10.0f) / 10.0f);
         put (fet, ids::fetOut, juce::jlimit (-24.0f, 24.0f, -in + 0.8f * grFet));
         put (fet, ids::fetAttack, h.comp > 0.3f ? 3.5f : 3.0f);
         put (fet, ids::fetRelease, 5.0f);
         put (fet, ids::fetRatio, h.comp > 0.6f ? 1.0f : 0.0f);
-        // LA-2A : seuil à -0,45 × PEAK REDUCTION dBFS, réduction ≈ 2/3 du dépassement
-        const float grOpto = juce::jlimit (1.5f, 6.0f, 1.5f + 0.3f * need);
-        const float level = loud + 0.4f * grFet;
-        const float pr = juce::jlimit (0.0f, 100.0f, -(level - 1.5f * grOpto) / 0.45f);
-        Setting opto { modules::opto, {} };
-        put (opto, ids::laPeak, std::round (pr));
+        plan.modules.push_back (fet);
+        const float grOpto = juce::jlimit (2.0f, 7.0f, 2.0f + 0.35f * need);
+        const float level = L + 0.4f * grFet;
+        Setting opto { modules::opto, 0, {} };
+        put (opto, ids::laPeak, std::round (juce::jlimit (0.0f, 100.0f, -(level - 1.5f * grOpto) / 0.45f)));   // seuil -0,45 × PEAK
         put (opto, ids::laGain, juce::jlimit (-12.0f, 30.0f, 0.8f * grOpto));
-        const bool useFet = need >= 2.0f || h.comp > 0.2f;
-        if (useFet) plan.modules.push_back (fet);
         plan.modules.push_back (opto);
-        rep.add (u8 ("Dynamique ") + juce::String (srcDr, 1) + u8 (" dB → cible ") + juce::String (tgtDr, 1) + " dB : "
-                 + (useFet ? u8 ("1176 (≈ −") + juce::String (juce::roundToInt (grFet)) + " dB sur les crêtes) puis " : juce::String())
-                 + u8 ("LA-2A (≈ −") + juce::String (juce::roundToInt (grOpto)) + " dB)");
+        rep.add (u8 ("Dynamique ") + juce::String (srcDr, 1) + u8 (" dB → ") + juce::String (tgtDr, 1) + u8 (" dB : 1176 (≈ −") + juce::String (juce::roundToInt (grFet))
+                 + u8 (" dB sur les crêtes) puis LA-2A (≈ −") + juce::String (juce::roundToInt (grOpto)) + " dB)");
     }
 
-    // ---- 4. DE-ESSER : après la compression (elle fait ressortir les S)
+    // ---- 6. MULTIBAND : un mix « bien contrôlé » demandé
+    if (h.controlled)
     {
-        const float tgtSib = tgtDyn ? tgt.sibilance : -12.0f;
-        const float excess = src.valid ? src.sibilance - tgtSib : 2.0f;
-        const float amt = juce::jlimit (20.0f, 70.0f, 32.0f + 5.0f * excess + 8.0f * h.air);
-        Setting s { modules::deess, {} };
-        put (s, ids::deessFreq, src.valid ? src.sibFreq : 6000.0f);
+        Setting s { modules::multi, 0, {} };
+        const float offs[4] { -9.0f, -5.0f, -7.0f, -12.0f };   // chaque bande a moins d'énergie que la voix entière
+        for (int b = 0; b < 4; ++b) put (s, ids::mbThr[b], juce::jlimit (-60.0f, 0.0f, L + offs[b]));
+        put (s, ids::mbAttack, 12.0f);
+        put (s, ids::mbRelease, 160.0f);
+        plan.modules.push_back (s);
+        rep.add (u8 ("Multiband : chaque zone de la voix tenue à part (mix bien contrôlé)"));
+    }
+
+    // ---- 7. DE-ESSER : après les compressions et l'EQ, qui font ressortir les S
+    {
+        const float tgtSib = tgtDyn ? tgt.sibilance : kDefaultSib;
+        const float excess = src.valid ? src.sibilance - tgtSib : 0.0f;
+        const float amt = juce::jlimit (25.0f, 75.0f, 35.0f + 4.0f * excess + 4.0f * juce::jmax (0.0f, highBoost) + 2.0f * need + 8.0f * h.air);
+        Setting s { modules::deess, 0, {} };
+        put (s, ids::deessFreq, src.valid ? src.sibFreq : 6500.0f);
         put (s, ids::deessAmt, std::round (amt));
         put (s, ids::deessS, 1.0f);
-        put (s, ids::deessCH, excess > 3.0f ? 1.0f : 0.0f);
-        put (s, ids::deessClarity, h.air > 0.3f || h.bright > 0.3f ? 35.0f : 15.0f);
+        put (s, ids::deessCH, amt > 50.0f ? 1.0f : 0.0f);
+        put (s, ids::deessClarity, h.air > 0.3f || h.bright > 0.3f ? 35.0f : 20.0f);
         plan.modules.push_back (s);
-        rep.add (u8 ("Sifflantes vers ") + hzText (src.valid ? src.sibFreq : 6000.0f) + " : de-esser " + juce::String (juce::roundToInt (amt)) + " %");
+        rep.add (u8 ("Sifflantes vers ") + hzText (src.valid ? src.sibFreq : 6500.0f) + " : de-esser " + juce::String (juce::roundToInt (amt)) + " %");
     }
 
-    // ---- 5. TEXTURE : saturation demandée, sinon un grain discret (les voix mixées en ont presque toujours)
+    // ---- 8. SATURATION de couleur : seulement si elle est demandée
+    if (h.sat > 0.05f)
     {
-        Setting s { modules::sat, {} };
-        const int type = h.satType >= 0 ? h.satType : (h.warm > 0.3f ? 0 : 1);
-        const float drive = 1.5f + 5.0f * h.sat;
+        Setting s { modules::sat, satInstance, {} };
+        const int type = h.satType >= 0 ? h.satType : 1;
         put (s, ids::satType, (float) type);
-        put (s, ids::drive, drive);
+        put (s, ids::drive, 2.0f + 5.0f * h.sat);
         put (s, ids::satMix, juce::jlimit (25.0f, 90.0f, 30.0f + 55.0f * h.sat));
         put (s, ids::satWarmth, 20.0f + 40.0f * h.warm);
         plan.modules.push_back (s);
         static const char* names[] { "lampe", "analogique", "bande", "transformateur" };
-        rep.add (u8 ("Texture : saturation ") + u8 (names[type]) + (h.sat > 0.1f ? juce::String (" marquée") : u8 (" discrète")));
+        rep.add (u8 ("Couleur : saturation ") + u8 (names[type]) + (h.sat > 0.4f ? u8 (" marquée") : u8 (" légère")));
     }
 
-    // ---- 6. CREATIVE FX : effets demandés
+    // ---- 9. COMPRESSION PARALLÈLE en fin de traitement : de la densité et du punch quand la voix doit passer devant
+    if (h.parallel || h.comp > 0.4f)
+    {
+        Setting s { modules::parallel, 0, {} };
+        put (s, ids::parAmount, juce::jlimit (20.0f, 55.0f, 25.0f + 25.0f * juce::jmax (0.0f, h.comp)));
+        put (s, ids::parThresh, juce::jlimit (-57.0f, -9.0f, L - 14.0f));
+        put (s, ids::parAttack, 5.5f);
+        put (s, ids::parRelease, 6.0f);
+        plan.modules.push_back (s);
+        rep.add (u8 ("Compression parallèle : la voix gagne en densité et passe devant la prod"));
+    }
+
+    // ---- 10. REVERB : la queue de la référence, sinon l'espace demandé, sinon celui d'une voix mixée (plate ~1,8 s)
+    {
+        float send = h.reverb >= 0.0f ? h.reverb : 0.26f;
+        float decay = h.reverbSize >= 0.0f ? 0.8f + 2.7f * h.reverbSize : 1.8f;
+        if (tgt.valid && tgt.rt60 > 0.0f && ! h.reverbExplicit)
+        {
+            decay = juce::jlimit (0.5f, 3.5f, tgt.rt60);   // au-delà, ce sont des restes d'instruments
+            const float wet = juce::jlimit (0.0f, 1.0f, (tgt.wetDb + 25.0f) / 20.0f);   // -25 dB : sèche, -5 dB : très présente
+            send = 0.05f + 0.4f * wet;
+        }
+        if (send > 0.02f)
+        {
+            Setting s { modules::reverb, 0, {} };
+            const int mode = h.dreamy ? 4 : decay < 1.0f ? 0 : decay < 2.4f ? 1 : 3;
+            const float mix = juce::jlimit (3.0f, 60.0f, 100.0f * send * 0.7f);
+            put (s, ids::reverbMode, (float) mode);
+            put (s, ids::reverbDecay, decay);
+            put (s, ids::reverbMix, mix);
+            put (s, ids::reverbPreDelay, decay > 2.0f ? 35.0f : 22.0f);
+            put (s, ids::reverbDucking, 40.0f);   // elle s'efface sous la voix et s'ouvre dans les blancs
+            put (s, ids::reverbClean, 35.0f);
+            plan.modules.push_back (s);
+            static const char* modes[] { "room", "plate", "plate 2", "hall", "shimmer" };
+            rep.add (u8 ("Réverbe ") + modes[mode] + " " + juce::String (decay, 1) + " s, envoi " + juce::String (juce::roundToInt (mix)) + " %"
+                     + (tgt.valid && tgt.rt60 > 0.0f && ! h.reverbExplicit ? u8 (" (d'après la référence)") : juce::String()));
+        }
+    }
+
+    // ---- 11. DELAY : écho repéré dans la référence, ou demandé
+    {
+        float amount = h.delay;
+        if (tgt.valid && tgt.echoAmount > 0.0f) amount = juce::jmax (amount, 0.3f + 0.4f * tgt.echoAmount);
+        if (amount > 0.05f)
+        {
+            Setting s { modules::delay, 0, {} };
+            if (tgt.valid && tgt.echoMs > 0.0f) { put (s, ids::delaySync, 0.0f); put (s, ids::delayTime, tgt.echoMs); }
+            put (s, ids::delayFeedback, 20.0f + 25.0f * amount);
+            put (s, ids::delayMix, 10.0f + 18.0f * amount);
+            put (s, ids::delayDucking, 60.0f);
+            plan.modules.push_back (s);
+            rep.add (tgt.valid && tgt.echoMs > 0.0f ? u8 ("Écho entendu à ") + juce::String (juce::roundToInt (tgt.echoMs)) + u8 (" ms dans la référence : delay")
+                                                    : juce::String ("Delay au tempo, en retrait sous la voix"));
+        }
+    }
+
+    // ---- 12. CREATIVE FX : effets demandés
     if (h.phone > 0.0f || h.doubler > 0.0f || h.chorus > 0.0f || h.flanger > 0.0f)
     {
-        Setting s { modules::creative, {} };
+        Setting s { modules::creative, 0, {} };
         put (s, ids::doublerOn, h.doubler > 0.0f ? 1.0f : 0.0f); put (s, ids::doublerAmount, 30.0f + 40.0f * h.doubler);
         put (s, ids::chorusOn, h.chorus > 0.0f ? 1.0f : 0.0f); put (s, ids::chorusMix, 20.0f + 25.0f * h.chorus);
         put (s, ids::flangerOn, h.flanger > 0.0f ? 1.0f : 0.0f); put (s, ids::flangerMix, 25.0f + 25.0f * h.flanger);
@@ -578,52 +678,6 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
         if (h.flanger > 0.0f) fx.add ("flanger");
         if (h.phone > 0.0f) fx.add (u8 ("téléphone"));
         rep.add ("Creative FX : " + fx.joinIntoString (", "));
-    }
-
-    // ---- 7. DELAY : écho repéré dans la référence, ou demandé
-    {
-        float amount = h.delay;
-        if (tgt.valid && tgt.echoAmount > 0.0f) amount = juce::jmax (amount, 0.3f + 0.4f * tgt.echoAmount);
-        if (amount > 0.05f)
-        {
-            Setting s { modules::delay, {} };
-            if (tgt.valid && tgt.echoMs > 0.0f) { put (s, ids::delaySync, 0.0f); put (s, ids::delayTime, tgt.echoMs); }
-            put (s, ids::delayFeedback, 20.0f + 25.0f * amount);
-            put (s, ids::delayMix, 10.0f + 20.0f * amount);
-            put (s, ids::delayDucking, 55.0f);
-            plan.modules.push_back (s);
-            rep.add (tgt.valid && tgt.echoMs > 0.0f ? u8 ("Écho entendu à ") + juce::String (juce::roundToInt (tgt.echoMs)) + " ms dans la référence : delay"
-                                                    : juce::String ("Delay au tempo, en retrait sous la voix"));
-        }
-    }
-
-    // ---- 8. REVERB : la queue de la référence, sinon l'espace demandé
-    {
-        float send = h.reverb >= 0.0f ? h.reverb : 0.18f;
-        float decay = h.reverbSize >= 0.0f ? 0.8f + 3.0f * h.reverbSize : 1.8f;
-        if (tgt.valid && tgt.rt60 > 0.0f)
-        {
-            if (! h.reverbExplicit) decay = juce::jlimit (0.5f, 3.5f, tgt.rt60);   // au-delà, ce sont des restes d'instruments
-            // la queue (mesurée au centre du mix, donc sous-estimée) : -45 dB → presque sèche, -20 dB → très présente
-            // la queue 120 ms après la fin des phrases, par rapport à la phrase : -25 dB → presque sèche, -5 dB → très présente
-            const float wet = juce::jlimit (0.0f, 1.0f, (tgt.wetDb + 25.0f) / 20.0f);
-            if (! h.reverbExplicit) send = 0.05f + 0.4f * wet;
-        }
-        if (send > 0.02f)
-        {
-            Setting s { modules::reverb, {} };
-            const int mode = h.dreamy ? 4 : decay < 1.0f ? 0 : decay < 2.4f ? 1 : 3;
-            put (s, ids::reverbMode, (float) mode);
-            put (s, ids::reverbDecay, decay);
-            put (s, ids::reverbMix, juce::jlimit (3.0f, 60.0f, 100.0f * send * 0.7f));
-            put (s, ids::reverbPreDelay, decay > 2.0f ? 35.0f : 20.0f);
-            put (s, ids::reverbDucking, 35.0f);
-            put (s, ids::reverbClean, 30.0f);
-            plan.modules.push_back (s);
-            static const char* modes[] { "room", "plate", "plate 2", "hall", "shimmer" };
-            rep.add (u8 ("Réverbe ") + modes[mode] + " " + juce::String (decay, 1) + " s, envoi " + juce::String (juce::roundToInt (100.0f * send * 0.7f)) + " %"
-                     + (tgt.valid && tgt.rt60 > 0.0f ? u8 (" (d'après la référence)") : juce::String()));
-        }
     }
     return plan;
 }
