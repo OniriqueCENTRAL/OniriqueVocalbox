@@ -618,6 +618,22 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
         rep.add (u8 ("Compression parallèle : la voix gagne en densité et passe devant la prod"));
     }
 
+    // ---- 9 bis. EQ ANALOG en fin de traitement : la série de compressions remonte la boue et ternit le haut ; on renettoie
+    //      légèrement (MUD, coupe-bas 85 Hz) et on rend la clarté (HI, AIR), sans empiler sur l'air déjà ajouté par l'EQ
+    {
+        Setting s { modules::analog, 0, {} };
+        const float mud = juce::jlimit (1.5f, 4.0f, 1.5f + 0.15f * need + (h.warm > 0.3f ? 0.0f : 0.5f));
+        const float hi = juce::jlimit (0.0f, 4.0f, 1.5f + 1.5f * h.bright - 1.5f * h.dark);
+        const float air = juce::jlimit (0.0f, 5.0f, 2.0f + 3.0f * h.air - 0.6f * juce::jmax (0.0f, highBoost - 2.0f) - 2.0f * h.dark);
+        put (s, ids::mud, std::round (mud * 10.0f) / 10.0f);
+        put (s, ids::high, std::round (hi * 10.0f) / 10.0f);
+        put (s, ids::air, std::round (air * 10.0f) / 10.0f);
+        put (s, ids::lowCut, 1.0f);
+        plan.modules.push_back (s);
+        rep.add (u8 ("EQ analog en fin de traitement : boue retirée (MUD ") + juce::String (mud, 1) + u8 ("), clarté HI +") + juce::String (hi, 1)
+                 + " et AIR +" + juce::String (air, 1));
+    }
+
     // ---- 10. REVERB : la queue de la référence, sinon l'espace demandé, sinon celui d'une voix mixée (plate ~1,8 s)
     {
         float send = h.reverb >= 0.0f ? h.reverb : 0.26f;
