@@ -481,7 +481,7 @@ void StartScreen::armLearning()
         pv->setProperty ("seconds", lastProfile.seconds); pv->setProperty ("loudDb", lastProfile.loudDb);
         pv->setProperty ("dynRange", lastProfile.dynRange); pv->setProperty ("peak50Db", lastProfile.peak50Db);
         pv->setProperty ("noiseFloorDb", lastProfile.noiseFloorDb); pv->setProperty ("sibilance", lastProfile.sibilance);
-        pv->setProperty ("sibFreq", lastProfile.sibFreq); pv->setProperty ("plosivesPerMin", lastProfile.plosivesPerMin);
+        pv->setProperty ("sibFreq", lastProfile.sibFreq); pv->setProperty ("plosivesPerMin", lastProfile.plosivesPerMin); pv->setProperty ("sung", lastProfile.sung);
         pv->setProperty ("rt60", lastProfile.rt60);
         juce::Array<juce::var> bands;
         for (float b : lastProfile.bands) bands.add (std::round (b * 10.0f) / 10.0f);

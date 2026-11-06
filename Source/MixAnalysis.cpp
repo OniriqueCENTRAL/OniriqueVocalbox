@@ -92,6 +92,7 @@ Profile analyse (const float* x, int n, double sr)
             if (f >= kCentres[b] * 0.8909f && f < kCentres[b] * 1.1225f) { bandOf[(size_t) k] = b; break; }
     }
     std::array<double, kBands> acc {};
+    std::vector<double> fine ((size_t) (N / 2), 0.0);   // le spectre fin moyen, pour trouver les résonances
     int frames = 0;
     std::vector<float> sibRatio, sibLevel, frameLevel;
     std::vector<std::vector<float>> sibSpectra;   // spectre 4 .. 10 kHz des trames, pour trouver où sifflent les S
@@ -113,6 +114,7 @@ Profile analyse (const float* x, int n, double sr)
             const double pw = (double) buf[(size_t) k] * buf[(size_t) k];
             const float f = (float) (k * sr / N);
             if (bandOf[(size_t) k] >= 0) acc[(size_t) bandOf[(size_t) k]] += pw;
+            fine[(size_t) k] += pw;
             if (f >= 100.0f && f < 16000.0f) eAll += pw;
             if (f >= 4500.0f && f < 10000.0f) eSib += pw;
             if (f < 150.0f) eLow += pw;
@@ -134,12 +136,98 @@ Profile analyse (const float* x, int n, double sr)
     if (frames < 8) return p;
     p.plosivesPerMin = (float) plosives / (float) (p.seconds / 60.0);
 
+    // ---- chant ou rap : la hauteur suivie toutes les 10 ms (autocorrélation normalisée sur la voix ramenée vers 8 kHz) ; une
+    //      note tenue = au moins 150 ms où la hauteur bouge de moins d'un demi-ton. Le rap en a peu, le chant beaucoup.
+    {
+        const int d = juce::jmax (1, (int) std::round (sr / 8000.0));
+        const double fs = sr / d;
+        std::vector<float> y ((size_t) (n / d));
+        for (size_t i = 0; i < y.size(); ++i) { float s = 0.0f; for (int j = 0; j < d; ++j) s += x[(int) i * d + j]; y[i] = s / (float) d; }
+        const int W = (int) (fs * 0.04), step = juce::jmax (1, (int) (fs * 0.01));
+        const int lagMin = juce::jmax (2, (int) (fs / 900.0)), lagMax = (int) (fs / 70.0);
+        std::vector<float> corr ((size_t) lagMax + 2, 0.0f);
+        int active = 0, held = 0, run = 0;
+        float prevSt = 0.0f;
+        auto closeRun = [&] { if (run >= 15) held += run; run = 0; };
+        for (int s = 0; s + W + lagMax < (int) y.size(); s += step)
+        {
+            const size_t e10 = (size_t) ((double) s * d / h10);
+            if (e10 >= env.size() || env[e10] < thr) { closeRun(); continue; }
+            ++active;
+            float best = 0.0f; int bestLag = 0;
+            for (int lag = lagMin; lag <= lagMax; ++lag)
+            {
+                double xy = 0.0, xx = 0.0, yy = 0.0;
+                for (int i = 0; i < W; ++i) { const float a = y[(size_t) (s + i)], b = y[(size_t) (s + i + lag)]; xy += a * b; xx += a * a; yy += b * b; }
+                const float r = xx + yy > 0.0 ? (float) (2.0 * xy / (xx + yy)) : 0.0f;
+                corr[(size_t) lag] = r;
+                if (r > best) best = r;
+            }
+            if (best < 0.8f) { closeRun(); continue; }
+            // la période : le premier sommet presque aussi haut que le meilleur (évite de sauter à l'octave en dessous)
+            for (int lag = lagMin + 1; lag < lagMax; ++lag)
+                if (corr[(size_t) lag] >= 0.92f * best && corr[(size_t) lag] >= corr[(size_t) lag - 1] && corr[(size_t) lag] >= corr[(size_t) lag + 1]) { bestLag = lag; break; }
+            if (bestLag == 0) { closeRun(); continue; }
+            const float st = 12.0f * std::log2 ((float) (fs / bestLag) / 110.0f);
+            if (run > 0 && std::abs (st - prevSt) > 0.5f) closeRun();
+            ++run; prevSt = st;
+        }
+        closeRun();
+        if (active > 50) p.sung = juce::jlimit (0.0f, 1.0f, ((float) held / (float) active - 0.15f) / 0.3f);
+    }
+
     // timbre : moyenne par tiers d'octave, la zone 200 Hz .. 5 kHz ramenée à 0
     for (int b = 0; b < kBands; ++b) p.bands[(size_t) b] = acc[(size_t) b] > 0.0 ? dbOf (acc[(size_t) b] / frames) : -120.0f;
     float ref = 0.0f;
     for (int b = 10; b <= 24; ++b) ref += p.bands[(size_t) b];
     ref /= 15.0f;
     for (auto& v : p.bands) v = juce::jmax (-60.0f, v - ref);
+
+    // résonances : le spectre fin moyen, lissé sur 1/12 d'octave (les harmoniques, qui bougent avec la note, s'y fondent),
+    // comparé au même spectre lissé sur 2/3 d'octave ; un pic qui dépasse de plus de 3 dB entre 250 Hz et 9 kHz est retenu
+    {
+        const int half = N / 2;
+        std::vector<float> fdb ((size_t) half, -120.0f), narrow ((size_t) half, -120.0f), wide ((size_t) half, -120.0f);
+        for (int k = 1; k < half; ++k) fdb[(size_t) k] = dbOf (fine[(size_t) k] / frames);
+        auto smooth = [&] (std::vector<float>& out, float octaves)
+        {
+            const float r = std::pow (2.0f, octaves / 2.0f);
+            std::vector<double> cum ((size_t) half + 1, 0.0);
+            for (int k = 0; k < half; ++k) cum[(size_t) k + 1] = cum[(size_t) k] + fdb[(size_t) k];
+            for (int k = 2; k < half; ++k)
+            {
+                const int a = juce::jmax (1, (int) std::floor (k / r)), b = juce::jmin (half - 1, juce::jmax (a + 1, (int) std::ceil (k * r)));
+                out[(size_t) k] = (float) ((cum[(size_t) b + 1] - cum[(size_t) a]) / (b - a + 1));
+            }
+        };
+        smooth (narrow, 1.0f / 12.0f);
+        smooth (wide, 2.0f / 3.0f);
+        // sous 900 Hz, les pics sont surtout les harmoniques des notes tenues : la boue et le bas-médium sont traités en bandes larges
+        const int k250 = (int) (900.0 * N / sr), k9k = juce::jmin (half - 2, (int) (9000.0 * N / sr));
+        struct Peak { float f, db, q; };
+        std::vector<Peak> peaks;
+        for (int k = juce::jmax (2, k250); k < k9k; ++k)
+        {
+            const float ex = narrow[(size_t) k] - wide[(size_t) k];
+            if (ex < 3.0f || narrow[(size_t) k] < narrow[(size_t) k - 1] || narrow[(size_t) k] < narrow[(size_t) k + 1]) continue;
+            // la largeur : là où le pic retombe à la moitié de son excès
+            int lo = k, hi = k;
+            while (lo > 2 && narrow[(size_t) lo] - wide[(size_t) lo] > 0.5f * ex) --lo;
+            while (hi < half - 2 && narrow[(size_t) hi] - wide[(size_t) hi] > 0.5f * ex) ++hi;
+            const float f = (float) (k * sr / N), bw = juce::jmax ((float) (sr / N), (float) ((hi - lo) * sr / N));
+            peaks.push_back ({ f, ex, juce::jlimit (2.0f, 6.0f, f / bw) });
+        }
+        std::sort (peaks.begin(), peaks.end(), [] (const Peak& a, const Peak& b) { return a.db > b.db; });
+        for (const auto& pk : peaks)
+        {
+            if (p.numRes >= 4) break;
+            bool near = false;   // deux pics à moins d'un tiers d'octave : le plus fort suffit
+            for (int i = 0; i < p.numRes; ++i) near = near || std::abs (std::log2 (pk.f / p.resFreq[(size_t) i])) < 1.0f / 3.0f;
+            if (near) continue;
+            p.resFreq[(size_t) p.numRes] = pk.f; p.resDb[(size_t) p.numRes] = pk.db; p.resQ[(size_t) p.numRes] = pk.q;
+            ++p.numRes;
+        }
+    }
 
     // sifflantes : les 10 % de trames les plus riches en aigus ; leur pic entre 4 et 10 kHz
     if (! sibRatio.empty())
@@ -441,6 +529,7 @@ void applyArtist (Hints& h, const ArtistStyle& a)
     if (has ("delay")) h.delay = juce::jmax (h.delay, num ("delay"));
     if (has ("satType") && h.satType < 0) h.satType = juce::jlimit (0, 3, (int) num ("satType"));
     h.doubler = juce::jmax (h.doubler, num ("doubler"));
+    if (a.genre.containsIgnoreCase ("rnb") || a.genre.containsIgnoreCase ("pop")) h.sung = juce::jmax (h.sung, 0.3f);   // un artiste qui chante
     h.chorus = juce::jmax (h.chorus, num ("chorus"));
     h.flanger = juce::jmax (h.flanger, num ("flanger"));
     h.phone = juce::jmax (h.phone, num ("phone"));
@@ -479,6 +568,7 @@ Hints parseHints (const juce::String& text)
     auto note = [&h] (const char* s) { h.understood.addIfNotAlreadyThere (juce::String::fromUTF8 (s)); };
 
     // styles
+    if (has ({ "chant", "chante", "chantee", "chanteur", "chanteuse", "sung", "singing", "singer", "melodique", "melodic", "ballade", "ballad", "toplines" })) { h.sung = 0.6f; note ("chant"); }
     if (has ({ "rap", "hip hop", "hiphop", "drill", "trap", "rap fr", "boom bap" })) { h.comp += 0.5f; h.bright += 0.3f; h.air += 0.2f; if (h.reverb < 0) h.reverb = 0.12f; note ("rap"); }
     if (has ({ "rnb", "r&b", "r b", "soul", "neo soul" })) { h.warm += 0.4f; h.air += 0.3f; h.comp += 0.2f; h.reverb = juce::jmax (h.reverb, 0.3f); h.doubler += 0.3f; note ("R&B"); }
     if (has ({ "pop" })) { h.bright += 0.4f; h.air += 0.5f; h.comp += 0.5f; h.reverb = juce::jmax (h.reverb, 0.22f); note ("pop"); }
@@ -637,7 +727,9 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
     }
 
     // ---- 3. EQ : l'écart entre la prise et la cible (±4 dB lissés), présence pour la mettre en avant
-    float highBoost = 0.0f;
+    float highBoost = 0.0f, mudCut = 0.0f;
+    // chant ou rap : d'après la prise (notes tenues), et ce que la demande en dit
+    const float sung = juce::jlimit (0.0f, 1.0f, (src.valid ? src.sung : 0.0f) + h.sung);
     {
         Setting s { modules::peq, 0, {} };
         put (s, ids::peqPower, 1.0f);
@@ -656,17 +748,85 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
         put (s, ids::peqOn[0], 1.0f); put (s, ids::peqType[0], 3.0f); put (s, ids::peqFreq[0], cut); put (s, ids::peqSlope[0], 1.0f); put (s, ids::peqQ[0], 0.71f);
         const int centre[6] { 9, 12, 15, 18, 21, 24 };
         juce::StringArray moves;
+        // six bandes larges : l'écart de timbre lissé
+        struct Band { float f, g, q; bool used; };
+        std::array<Band, 6> bands {};
         for (int i = 0; i < 6; ++i)
         {
             float g = avg (centre[i] - 1, centre[i] + 1);
             if (i == 4 || i == 5) g += 0.6f + 0.8f * juce::jmax (0.0f, h.comp);   // présence : la voix passe devant la prod
             g = juce::jlimit (-4.0f, 4.0f, g);
+            bands[(size_t) i] = { kCentres[centre[i]], g, 1.1f, std::abs (g) >= 0.7f };
+        }
+        auto octs = [] (float a, float b) { return std::abs (std::log2 (a / b)); };
+
+        // LA BOUE (200 .. 500 Hz) : mesurée sur la prise ; coupée là où elle est la plus forte, selon le style : franche sur une
+        // voix rap qui doit passer devant, plus douce quand de la chaleur est demandée ou sur une voix chantée qui doit garder son corps
+        float mudFreq = 0.0f;
+        if (src.valid)
+        {
+            float ex = 0.0f; int at = 11; float worst = -99.0f;
+            for (int b = 10; b <= 14; ++b)
+            {
+                const float d = src.bands[(size_t) b] - target[(size_t) b];
+                ex += d / 5.0f;
+                if (d > worst) { worst = d; at = b; }
+            }
+            if (ex > 1.5f)
+            {
+                float k = 1.0f;
+                if (h.warm > 0.3f) k *= 0.6f;
+                k *= 1.0f - 0.25f * sung;
+                if (h.comp > 0.3f) k *= 1.15f;
+                const float g = -juce::jlimit (1.5f, 6.0f, 0.8f * ex * k);
+                mudFreq = kCentres[at]; mudCut = g;
+                // à la place de la bande large la plus proche (pas de coupe empilée sur la même zone)
+                int slot = 0;
+                for (int i = 1; i < 3; ++i) if (octs (bands[(size_t) i].f, mudFreq) < octs (bands[(size_t) slot].f, mudFreq)) slot = i;
+                bands[(size_t) slot] = { mudFreq, g, 1.4f, true };
+                // beaucoup de boue : on ne remonte pas le bas juste en dessous
+                if (g < -3.0f) for (auto& b : bands) if (b.f < mudFreq && b.g > 0.0f) b.g = 0.0f, b.used = false;
+                for (int i = 0; i < 3; ++i) if (i != slot && octs (bands[(size_t) i].f, mudFreq) < 0.7f && bands[(size_t) i].g < 0.0f) bands[(size_t) i].used = false;
+                rep.add (u8 ("Boue mesurée (+") + juce::String (ex, 1) + u8 (" dB) : coupe ") + dbText (g) + u8 (" à ") + hzText (mudFreq));
+            }
+        }
+
+        // LES RÉSONANCES : un pic étroit qui dépasse de la voix (dureté vers 2 .. 5 kHz, nasalité, pièce) est coupé à sa fréquence,
+        // serré, et sans excès : environ 70 % du dépassement, 5 dB au plus dans la zone dure, 4 ailleurs, 3 au-dessus de 6 kHz
+        // (le de-esser s'occupe des S). Deux au plus, dans les bandes restées libres.
+        juce::StringArray notches;
+        if (src.valid)
+            for (int r = 0, done = 0; r < src.numRes && done < 2; ++r)
+            {
+                const float f = src.resFreq[(size_t) r], ex = src.resDb[(size_t) r];
+                const bool harsh = f >= 1500.0f && f <= 6000.0f;
+                if (ex < (harsh ? 3.0f : 4.0f) || (mudFreq > 0.0f && octs (f, mudFreq) < 0.4f)) continue;
+                int slot = -1;
+                for (int i = 0; i < 6; ++i) if (! bands[(size_t) i].used) { slot = i; break; }
+                if (slot < 0)   // plus de bande libre : la bande large la plus discrète (moins de 1,5 dB) laisse sa place
+                    for (int i = 0; i < 6; ++i)
+                        if (bands[(size_t) i].q < 2.0f && bands[(size_t) i].f != mudFreq && std::abs (bands[(size_t) i].g) < 1.5f
+                            && (slot < 0 || std::abs (bands[(size_t) i].g) < std::abs (bands[(size_t) slot].g))) slot = i;
+                if (slot < 0) break;
+                const float cap = f > 6000.0f ? 3.0f : harsh ? 5.0f : 4.0f;
+                const float g = -juce::jlimit (1.5f, cap, 0.7f * ex);
+                // une bande large qui coupe déjà autour : moitié moins, pour ne pas creuser la voix
+                for (auto& b : bands) if (b.used && b.q < 2.0f && octs (b.f, f) < 0.4f) b.g *= 0.5f;   // et une présence poussée juste là : moitié moins
+                bands[(size_t) slot] = { f, g, juce::jlimit (3.0f, 6.0f, src.resQ[(size_t) r]), true };
+                notches.add (hzText (f) + " " + dbText (g));
+                ++done;
+            }
+        if (! notches.isEmpty())
+            rep.add (u8 ("Résonances coupées proprement : ") + notches.joinIntoString (u8 (" · ")));
+
+        for (int i = 0; i < 6; ++i)
+        {
+            const auto& b = bands[(size_t) i];
             const int bnd = i + 1;
-            const bool on = std::abs (g) >= 0.7f;
-            put (s, ids::peqOn[bnd], on ? 1.0f : 0.0f); put (s, ids::peqType[bnd], 0.0f); put (s, ids::peqFreq[bnd], kCentres[centre[i]]);
-            put (s, ids::peqGain[bnd], std::round (g * 10.0f) / 10.0f); put (s, ids::peqQ[bnd], 1.1f);
-            if (on) moves.add (dbText (g) + " " + hzText (kCentres[centre[i]]));
-            if (i >= 4) highBoost = juce::jmax (highBoost, g);
+            put (s, ids::peqOn[bnd], b.used ? 1.0f : 0.0f); put (s, ids::peqType[bnd], 0.0f); put (s, ids::peqFreq[bnd], std::round (b.f));
+            put (s, ids::peqGain[bnd], std::round (b.g * 10.0f) / 10.0f); put (s, ids::peqQ[bnd], std::round (b.q * 100.0f) / 100.0f);
+            if (b.used && b.q < 2.0f && b.f != mudFreq) moves.add (dbText (b.g) + " " + hzText (b.f));
+            if (b.used && b.g > 0.0f && b.f >= 2000.0f) highBoost = juce::jmax (highBoost, b.g);
         }
         const float shelf = juce::jlimit (-4.0f, 4.0f, avg (26, 28) + 0.8f);   // un peu d'air en plus : une voix mixée brille
         put (s, ids::peqOn[7], std::abs (shelf) >= 0.7f ? 1.0f : 0.0f);
@@ -687,8 +847,11 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
         Setting fet { modules::fet, 0, {} };
         put (fet, ids::fetIn, std::round (in * 10.0f) / 10.0f);
         put (fet, ids::fetOut, juce::jlimit (-24.0f, 24.0f, -in + 0.8f * grFet));
-        put (fet, ids::fetAttack, h.comp > 0.3f ? 3.5f : 3.0f);
-        put (fet, ids::fetRelease, 5.0f);
+        // voix moderne : attaque et release rapides (7 = le plus rapide) ; un peu plus lent pour un rendu naturel
+        //               une voix chantée garde ses attaques et ses fins de notes : attaque plus lente, release plus long
+        const float soft = juce::jlimit (0.0f, 1.0f, sung + (h.comp < -0.2f ? 0.4f : 0.0f));
+        put (fet, ids::fetAttack, std::round (10.0f * ((h.comp > 0.3f ? 5.5f : 5.0f) - 2.5f * soft)) / 10.0f);
+        put (fet, ids::fetRelease, std::round (10.0f * (6.5f - 2.5f * soft)) / 10.0f);
         put (fet, ids::fetRatio, h.comp > 0.6f ? 1.0f : 0.0f);
         plan.modules.push_back (fet);
         const float grOpto = juce::jlimit (2.0f, 7.0f, 2.0f + 0.35f * need);
@@ -744,8 +907,10 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
             put (s, ids::mbGain[k], std::round (g * 10.0f) / 10.0f);
             gains.add (juce::String (names[k]) + " " + dbText (g));
         }
-        put (s, ids::mbAttack, 12.0f);
-        put (s, ids::mbRelease, 160.0f);
+        // rapide sur le rap (la zone est tenue dès l'attaque de la syllabe), plus souple sur le chant
+        const float soft = juce::jlimit (0.0f, 1.0f, sung + (h.comp < -0.2f ? 0.4f : 0.0f));
+        put (s, ids::mbAttack, std::round (6.0f + 14.0f * soft));
+        put (s, ids::mbRelease, std::round (90.0f + 130.0f * soft));
         plan.modules.push_back (s);
         rep.add (u8 ("Multiband : environ −") + juce::String (gr, 1) + u8 (" dB par zone pour une voix maîtrisée · gains ") + gains.joinIntoString (u8 (" · ")));
     }
@@ -783,7 +948,8 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
     //      légèrement (MUD, coupe-bas 85 Hz) et on rend la clarté (HI, AIR), sans empiler sur l'air déjà ajouté par l'EQ
     {
         Setting s { modules::analog, 0, {} };
-        const float mud = juce::jlimit (1.5f, 4.0f, 1.5f + 0.15f * need + (h.warm > 0.3f ? 0.0f : 0.5f));
+        // la boue déjà coupée à sa fréquence par l'EQ du début : ici, seulement ce que les compressions ont fait remonter
+        const float mud = juce::jlimit (1.0f, 4.0f, 1.5f + 0.15f * need + (h.warm > 0.3f ? 0.0f : 0.5f) + 0.3f * mudCut);
         const float hi = juce::jlimit (0.0f, 4.0f, 1.5f + 1.5f * h.bright - 1.5f * h.dark);
         const float air = juce::jlimit (0.0f, 5.0f, 2.0f + 3.0f * h.air - 0.6f * juce::jmax (0.0f, highBoost - 2.0f) - 2.0f * h.dark);
         put (s, ids::mud, std::round (mud * 10.0f) / 10.0f);
@@ -801,8 +967,8 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
         Setting s { modules::parallel, 0, {} };
         put (s, ids::parAmount, juce::jlimit (20.0f, 55.0f, 25.0f + 25.0f * juce::jmax (0.0f, h.comp)));
         put (s, ids::parThresh, juce::jlimit (-57.0f, -9.0f, L - 14.0f));
-        put (s, ids::parAttack, 5.5f);
-        put (s, ids::parRelease, 6.0f);
+        put (s, ids::parAttack, std::round (10.0f * (6.0f - 2.0f * sung)) / 10.0f);
+        put (s, ids::parRelease, std::round (10.0f * (6.5f - 2.0f * sung)) / 10.0f);
         plan.modules.push_back (s);
         rep.add (u8 ("Compression parallèle : la voix gagne en densité et passe devant la prod"));
     }
@@ -826,7 +992,7 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
             put (s, ids::reverbDecay, decay);
             put (s, ids::reverbMix, mix);
             put (s, ids::reverbPreDelay, decay > 2.0f ? 35.0f : 22.0f);
-            put (s, ids::reverbDucking, 40.0f);   // elle s'efface sous la voix et s'ouvre dans les blancs
+            put (s, ids::reverbDucking, 8.0f);    // un léger effacement sous la voix (8 %), la queue s'ouvre dans les blancs
             put (s, ids::reverbClean, 35.0f);
             plan.modules.push_back (s);
             static const char* modes[] { "room", "plate", "plate 2", "hall", "shimmer" };
@@ -845,7 +1011,7 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
             if (tgt.valid && tgt.echoMs > 0.0f) { put (s, ids::delaySync, 0.0f); put (s, ids::delayTime, tgt.echoMs); }
             put (s, ids::delayFeedback, 20.0f + 25.0f * amount);
             put (s, ids::delayMix, 10.0f + 18.0f * amount);
-            put (s, ids::delayDucking, 60.0f);
+            put (s, ids::delayDucking, 10.0f);    // léger : 10 % au plus
             plan.modules.push_back (s);
             rep.add (tgt.valid && tgt.echoMs > 0.0f ? u8 ("Écho entendu à ") + juce::String (juce::roundToInt (tgt.echoMs)) + u8 (" ms dans la référence : delay")
                                                     : juce::String ("Delay au tempo, en retrait sous la voix"));

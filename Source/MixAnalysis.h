@@ -42,6 +42,11 @@ struct Profile
     // voix prise au centre d'un mix (pas séparée) : la batterie et la basse y restent ; on n'en garde que le timbre au-dessus de
     // 200 Hz et l'espace (la dynamique et les sifflantes y sont faussées par la musique)
     bool fromMix = false;
+    // 0 : parlé / rappé, 1 : chanté (la part du temps où la voix tient des notes : hauteur stable sur plus de 150 ms)
+    float sung = 0.0f;
+    // les résonances : des pics étroits qui dépassent le spectre lissé de la voix (dureté, nasalité, pièce, micro)
+    int numRes = 0;
+    std::array<float, 4> resFreq {}, resDb {}, resQ {};
 };
 
 // le portrait d'une voix mono
@@ -63,6 +68,7 @@ bool canRead (const juce::File&);
 struct Hints
 {
     float bright = 0.0f, air = 0.0f, warm = 0.0f, dark = 0.0f;   // 0 .. 1
+    float sung = 0.0f;                    // la demande parle de chant (0 .. 1), ajouté à ce que la prise montre
     float comp = 0.0f;           // -1 (naturel) .. +1 (très en avant)
     float reverb = -1.0f;        // -1 : non dit ; 0 .. 1
     bool reverbExplicit = false; // l'espace a été demandé en toutes lettres (sinon la référence décide)
