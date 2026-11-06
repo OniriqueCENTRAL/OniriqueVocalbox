@@ -1,6 +1,6 @@
 {
-  "version": 1,
-  "updated": "2026-11-06",
+  "version": 2,
+  "updated": "2026-11-07",
   "about": "Le cerveau de CRÉER LE MIX : la façon de mixer la voix de chaque artiste (couleur, tenue, espace, texture, effets), sur les échelles de la barre de recherche (0..1 ; comp -1..1 ; satType 0 lampe, 1 analog, 2 bande, 3 transformateur). Les corrections viennent de l'apprentissage (retouches et notes des utilisateurs qui l'ont accepté) : elles s'ajoutent aux réglages décidés.",
   "artists": [
     { "name": "Travis Scott", "aliases": ["travis scott", "la flame", "cactus jack"], "genre": "rap",
@@ -82,7 +82,38 @@
     { "name": "Josman", "aliases": ["josman"], "genre": "rap fr",
       "hints": { "warm": 0.4, "air": 0.4, "comp": 0.5, "reverb": 0.35, "reverbSize": 0.6, "delay": 0.4, "doubler": 0.3 } },
     { "name": "Zola", "aliases": ["zola"], "genre": "drill",
-      "hints": { "dark": 0.3, "bright": 0.2, "comp": 0.7, "reverb": 0.25, "reverbSize": 0.4, "delay": 0.4, "controlled": true } }
+      "hints": { "dark": 0.3, "bright": 0.2, "comp": 0.7, "reverb": 0.25, "reverbSize": 0.4, "delay": 0.4, "controlled": true } },
+    { "name": "La Fève", "aliases": ["la feve"], "genre": "rap fr underground", "estimate": true,
+      "hints": { "air": 0.6, "bright": 0.3, "comp": 0.5, "reverb": 0.5, "reverbSize": 0.7, "delay": 0.5, "doubler": 0.5, "sat": 0.2, "satType": 2, "dreamy": true } },
+    { "name": "Khali", "aliases": ["khali"], "genre": "rap fr underground", "estimate": true,
+      "hints": { "air": 0.6, "warm": 0.3, "comp": 0.4, "reverb": 0.5, "reverbSize": 0.7, "delay": 0.45, "doubler": 0.4, "dreamy": true } },
+    { "name": "Jolagreen23", "aliases": ["jolagreen23", "jolagreen", "jola"], "genre": "drill", "estimate": true,
+      "hints": { "bright": 0.4, "comp": 0.8, "reverb": 0.15, "reverbSize": 0.3, "delay": 0.3, "controlled": true, "parallel": true } },
+    { "name": "La Mano 1.9", "aliases": ["la mano 1 9", "la mano"], "genre": "rap fr", "estimate": true,
+      "hints": { "bright": 0.5, "air": 0.5, "comp": 0.6, "reverb": 0.3, "reverbSize": 0.5, "delay": 0.4, "doubler": 0.4, "controlled": true } },
+    { "name": "Timar", "aliases": ["timar"], "genre": "rap fr", "estimate": true,
+      "hints": { "warm": 0.5, "dark": 0.2, "comp": 0.4, "reverb": 0.4, "reverbSize": 0.6, "delay": 0.35 } },
+    { "name": "Jeune LC", "aliases": ["jeune lc"], "genre": "rap fr underground", "estimate": true,
+      "hints": { "dark": 0.4, "comp": 0.5, "reverb": 0.4, "reverbSize": 0.6, "delay": 0.45, "sat": 0.3, "satType": 2 } },
+    { "name": "Keeqaid", "aliases": ["keeqaid"], "genre": "rap fr underground", "estimate": true,
+      "hints": { "dark": 0.4, "comp": 0.6, "reverb": 0.3, "reverbSize": 0.5, "delay": 0.4, "sat": 0.4, "satType": 3, "doubler": 0.4 } },
+    { "name": "RnBoi", "aliases": ["rnboi", "rn boi"], "genre": "rnb", "estimate": true,
+      "hints": { "air": 0.6, "bright": 0.4, "warm": 0.3, "comp": 0.5, "reverb": 0.4, "reverbSize": 0.6, "delay": 0.35, "doubler": 0.4 } },
+    { "name": "Kerchak", "aliases": ["kerchak"], "genre": "rap fr", "estimate": true,
+      "hints": { "dark": 0.4, "warm": 0.3, "comp": 0.5, "reverb": 0.5, "reverbSize": 0.7, "delay": 0.45, "doubler": 0.3 } },
+    { "name": "Yvnnis", "aliases": ["yvnnis"], "genre": "rap fr underground", "estimate": true,
+      "hints": { "dark": 0.3, "air": 0.3, "comp": 0.3, "reverb": 0.55, "reverbSize": 0.8, "delay": 0.45, "sat": 0.3, "satType": 2, "dreamy": true } },
+    { "name": "Theodora", "aliases": ["theodora"], "genre": "pop", "estimate": true,
+      "hints": { "bright": 0.6, "air": 0.6, "comp": 0.7, "reverb": 0.3, "reverbSize": 0.5, "delay": 0.35, "doubler": 0.5, "controlled": true } },
+    { "name": "Houdi", "aliases": ["houdi"], "genre": "rap fr", "estimate": true,
+      "hints": { "air": 0.5, "warm": 0.3, "comp": 0.5, "reverb": 0.4, "reverbSize": 0.6, "delay": 0.4, "doubler": 0.3 } },
+    { "name": "8ruki", "aliases": ["8ruki"], "genre": "rap fr underground", "estimate": true,
+      "hints": { "bright": 0.4, "comp": 0.8, "reverb": 0.3, "reverbSize": 0.5, "sat": 0.6, "satType": 3, "doubler": 0.4 } },
+    { "name": "Ziak", "aliases": ["ziak"], "genre": "drill", "estimate": true,
+      "hints": { "dark": 0.5, "comp": 0.7, "reverb": 0.2, "reverbSize": 0.4, "delay": 0.35, "sat": 0.3, "satType": 3, "controlled": true } },
+    { "name": "Zuukou Mayzie", "aliases": ["zuukou mayzie", "zuukou"], "genre": "rap fr underground", "estimate": true,
+      "hints": { "dark": 0.5, "comp": 0.6, "reverb": 0.4, "reverbSize": 0.6, "delay": 0.4, "sat": 0.5, "satType": 2 } }
+
   ],
   "corrections": {}
 }
