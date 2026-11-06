@@ -1098,6 +1098,7 @@ public:
     {
         copySlot.setButtonText (bank.getSlot() == 0 ? "Copy A to B" : "Copy B to A");
         pasteSettings.setEnabled (bank.canPaste());
+        if (optionGet) option.setToggleState (optionGet(), dontSendNotification);
 
         const auto zoom = getZoom ? getZoom() : 1.0f;
 
@@ -1110,7 +1111,20 @@ public:
         repaint();
     }
 
-    int idealHeight() const   { return 6 + (clipboard ? 5 : 3) * 33 + (withZoom ? 11 + 70 : 0) + 11 + 62 + 6; }
+    int idealHeight() const   { return 6 + (clipboard ? 5 : 3) * 33 + (withZoom ? 11 + 70 : 0) + 11 + 62 + (optionGet ? 11 + 86 : 0) + 6; }
+
+    /** Facultatif : une option propre au plugin, sous la couleur de l'interface (VOCALBOX : l'apprentissage). Le bouton
+        s'allume quand get() est vrai ; un clic appelle set (! get()). */
+    void setOption (const String& heading, const String& label, const String& hint, std::function<bool()> get, std::function<void (bool)> set)
+    {
+        optionHeading = heading; optionHint = hint; optionGet = std::move (get); optionSet = std::move (set);
+        option.setButtonText (label);
+        option.setMonoText (true);
+        option.onClick = [this] { if (optionGet && optionSet) optionSet (! optionGet()); refresh(); };
+        addAndMakeVisible (option);
+        refresh();
+        resized();
+    }
 
     /** Sans la taille de la fenêtre (une application, qui a la sienne). */
     void setZoomVisible (bool shouldShow)
@@ -1137,6 +1151,7 @@ public:
             drawHeading (g, *fonts, "INTERFACE COLOUR", colourHeading.toFloat(), false);
             g.setColour (colours::rose.withAlpha (0.1f));
             g.fillRect (separator2.toFloat());
+            paintOption (g);
             return;
         }
 
@@ -1157,6 +1172,19 @@ public:
         }
 
         drawWell (g, zoomWell.toFloat());
+        paintOption (g);
+    }
+
+    void paintOption (Graphics& g)
+    {
+        if (! optionGet) return;
+        g.setColour (colours::rose.withAlpha (0.1f));
+        g.fillRect (separator3.toFloat());
+        drawHeading (g, *fonts, optionHeading, optionHeadingArea.toFloat(), false);
+        drawWell (g, optionWell.toFloat());
+        g.setColour (colours::haze);
+        g.setFont (fonts->monoFont (8.5f, 0.06f));
+        g.drawFittedText (optionHint, optionHintArea, Justification::topLeft, 2);
     }
 
     void resized() override
@@ -1193,6 +1221,19 @@ public:
         colourHeading = cb.removeFromTop (14);
         cb.removeFromTop (6);
         swatches.setBounds (cb.removeFromTop (30));
+
+        // l'option du plugin, sous la couleur de l'interface
+        if (optionGet)
+        {
+            separator3 = r.removeFromTop (11).withSizeKeepingCentre (r.getWidth() - 16, 1);
+            auto ob = r.removeFromTop (86).reduced (10, 6);
+            optionHeadingArea = ob.removeFromTop (14);
+            ob.removeFromTop (6);
+            optionWell = ob.removeFromTop (30);
+            option.setBounds (optionWell.reduced (2));
+            ob.removeFromTop (4);
+            optionHintArea = ob;
+        }
     }
 
     void mouseDown (const MouseEvent&) override {}
@@ -1213,7 +1254,12 @@ private:
     Segment zooms[kNumZooms];
     std::unique_ptr<FileChooser> chooser;
 
-    Rectangle<int> separator, resizeHeading, zoomWell, separator2, colourHeading;
+    Rectangle<int> separator, resizeHeading, zoomWell, separator2, colourHeading, separator3, optionHeadingArea, optionHintArea;
+    Segment option { {}, true, true };   // avec son témoin
+    Rectangle<int> optionWell;
+    String optionHeading, optionHint;
+    std::function<bool()> optionGet;
+    std::function<void (bool)> optionSet;
     Swatches swatches;
 
     JUCE_DECLARE_NON_COPYABLE (Menu)
@@ -1336,6 +1382,9 @@ public:
 
     /** Dans une application plutôt qu'un plugin : la fenêtre a sa propre taille, le menu ⋯ ne la propose pas. */
     void setWithoutZoom()   { menu.setZoomVisible (false); layoutPanels(); }
+    /** Une option propre au plugin dans le menu ⋯ (voir Menu::setOption). */
+    void setMenuOption (const String& heading, const String& label, const String& hint, std::function<bool()> get, std::function<void (bool)> set)
+    { menu.setOption (heading, label, hint, std::move (get), std::move (set)); layoutPanels(); }
 
     /** La hauteur de cette barre, en points : celle de heightFor(), une seule rangée sans marque. */
     int getBarHeight() const   { return twoRows() ? heightFor (width) : 50; }

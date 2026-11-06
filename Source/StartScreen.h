@@ -58,4 +58,12 @@ private:
     double stageStart = 0.0, lastHeard = 0.0;
     float progress = 0.0f;
     bool forceBuild = false;
+
+    // L'APPRENTISSAGE (si l'utilisateur l'a allumé) : la fiche d'un artiste inconnu demandée au serveur pendant l'écoute,
+    // et ce que CRÉER LE MIX a décidé, gardé par le processeur jusqu'à la note
+    juce::String requestText;
+    std::thread lookup;
+    std::atomic<bool> lookupFound { false };
+    onirique::mix::Profile lastProfile;
+    void armLearning();
 };

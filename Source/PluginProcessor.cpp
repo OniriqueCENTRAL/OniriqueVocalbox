@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "Learning.h"
 
 using namespace onirique;
 
@@ -137,8 +138,41 @@ void OniriqueVocalBoxAudioProcessor::handleAsyncUpdate()
     suspendProcessing (false);
 }
 
+void OniriqueVocalBoxAudioProcessor::learnArm (juce::var payload, std::vector<std::pair<juce::String, float>> applied)
+{
+    if (learnPending()) learnSend (0);   // le mix d'avant part tel quel
+    learnPayload = std::move (payload);
+    learnApplied = std::move (applied);
+    learnAt = juce::Time::getMillisecondCounterHiRes() * 0.001;
+}
+
+void OniriqueVocalBoxAudioProcessor::learnSend (int rating)
+{
+    if (! learnPending()) return;
+    auto payload = learnPayload;
+    learnPayload = juce::var();
+    if (! onirique::learning::enabled()) return;   // éteint entre-temps : rien ne part
+    // les retouches : ce que l'utilisateur a changé depuis (la valeur décidée, puis celle d'aujourd'hui)
+    auto* fin = new juce::DynamicObject();
+    for (const auto& [id, was] : learnApplied)
+        if (auto* p = apvts.getParameter (id))
+        {
+            const float now = p->convertFrom0to1 (p->getValue());
+            if (std::abs (now - was) > 1.0e-3f * juce::jmax (1.0f, std::abs (was))) fin->setProperty (id, now);
+        }
+    if (auto* o = payload.getDynamicObject())
+    {
+        o->setProperty ("final", juce::var (fin));
+        o->setProperty ("rating", juce::jlimit (-1, 1, rating));
+        o->setProperty ("minutes", juce::roundToInt ((juce::Time::getMillisecondCounterHiRes() * 0.001 - learnAt) / 60.0));
+    }
+    learnPool.addJob ([payload] { onirique::learning::postFeedback (payload); });
+}
+
 void OniriqueVocalBoxAudioProcessor::timerCallback()
 {
+    // l'apprentissage : sans note au bout de 10 minutes, le mix part avec ses seules retouches
+    if (learnPending() && juce::Time::getMillisecondCounterHiRes() * 0.001 - learnAt > 600.0) learnSend (0);
     // chaîne changée par un preset, A/B, l'automation du DAW... : sa latence suit
     if (currentRate > 0.0)
     {

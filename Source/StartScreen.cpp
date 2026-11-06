@@ -1,6 +1,7 @@
 #include "StartScreen.h"
 #include "PluginProcessor.h"
 #include "Modules.h"
+#include "Learning.h"
 
 using namespace onirique;
 
@@ -52,6 +53,7 @@ StartScreen::StartScreen (OniriqueVocalBoxAudioProcessor& p) : processor (p)
 StartScreen::~StartScreen()
 {
     stopWorker();
+    if (lookup.joinable()) lookup.join();
     processor.stopCapture();
 }
 
@@ -331,7 +333,22 @@ void StartScreen::submit()
         return;
     }
     hints = mix::parseHints (text);
+    requestText = text;
     stopWorker();
+    // un artiste que le cerveau ne connaît pas : sa fiche demandée au serveur pendant l'écoute (apprentissage allumé)
+    if (lookup.joinable()) lookup.join();
+    lookupFound.store (false);
+    if (onirique::learning::enabled() && ! hints.unknown.isEmpty())
+        lookup = std::thread ([this, q = hints.unknown.joinIntoString (" ")]
+        {
+            const auto r = onirique::learning::fetchArtist (q);
+            if (r["artist"].isObject())
+            {
+                onirique::learning::cacheArtist (r["artist"]);
+                mix::reloadBrain();
+                lookupFound.store (true);
+            }
+        });
     refState.store (0);
     if (reference.existsAsFile())
     {
@@ -383,6 +400,10 @@ void StartScreen::finish()
         src = mix::analyse (take.data(), (int) take.size(), processor.captureRate());
     }
     if (refState.load() == 2) tgt = refProfile;
+    // la fiche de l'artiste arrivée du serveur : la demande est relue avec elle
+    if (lookup.joinable()) lookup.join();
+    if (lookupFound.load()) hints = mix::parseHints (requestText);
+    lastProfile = src;
     plan = mix::buildPlan (src, tgt, hints);
     juce::StringArray head;
     head.add (src.valid ? utf8 ("Ta voix : 10 s écoutées") : utf8 ("Ta voix n'a pas été écoutée : réglages d'après la demande seule"));
@@ -427,4 +448,67 @@ void StartScreen::apply()
     set (ids::output, 0.0f);
     set (ids::autoGain, 0.0f);
     processor.setChain (chain);
+    armLearning();   // l'apprentissage (s'il est allumé) : ce qui vient d'être décidé attend sa note
+}
+
+//==============================================================================
+// L'APPRENTISSAGE : ce que CRÉER LE MIX vient de décider (la demande, le portrait de la voix en mesures, la chaîne), gardé par
+// le processeur jusqu'à la note ou 10 minutes de retouches. Rien de tout ça si l'apprentissage est éteint.
+void StartScreen::armLearning()
+{
+    if (! onirique::learning::enabled()) return;
+    auto obj = [] { return new juce::DynamicObject(); };
+    auto* o = obj();
+    o->setProperty ("install", onirique::learning::installId());
+    o->setProperty ("version", JucePlugin_VersionString);
+    o->setProperty ("request", requestText.substring (0, 300));
+    juce::Array<juce::var> arts;
+    for (const auto& a : hints.artists) arts.add (a);
+    o->setProperty ("artists", arts);
+
+    auto* hv = obj();
+    hv->setProperty ("bright", hints.bright); hv->setProperty ("air", hints.air); hv->setProperty ("warm", hints.warm);
+    hv->setProperty ("dark", hints.dark); hv->setProperty ("comp", hints.comp); hv->setProperty ("reverb", hints.reverb);
+    hv->setProperty ("reverbSize", hints.reverbSize); hv->setProperty ("delay", hints.delay); hv->setProperty ("sat", hints.sat);
+    hv->setProperty ("satType", hints.satType); hv->setProperty ("doubler", hints.doubler); hv->setProperty ("controlled", hints.controlled);
+    hv->setProperty ("parallel", hints.parallel); hv->setProperty ("dreamy", hints.dreamy);
+    hv->setProperty ("reference", refState.load() == 2);
+    o->setProperty ("hints", juce::var (hv));
+
+    if (lastProfile.valid)
+    {
+        auto* pv = obj();
+        pv->setProperty ("seconds", lastProfile.seconds); pv->setProperty ("loudDb", lastProfile.loudDb);
+        pv->setProperty ("dynRange", lastProfile.dynRange); pv->setProperty ("peak50Db", lastProfile.peak50Db);
+        pv->setProperty ("noiseFloorDb", lastProfile.noiseFloorDb); pv->setProperty ("sibilance", lastProfile.sibilance);
+        pv->setProperty ("sibFreq", lastProfile.sibFreq); pv->setProperty ("plosivesPerMin", lastProfile.plosivesPerMin);
+        pv->setProperty ("rt60", lastProfile.rt60);
+        juce::Array<juce::var> bands;
+        for (float b : lastProfile.bands) bands.add (std::round (b * 10.0f) / 10.0f);
+        pv->setProperty ("bands", bands);
+        o->setProperty ("profile", juce::var (pv));
+    }
+
+    std::vector<std::pair<juce::String, float>> applied;
+    juce::Array<juce::var> mods;
+    for (const auto& s : plan.modules)
+    {
+        auto* mv = obj();
+        mv->setProperty ("type", modules::info (s.type).name);
+        mv->setProperty ("instance", s.instance);
+        auto* params = obj();
+        for (const auto& [id, v] : s.params)
+        {
+            params->setProperty (id, v);
+            applied.push_back ({ ids::inst (id.toRawUTF8(), juce::jlimit (0, kInstances - 1, s.instance)), v });
+        }
+        mv->setProperty ("params", juce::var (params));
+        mods.add (juce::var (mv));
+    }
+    applied.push_back ({ ids::input, plan.inputDb });
+    auto* planv = obj();
+    planv->setProperty ("modules", mods);
+    planv->setProperty ("inputDb", plan.inputDb);
+    o->setProperty ("plan", juce::var (planv));
+    processor.learnArm (juce::var (o), std::move (applied));
 }

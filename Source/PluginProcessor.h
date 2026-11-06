@@ -85,6 +85,12 @@ public:
     const std::vector<float>& capturedTake() const noexcept { return capBuf; }
     double captureRate() const noexcept { return currentRate; }
 
+    // L'APPRENTISSAGE (seulement si l'utilisateur l'a allumé, menu ⋯) : le mix monté par CRÉER LE MIX attend sa note
+    // (👍 / 👎) ou 10 minutes de retouches, puis part au serveur, anonyme, sans audio. Thread de l'interface.
+    void learnArm (juce::var payload, std::vector<std::pair<juce::String, float>> applied);
+    bool learnPending() const noexcept { return learnPayload.isObject(); }
+    void learnSend (int rating);   // -1, 0 (pas de note), +1 : avec les retouches, puis oublié
+
 private:
     std::atomic<float>* pBypass = nullptr;
     std::atomic<float>* pOversampling = nullptr;
@@ -103,6 +109,10 @@ private:
     onirique::ModularChain chain { apvts, hostBpm, peqListenHold };
     std::atomic<float> outPeak { 0.0f }, autoGainDbShown { 0.0f };
     std::vector<float> capBuf;
+    juce::var learnPayload;
+    std::vector<std::pair<juce::String, float>> learnApplied;   // les réglages posés par CRÉER LE MIX
+    double learnAt = 0.0;
+    juce::ThreadPool learnPool { 1 };   // l'envoi, hors de l'interface ; attendu à la fermeture
     std::atomic<int> capPos { 0 };
     std::atomic<bool> capturing { false };
     int capLen = 0;

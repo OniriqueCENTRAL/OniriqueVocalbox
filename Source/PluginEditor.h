@@ -117,6 +117,24 @@ private:
     float lit = 0.0f;
 };
 
+// L'APPRENTISSAGE : « CE MIX TE PLAÎT ? OUI · BOF », dans l'en-tête de la chaîne, tant qu'un mix de CRÉER LE MIX attend sa note
+class RateChip : public juce::Component, public Animated
+{
+public:
+    explicit RateChip (OniriqueVocalBoxAudioProcessor& p) : processor (p) {}
+    void tick() override;
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent& e) override { over = yesArea().contains (e.position) ? 1 : noArea().contains (e.position) ? -1 : 0; }
+    void mouseExit (const juce::MouseEvent&) override { over = 0; }
+private:
+    juce::Rectangle<float> yesArea() const;
+    juce::Rectangle<float> noArea() const;
+    OniriqueVocalBoxAudioProcessor& processor;
+    int over = 0;
+    float glow = 0.0f;
+};
+
 //==============================================================================
 /*  L'interface sous la barre, telle que la démo validée (1600 x 936) : la chaîne en haut, le module choisi en grand dans son
     panneau de verre (son en-tête : point braise, nom, ce qu'il fait, ON), IN / AUTO GAIN / OUT en bas. Le catalogue du +
@@ -149,6 +167,7 @@ private:
     GlassTabs oversampling;
     ModulePicker picker;
     StartScreen start;   // chaîne vide : la sphère et la barre de recherche
+    RateChip rate;       // la note du mix (apprentissage)
     juce::TooltipWindow tooltips { this, 600 };
     int selected = 0;
     float panelFade = 1.0f, powerLit = 0.0f, powerHover = 0.0f;

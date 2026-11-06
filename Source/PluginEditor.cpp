@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "Learning.h"
 #include "OniriqueWindowSize.h"
 #include <BinaryData.h>
 
@@ -768,11 +769,13 @@ VocalBoxView::VocalBoxView (OniriqueVocalBoxAudioProcessor& p)
       autoGain (p),
       oversampling (p.apvts, ids::oversampling, { "OFF", "2x", "4x", "8x" }),
       picker (p),
-      start (p)
+      start (p),
+      rate (p)
 {
     setLookAndFeel (&lnf);
     setOpaque (true);
     addAndMakeVisible (strip);
+    addChildComponent (rate);
     addAndMakeVisible (inStrip);
     addAndMakeVisible (outStrip);
     addAndMakeVisible (autoGain);
@@ -887,6 +890,7 @@ void VocalBoxView::resized()
     autoGain.setBounds (juce::Rectangle<float> (24.0f * u + side + 18.0f * u, fy, 230.0f * u, fh).toNearestInt());
     outStrip.setBounds (juce::Rectangle<float> (w - 24.0f * u - side, fy, side, fh).toNearestInt());
     start.setBounds (a.toNearestInt());
+    rate.setBounds (juce::Rectangle<float> (0.0f, 6.0f * u, 300.0f * u, 36.0f * u).withRightX ((float) oversampling.getX() - 14.0f * u).toNearestInt());
     picker.setBounds (getLocalBounds());
     backdrop = {};
 }
@@ -907,6 +911,11 @@ void VocalBoxView::timerCallback()
     picker.tick();
     syncSelection();
     if (panel != nullptr) panel->tick();
+    {
+        const bool ask = modules::valid (selected) && processor.learnPending() && onirique::learning::enabled();
+        if (rate.isVisible() != ask) rate.setVisible (ask);
+        if (ask) rate.tick();
+    }
     // le module arrive comme dans la démo : il monte de 18 et sort du flou en 0.55 s
     bool moved = ui::approach (panelFade, 1.0f, 0.12f);
     moved |= ui::approach (powerLit, isOn (selected) ? 1.0f : 0.0f, 0.16f);
@@ -1022,6 +1031,11 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
         onirique::look::apply (juce::Colour ((juce::uint32) (0xff000000u | (t.getHexValue32() & 0xffffffu))));
    #endif
     bar.onThemeChanged = [this] { refreshTheme(); };
+    // le menu ⋯ : l'apprentissage de CRÉER LE MIX (désactivé tant que l'utilisateur ne l'allume pas)
+    bar.setMenuOption ("LEARNING", juce::String::fromUTF8 ("HELP VOCALBOX LEARN"),
+                       juce::String::fromUTF8 ("Anonymous: your request, voice measurements, the chain and your tweaks. Never audio."),
+                       [] { return onirique::learning::enabled(); },
+                       [] (bool on) { onirique::learning::setEnabled (on); });
     startTimer (1000);
     setOpaque (true);
     addAndMakeVisible (view);
@@ -1050,6 +1064,7 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
     // rendue x2 par le moteur logiciel de JUCE)
     const auto test = juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_TEST", {});
     if (test.contains ("nolicense")) licenseOverlay->setVisible (false);
+    if (test.contains ("menu")) { juce::Component::SafePointer<OniriqueVocalBoxAudioProcessorEditor> s (this); juce::Timer::callAfterDelay (600, [s] { if (s != nullptr) s->bar.openMenu(); }); }
     if (const auto png = juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_PNG", {}); png.isNotEmpty())
     {
         juce::Component::SafePointer<OniriqueVocalBoxAudioProcessorEditor> safe (this);
@@ -1125,4 +1140,67 @@ void OniriqueVocalBoxAudioProcessorEditor::refreshTheme()
 void OniriqueVocalBoxAudioProcessorEditor::timerCallback()
 {
     if (onirique::look::poll()) refreshTheme();
+}
+
+//==============================================================================
+juce::Rectangle<float> RateChip::yesArea() const
+{
+    const float u = ui::unitOf (*this);
+    const auto r = getLocalBounds().toFloat().reduced (4.0f * u);
+    return r.withLeft (r.getRight() - 128.0f * u).withWidth (60.0f * u);
+}
+
+juce::Rectangle<float> RateChip::noArea() const
+{
+    const float u = ui::unitOf (*this);
+    const auto r = getLocalBounds().toFloat().reduced (4.0f * u);
+    return r.withLeft (r.getRight() - 64.0f * u);
+}
+
+void RateChip::tick()
+{
+    const float t = (float) (juce::Time::getMillisecondCounterHiRes() * 0.001);
+    glow = 0.5f + 0.5f * std::sin (t * 2.0f);   // elle respire doucement : une question en attente
+    repaint();
+}
+
+void RateChip::mouseDown (const juce::MouseEvent& e)
+{
+    if (yesArea().contains (e.position)) processor.learnSend (1);
+    else if (noArea().contains (e.position)) processor.learnSend (-1);
+    setVisible (false);
+}
+
+void RateChip::paint (juce::Graphics& g)
+{
+    const float u = ui::unitOf (*this);
+    const auto r = getLocalBounds().toFloat().reduced (1.0f);
+    juce::Path pill; pill.addRoundedRectangle (r, r.getHeight() * 0.5f);
+    g.setColour (juce::Colour (0xff120c0e).withAlpha (0.9f));
+    g.fillPath (pill);
+    ui::drawDemoGlass (g, r, r.getHeight() * 0.5f, u, false);
+    const auto& ember = onirique::look::ember;
+    const auto dot = juce::Rectangle<float> (6.0f * u, 6.0f * u).withCentre ({ r.getX() + 16.0f * u, r.getCentreY() });
+    ui::softGlowEllipse (g, dot, ember.withAlpha (0.4f + 0.4f * glow), 7.0f * u);
+    g.setColour (ember);
+    g.fillEllipse (dot);
+    g.setColour (juce::Colour (0xffF4ECEC));
+    g.setFont (ui::css (ui::Face::mono, 10.5f * u, 0.14f));
+    g.drawText (juce::String::fromUTF8 ("CE MIX TE PLAÎT ?"), r.withTrimmedLeft (28.0f * u).withRight (yesArea().getX() - 4.0f * u),
+                juce::Justification::centredLeft, true);
+    for (int k = 0; k < 2; ++k)
+    {
+        const auto b = (k == 0 ? yesArea() : noArea()).reduced (0.0f, 2.0f * u);
+        const bool hot = over == (k == 0 ? 1 : -1);
+        if (hot)
+        {
+            g.setGradientFill (juce::ColourGradient (ember.withAlpha (0.6f), 0.0f, b.getY(), onirique::look::emberDeep.withAlpha (0.6f), 0.0f, b.getBottom(), false));
+            g.fillRoundedRectangle (b, b.getHeight() * 0.5f);
+        }
+        g.setColour (juce::Colours::white.withAlpha (hot ? 0.0f : 0.08f));
+        g.drawRoundedRectangle (b.reduced (0.5f), b.getHeight() * 0.5f, 1.0f);
+        g.setColour (juce::Colour (0xffF4ECEC));
+        g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.14f));
+        g.drawText (k == 0 ? "OUI" : "BOF", b, juce::Justification::centred, false);
+    }
 }
