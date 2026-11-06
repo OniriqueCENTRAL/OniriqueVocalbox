@@ -43,7 +43,6 @@ public:
         float freq = 1000.0f, gainDb = 0.0f, q = 1.0f;
         int slope = 0;                 // 0..3 : 12 / 24 / 36 / 48 dB/oct (coupe-bas / coupe-haut)
         bool dyn = false;              // mode dynamique (cloche, shelfs)
-        bool key = false;              // dynamique déclenchée par l'instrumentale (SIDECHAIN) au lieu de la voix
         float thrDb = -30.0f;
     };
 
@@ -185,7 +184,6 @@ public:
                 s.dirty = s.detDirty = true;
             }
             s.dyn = v.dyn && canBeDynamic (type);
-            if (v.key != s.key) { s.key = v.key; s.env = 0.0f; s.detDirty = true; }
             s.thr = juce::jlimit (-80.0f, 0.0f, v.thrDb);
             if (snap) { s.f.setCurrentAndTargetValue (f); s.g.setCurrentAndTargetValue (g); s.q.setCurrentAndTargetValue (q);
                         s.mix.setCurrentAndTargetValue (m); s.dynS = s.dyn ? 0.0f : 1.0f; s.dirty = s.detDirty = true; }
@@ -193,9 +191,7 @@ public:
         }
     }
 
-    /** key : l'instrumentale (entrée SIDECHAIN), en mono, keyN échantillons pour les n de ce bloc (elle arrive à la cadence de
-        l'hôte, l'EQ tourne suréchantillonné) ; nullptr : pas de sidechain, une bande « SC » ne bouge pas. */
-    void process (float* const* ch, int numCh, int n, const float* key = nullptr, int keyN = 0) noexcept
+    void process (float* const* ch, int numCh, int n) noexcept
     {
         for (size_t bi = 0; bi < (size_t) kBands; ++bi)
         {
@@ -219,14 +215,7 @@ public:
                 {
                     if (s.detDirty) updateDetector (s, f, q);
                     float d = 0.0f;
-                    if (s.key)
-                    {
-                        // l'instrumentale, dans la zone de la bande : la bande n'agit que quand la prod y pousse
-                        if (key != nullptr && keyN > 0)
-                            d = std::abs (s.det.process (key[juce::jmin (keyN - 1, (int) ((juce::int64) i * keyN / n))], 0));
-                    }
-                    else
-                        for (int c = 0; c < numCh; ++c) d = std::max (d, std::abs (s.det.process (ch[c][i], c)));
+                    for (int c = 0; c < numCh; ++c) d = std::max (d, std::abs (s.det.process (ch[c][i], c)));
                     s.env += (d > s.env ? atkC : relC) * (d - s.env);
                 }
 
@@ -288,7 +277,7 @@ private:
         Biquad stage[kMaxStages];
         Biquad det;                    // détecteur du mode dynamique
         int type = bell, slope = 0, nStages = 1, countdown = 0;
-        bool dyn = false, key = false, dirty = true, detDirty = true;
+        bool dyn = false, dirty = true, detDirty = true;
         float thr = -30.0f, env = 0.0f, dynS = 1.0f, dynTarget = 1.0f;
         float lf = -1.0f, lg = -100.0f, lq = -1.0f, detF = -1.0f, detQ = -1.0f;
     };

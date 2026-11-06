@@ -30,10 +30,6 @@ namespace ids
     inline constexpr const char* output    = "output";
     inline constexpr const char* autoGain  = "autoGain";
     inline constexpr const char* bypass    = "bypass";
-    // ADAPTATION À LA PROD (page PROD) : ce que les bandes « SC » de l'EQ font de la voix quand l'instru la charge
-    inline constexpr const char* scOn      = "scAdaptOn";      // l'adaptation en service
-    inline constexpr const char* scClean   = "scAdaptClean";   // les coupes (boue partagée) : 0 .. 150 % de ce qui a été décidé
-    inline constexpr const char* scClarity = "scAdaptClarity"; // les remontées (intelligibilité sous la prod) : 0 .. 150 %
     inline constexpr const char* oversampling = "oversampling";
     inline constexpr const char* plosive   = "plosive";
     inline constexpr const char* resoListen = "resoListen";
@@ -112,8 +108,6 @@ namespace ids
     inline constexpr const char* peqSlope[8] { "peq1Slope", "peq2Slope", "peq3Slope", "peq4Slope", "peq5Slope", "peq6Slope", "peq7Slope", "peq8Slope" };
     inline constexpr const char* peqDyn[8]   { "peq1Dyn", "peq2Dyn", "peq3Dyn", "peq4Dyn", "peq5Dyn", "peq6Dyn", "peq7Dyn", "peq8Dyn" };
     inline constexpr const char* peqThr[8]   { "peq1Thresh", "peq2Thresh", "peq3Thresh", "peq4Thresh", "peq5Thresh", "peq6Thresh", "peq7Thresh", "peq8Thresh" };
-    // la bande dynamique écoute l'instrumentale (entrée SIDECHAIN) au lieu de la voix : elle n'agit que quand la prod l'y pousse
-    inline constexpr const char* peqKey[8]   { "peq1Key", "peq2Key", "peq3Key", "peq4Key", "peq5Key", "peq6Key", "peq7Key", "peq8Key" };
     inline constexpr const char* resoAmt   = "resoAmount";
     inline constexpr const char* resoLow   = "resoLow";
     inline constexpr const char* resoMid   = "resoMid";
@@ -335,19 +329,8 @@ inline void addParams (std::vector<std::unique_ptr<juce::RangedAudioParameter>>&
         NormalisableRange<float> (-24.0f, 24.0f, 0.1f), 0.0f,
         Attr().withLabel ("dB").withStringFromValueFunction (dbText)));
 
-    if (k == 0) p.push_back (mkParam<AudioParameterBool> (k,
+    if (k == 0) p.push_back (mkParam<AudioParameterBool> (k, 
         ParameterID { ids::autoGain, 1 }, "Auto Gain", false));
-
-    // ADAPTATION À LA PROD : les bandes « SC » de l'EQ (qui suivent l'instrumentale de la SIDECHAIN), dosées après le mix
-    if (k == 0)
-    {
-        auto pct = [] (float v, int) { return String (juce::roundToInt (v)) + " %"; };
-        p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::scOn, 1 }, "Prod Adapt", true));
-        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::scClean, 1 }, "Prod Adapt Clean",
-            NormalisableRange<float> (0.0f, 150.0f, 1.0f), 100.0f, Attr().withLabel ("%").withStringFromValueFunction (pct)));
-        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::scClarity, 1 }, "Prod Adapt Clarity",
-            NormalisableRange<float> (0.0f, 150.0f, 1.0f), 100.0f, Attr().withLabel ("%").withStringFromValueFunction (pct)));
-    }
 
     if (k == 0) p.push_back (mkParam<AudioParameterBool> (k, 
         ParameterID { ids::bypass, 1 }, "Bypass", false));
@@ -605,7 +588,6 @@ inline void addParams (std::vector<std::unique_ptr<juce::RangedAudioParameter>>&
             p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::peqThr[b], 1 }, n + "Threshold",
                 NormalisableRange<float> (-60.0f, 0.0f, 0.1f), -30.0f,
                 Attr().withLabel ("dB").withStringFromValueFunction ([] (float v, int) { return String (v, 1) + " dB"; })));
-            p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::peqKey[b], 1 }, n + "Sidechain", false));
         }
     }
 

@@ -3,7 +3,6 @@
 #include "License/LicenseOverlay.h"
 #include "ModulePanels.h"
 #include "StartScreen.h"
-#include "ProdView.h"
 
 namespace onirique::ui
 {
@@ -150,8 +149,6 @@ private:
     GlassTabs oversampling;
     ModulePicker picker;
     StartScreen start;   // chaîne vide : la sphère et la barre de recherche
-    ProdButton prodButton;   // PROD : la page ADAPTATION À LA PROD (sidechain)
-    ProdPage prodPage;
     juce::TooltipWindow tooltips { this, 600 };
     int selected = 0;
     float panelFade = 1.0f, powerLit = 0.0f, powerHover = 0.0f;

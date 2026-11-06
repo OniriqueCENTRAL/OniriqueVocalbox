@@ -77,23 +77,13 @@ public:
     std::atomic<bool> peqListenHold { false };
 
     // CRÉER LE MIX : la prise écoutée (mono, 10 s de voix ; les blocs silencieux ne comptent pas)
-    void startCapture() noexcept { capPos.store (0); capScEnergy.store (0.0f); capturing.store (capLen > 0, std::memory_order_release); }
+    void startCapture() noexcept { capPos.store (0); capturing.store (capLen > 0, std::memory_order_release); }
     void stopCapture() noexcept { capturing.store (false); }
     float captureProgress() const noexcept { return capLen > 0 ? (float) capPos.load() / (float) capLen : 0.0f; }
     bool captureDone() const noexcept { return capLen > 0 && capPos.load (std::memory_order_acquire) >= capLen; }
     // à lire seulement quand captureDone() (le thread audio n'y écrit plus)
     const std::vector<float>& capturedTake() const noexcept { return capBuf; }
     double captureRate() const noexcept { return currentRate; }
-    // l'instrumentale (entrée SIDECHAIN) pendant la prise, aux mêmes instants ; vide de son si rien n'arrivait sur la sidechain
-    const std::vector<float>& capturedInstrumental() const noexcept { return capScBuf; }
-    bool captureHasInstrumental() const noexcept { return capScEnergy.load() > 1.0e-3f; }
-
-    // SIDECHAIN : l'entrée est-elle branchée dans le DAW, et que reçoit-elle (crête depuis la dernière lecture)
-    bool sidechainConnected() const { return getBusCount (true) > 1 && getBus (true, 1) != nullptr && getBus (true, 1)->isEnabled(); }
-    float consumeSidechainPeak() noexcept { return scPeak.exchange (0.0f); }
-    float sidechainLastPeak() const noexcept { return scLast.load (std::memory_order_relaxed); }   // sans le consommer (le bouton PROD)
-    onirique::SpectrumTap sidechainTap;   // le spectre de l'instrumentale (mono), à comparer à celui de la voix
-    onirique::SpectrumTap voiceTap;       // la voix qui entre, pour la page PROD (inputTap a déjà son lecteur : l'analyseur de l'EQ)
 
 private:
     std::atomic<float>* pBypass = nullptr;
@@ -112,8 +102,7 @@ private:
 
     onirique::ModularChain chain { apvts, hostBpm, peqListenHold };
     std::atomic<float> outPeak { 0.0f }, autoGainDbShown { 0.0f };
-    std::vector<float> capBuf, capScBuf, keyBuf;
-    std::atomic<float> capScEnergy { 0.0f }, scPeak { 0.0f }, scLast { 0.0f };
+    std::vector<float> capBuf;
     std::atomic<int> capPos { 0 };
     std::atomic<bool> capturing { false };
     int capLen = 0;

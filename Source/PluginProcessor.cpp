@@ -6,9 +6,7 @@ using namespace onirique;
 OniriqueVocalBoxAudioProcessor::OniriqueVocalBoxAudioProcessor()
     : AudioProcessor (BusesProperties()
                           .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
-                          .withOutput ("Output", juce::AudioChannelSet::stereo(), true)
-                          // l'instrumentale (facultative) : CRÉER LE MIX l'écoute avec la voix, les bandes « SC » de l'EQ la suivent
-                          .withInput  ("Sidechain", juce::AudioChannelSet::stereo(), false)),
+                          .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "STATE", createLayout())
 {
     pBypass = apvts.getRawParameterValue (ids::bypass);
@@ -27,14 +25,7 @@ bool OniriqueVocalBoxAudioProcessor::isBusesLayoutSupported (const BusesLayout& 
     const auto& in = l.getMainInputChannelSet();
     const auto& out = l.getMainOutputChannelSet();
     if (in != out) return false;
-    if (in != juce::AudioChannelSet::mono() && in != juce::AudioChannelSet::stereo()) return false;
-    // la sidechain : coupée, mono ou stéréo
-    if (l.inputBuses.size() > 1)
-    {
-        const auto& sc = l.getChannelSet (true, 1);
-        if (! sc.isDisabled() && sc != juce::AudioChannelSet::mono() && sc != juce::AudioChannelSet::stereo()) return false;
-    }
-    return true;
+    return in == juce::AudioChannelSet::mono() || in == juce::AudioChannelSet::stereo();
 }
 
 OniriqueVocalBoxAudioProcessor::~OniriqueVocalBoxAudioProcessor()
@@ -156,7 +147,7 @@ void OniriqueVocalBoxAudioProcessor::timerCallback()
     }
 }
 
-void OniriqueVocalBoxAudioProcessor::prepareToPlay (double sr, int samplesPerBlock)
+void OniriqueVocalBoxAudioProcessor::prepareToPlay (double sr, int)
 {
     license.refresh();   // beaucoup de DAW rappellent prepareToPlay juste avant un export
 
@@ -166,10 +157,7 @@ void OniriqueVocalBoxAudioProcessor::prepareToPlay (double sr, int samplesPerBlo
     capturing.store (false);
     capLen = juce::jmax (1, (int) (sr * 10.0));
     capBuf.assign ((size_t) capLen, 0.0f);
-    capScBuf.assign ((size_t) capLen, 0.0f);
-    capScEnergy.store (0.0f);
     capPos.store (0);
-    keyBuf.assign ((size_t) juce::jmax (8192, samplesPerBlock), 0.0f);
 }
 
 void OniriqueVocalBoxAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
@@ -177,8 +165,7 @@ void OniriqueVocalBoxAudioProcessor::processBlock (juce::AudioBuffer<float>& buf
     juce::ScopedNoDenormals noDenormals;
 
     const int total = buffer.getNumSamples();
-    // la voix : le bus principal seulement (la sidechain arrive dans les canaux suivants du même tampon)
-    const int numCh = juce::jmin (getMainBusNumOutputChannels(), 2);
+    const int numCh = juce::jmin (buffer.getNumChannels(), 2);
 
     for (int c = getTotalNumInputChannels(); c < getTotalNumOutputChannels(); ++c)
         buffer.clear (c, 0, total);
@@ -193,33 +180,7 @@ void OniriqueVocalBoxAudioProcessor::processBlock (juce::AudioBuffer<float>& buf
                 hostBpm.store (*bpm, std::memory_order_relaxed);
 
     float* ch[2] { buffer.getWritePointer (0), numCh > 1 ? buffer.getWritePointer (1) : nullptr };
-
-    // l'instrumentale sur l'entrée SIDECHAIN : en mono pour les bandes « SC » de l'EQ, son niveau et son spectre pour l'interface
-    const float* key = nullptr;
-    scLast.store (0.0f, std::memory_order_relaxed);
-    if (getBusCount (true) > 1 && getBus (true, 1) != nullptr && getBus (true, 1)->isEnabled())
-    {
-        auto sc = getBusBuffer (buffer, true, 1);
-        const int scCh = juce::jmin (sc.getNumChannels(), 2);
-        if (scCh > 0 && total <= (int) keyBuf.size())
-        {
-            const float* s0 = sc.getReadPointer (0);
-            const float* s1 = scCh > 1 ? sc.getReadPointer (1) : nullptr;
-            float pk = 0.0f;
-            for (int i = 0; i < total; ++i)
-            {
-                const float m = s1 != nullptr ? 0.5f * (s0[i] + s1[i]) : s0[i];
-                keyBuf[(size_t) i] = m;
-                pk = std::max (pk, std::abs (m));
-            }
-            key = keyBuf.data();
-            sidechainTap.push (s0, s1, total);
-            if (pk > scPeak.load (std::memory_order_relaxed)) scPeak.store (pk, std::memory_order_relaxed);
-            scLast.store (pk, std::memory_order_relaxed);
-        }
-    }
     inputTap.push (ch[0], ch[1], total);    // analyseur : signal d'entrée
-    voiceTap.push (ch[0], ch[1], total);    // la page PROD : la voix qui entre (son propre lecteur, l'analyseur de l'EQ lit inputTap)
     if (capturing.load (std::memory_order_acquire))
     {
         // CRÉER LE MIX : la prise en mono, sans les blocs silencieux (transport arrêté, blancs)
@@ -230,16 +191,11 @@ void OniriqueVocalBoxAudioProcessor::processBlock (juce::AudioBuffer<float>& buf
             int p = capPos.load (std::memory_order_relaxed);
             const int n = juce::jmin (total, capLen - p);
             for (int i = 0; i < n; ++i) capBuf[(size_t) (p + i)] = numCh > 1 ? 0.5f * (ch[0][i] + ch[1][i]) : ch[0][i];
-            // l'instrumentale pendant les mêmes échantillons : la voix et la prod se comparent instant par instant
-            double es = 0.0;
-            for (int i = 0; i < n; ++i) { const float v = key != nullptr ? key[i] : 0.0f; capScBuf[(size_t) (p + i)] = v; es += (double) v * v; }
-            capScEnergy.store (capScEnergy.load (std::memory_order_relaxed) + (float) es, std::memory_order_relaxed);
             p += n;
             capPos.store (p, std::memory_order_release);
             if (p >= capLen) capturing.store (false, std::memory_order_release);
         }
     }
-    chain.setKey (key);
     chain.process (ch, numCh, total);
     outputTap.push (ch[0], ch[1], total);   // analyseur : signal de sortie
     license.process (buffer, getSampleRate(), isNonRealtime());

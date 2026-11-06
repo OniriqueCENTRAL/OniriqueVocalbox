@@ -78,7 +78,7 @@ inline const std::vector<juce::String>& paramIds (int type)
         add (deess, { ids::deessOn, ids::deessFreq, ids::deessAmt, ids::deessS, ids::deessT, ids::deessCH, ids::deessF, ids::deessClarity });
         add (peq, { ids::peqPower, ids::peqListen, ids::peqListenBand });
         for (int b = 0; b < 8; ++b)
-            add (peq, { ids::peqOn[b], ids::peqType[b], ids::peqFreq[b], ids::peqGain[b], ids::peqQ[b], ids::peqSlope[b], ids::peqDyn[b], ids::peqThr[b], ids::peqKey[b] });
+            add (peq, { ids::peqOn[b], ids::peqType[b], ids::peqFreq[b], ids::peqGain[b], ids::peqQ[b], ids::peqSlope[b], ids::peqDyn[b], ids::peqThr[b] });
         add (analog, { ids::eqOn, ids::low, ids::mud, ids::high, ids::air, ids::lowFreq, ids::lowCut });
         add (sat, { ids::satOn, ids::drive, ids::satType, ids::satMix, ids::satOutput, ids::satTone, ids::satWarmth, ids::satAir, ids::satBias, ids::satDynamics });
         add (fet, { ids::fetOn, ids::fetIn, ids::fetOut, ids::fetAttack, ids::fetRelease, ids::fetRatio });
