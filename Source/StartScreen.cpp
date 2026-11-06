@@ -268,6 +268,16 @@ void StartScreen::paint (juce::Graphics& g)
         const float lh = 24.0f * u;
         const int nLines = juce::jmin (12, plan.report.size());
         auto box = juce::Rectangle<float> (std::min (1000.0f * u, b.getWidth() - 80.0f * u), (float) nLines * lh + 36.0f * u).withCentre (c);
+        // le panneau SIDECHAIN à droite : le compte rendu s'arrête avant lui
+        if (processor.sidechainConnected() || context.valid)
+        {
+            const float right = scPanelArea().getX() - 20.0f * u;
+            if (box.getRight() > right)
+            {
+                const float w = std::min (box.getWidth(), right - 40.0f * u);
+                box = box.withWidth (w).withRightX (right);
+            }
+        }
         g.setColour (juce::Colour (0xff0b0709).withAlpha (0.82f));
         g.fillRoundedRectangle (box, 22.0f * u);
         ui::drawDemoGlass (g, box, 22.0f * u, u, false);
@@ -558,7 +568,7 @@ void StartScreen::paintSidechain (juce::Graphics& g, float u)
         g.setFont (ui::css (ui::Face::mono, 11.0f * u, 0.16f));
         g.drawText ("SIDECHAIN", chip.withTrimmedLeft (32.0f * u).withWidth (90.0f * u), juce::Justification::centredLeft, false);
         const juce::String state = ! connected ? utf8 ("NON BRANCHÉE")
-                                 : liveInst > 0.5f ? utf8 ("INSTRU REÇUE") : utf8 ("BRANCHÉE · RIEN NE PASSE");
+                                 : liveInst > 0.5f ? utf8 ("INSTRU REÇUE") : utf8 ("PAS DE SIGNAL");
         g.setColour (liveInst > 0.5f ? cPink : cHaze);
         g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.12f));
         g.drawText (state, chip.withTrimmedLeft (122.0f * u).withTrimmedRight (88.0f * u), juce::Justification::centredLeft, true);
@@ -661,6 +671,8 @@ void StartScreen::paintSidechain (juce::Graphics& g, float u)
     g.setColour (zones.isEmpty() ? cHaze : cPink);
     const bool listening = (liveVoice > 0.5f && liveInst > 0.5f) || showReport;
     const juce::String text = ! zones.isEmpty() ? utf8 ("CONFLITS : ") + zones.joinIntoString (" · ")
-                            : listening ? utf8 ("PAS DE CONFLIT MARQUÉ") : utf8 ("JOUE LA VOIX ET L'INSTRU");
+                            : listening ? utf8 ("PAS DE CONFLIT MARQUÉ")
+                            : liveInst < 0.5f ? utf8 ("RIEN SUR LA SIDECHAIN : VÉRIFIE LE ROUTAGE DE L'INSTRU")
+                                              : utf8 ("JOUE LA VOIX ET L'INSTRU");
     g.drawText (text, foot, juce::Justification::centredLeft, true);
 }
