@@ -678,17 +678,24 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h, const Co
         if (ctx.valid)
         {
             // la boue partagée (250 .. 500 Hz) : retirée de la voix seulement quand la prod y pousse (bande dynamique « SC »)
-            if (ctx.mudBand >= 0)
+            // une voix déjà légère dans ses bas-médiums n'y perd rien : elle s'amincirait
+            const bool voiceLight = thin || (ctx.mudBand >= 0 && ctx.voice[(size_t) ctx.mudBand] < -2.0f);
+            if (ctx.mudBand >= 0 && ! voiceLight)
             {
                 const int b = ctx.mudBand;
                 const float both = juce::jmin (ctx.inst[(size_t) b], ctx.voice[(size_t) b] + 2.0f);
-                centre[1] = b;
-                gain[1] = juce::jmin (0.0f, gain[1]) - juce::jlimit (1.5f, 3.5f, 1.5f + 0.4f * both);
-                dyn[1] = true; q[1] = 1.3f;
-                thr[1] = juce::jlimit (-60.0f, -6.0f, ctx.instBandDb[(size_t) b] - 2.0f);
-                rep.add (u8 ("Prod chargée vers ") + hzText (kCentres[b]) + u8 (" comme la voix : EQ dynamique −") + juce::String (-gain[1], 1)
-                         + u8 (" dB, seulement quand l'instru y pousse"));
+                const float extra = juce::jlimit (1.0f, 2.0f, 1.0f + 0.25f * both);   // au plus −2 dB : du nettoyage, pas une coupe
+                // une bande libre de l'EQ pour la coupe dynamique : elle ne s'ajoute pas à la coupe fixe déjà décidée pour la voix
+                const int slot = std::abs (gain[1]) < 0.7f ? 1 : std::abs (gain[2]) < 0.7f ? 2 : 1;
+                centre[slot] = b;
+                gain[slot] = std::abs (gain[slot]) < 0.7f ? -extra : juce::jmin (gain[slot], -extra);   // la plus forte des deux, pas la somme
+                dyn[slot] = true; q[slot] = 1.3f;
+                thr[slot] = juce::jlimit (-60.0f, -6.0f, ctx.instBandDb[(size_t) b] + 1.0f);   // seulement quand la prod y pousse plus que d'habitude
+                rep.add (u8 ("Prod chargée vers ") + hzText (kCentres[b]) + u8 (" comme la voix : EQ dynamique ") + dbText (gain[slot])
+                         + u8 (", seulement quand l'instru y pousse"));
             }
+            else if (ctx.mudBand >= 0)
+                rep.add (u8 ("Prod chargée vers ") + hzText (kCentres[ctx.mudBand]) + u8 (", mais ta voix y est déjà légère : on n'y touche pas"));
             // le masquage qui coûte l'intelligibilité (800 Hz .. 4 kHz) : la voix remonte là, seulement quand l'instru la couvre
             if (ctx.maskBand >= 0)
             {

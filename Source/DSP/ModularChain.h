@@ -306,6 +306,8 @@ public:
             pKey[bb] = raw (ids::peqKey[bb]);
         }
         listen = raw (ids::peqListen); listenBand = raw (ids::peqListenBand);
+        // ADAPTATION À LA PROD (réglages globaux, page PROD)
+        pScOn = s.getRawParameterValue (ids::scOn); pScClean = s.getRawParameterValue (ids::scClean); pScClarity = s.getRawParameterValue (ids::scClarity);
     }
     float getBandGainDb (int band) const noexcept { return engine.getBandGainDb (band); }
 
@@ -319,6 +321,14 @@ private:
             auto& x = bands[(size_t) bb];
             x.on = b (p[bb][0]); x.type = i (p[bb][1]); x.freq = f (p[bb][2]); x.gainDb = f (p[bb][3]); x.q = f (p[bb][4]);
             x.slope = i (p[bb][5]); x.dyn = b (p[bb][6]); x.thrDb = f (p[bb][7]); x.key = b (pKey[bb]);
+            if (x.key && x.dyn)
+            {
+                // la page PROD dose ce que la prod fait à la voix : les coupes (NETTOYAGE) et les remontées (CLARTÉ), ou rien
+                const bool scOn = pScOn == nullptr || pScOn->load (std::memory_order_relaxed) > 0.5f;
+                const float dose = x.gainDb < 0.0f ? (pScClean != nullptr ? pScClean->load (std::memory_order_relaxed) : 100.0f)
+                                                   : (pScClarity != nullptr ? pScClarity->load (std::memory_order_relaxed) : 100.0f);
+                x.gainDb *= scOn ? dose * 0.01f : 0.0f;
+            }
         }
         engine.setBands (bands, snap);
         // écoute d'une bande : seulement pendant qu'on la tient (casque armé, clic maintenu sur la bande)
@@ -360,6 +370,7 @@ private:
     std::atomic<bool>& listenHold;
     const KeyBus& keyBus;
     std::atomic<float>* pKey[8] {};
+    std::atomic<float> *pScOn = nullptr, *pScClean = nullptr, *pScClarity = nullptr;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> listenMix;
     Biquad fa, fb;
     float lastF = -1.0f, lastQ = -1.0f, listenGain = 1.0f; int lastType = -1;

@@ -196,6 +196,7 @@ void OniriqueVocalBoxAudioProcessor::processBlock (juce::AudioBuffer<float>& buf
 
     // l'instrumentale sur l'entrée SIDECHAIN : en mono pour les bandes « SC » de l'EQ, son niveau et son spectre pour l'interface
     const float* key = nullptr;
+    scLast.store (0.0f, std::memory_order_relaxed);
     if (getBusCount (true) > 1 && getBus (true, 1) != nullptr && getBus (true, 1)->isEnabled())
     {
         auto sc = getBusBuffer (buffer, true, 1);
@@ -214,9 +215,11 @@ void OniriqueVocalBoxAudioProcessor::processBlock (juce::AudioBuffer<float>& buf
             key = keyBuf.data();
             sidechainTap.push (s0, s1, total);
             if (pk > scPeak.load (std::memory_order_relaxed)) scPeak.store (pk, std::memory_order_relaxed);
+            scLast.store (pk, std::memory_order_relaxed);
         }
     }
     inputTap.push (ch[0], ch[1], total);    // analyseur : signal d'entrée
+    voiceTap.push (ch[0], ch[1], total);    // la page PROD : la voix qui entre (son propre lecteur, l'analyseur de l'EQ lit inputTap)
     if (capturing.load (std::memory_order_acquire))
     {
         // CRÉER LE MIX : la prise en mono, sans les blocs silencieux (transport arrêté, blancs)

@@ -1,6 +1,7 @@
 #include "StartScreen.h"
 #include "PluginProcessor.h"
 #include "Modules.h"
+#include "ProdView.h"
 
 using namespace onirique;
 
@@ -129,10 +130,12 @@ void StartScreen::tick()
             std::array<float, onirique::mix::kBands> bv {}, bx {};
             bandsOf (vRing, vPos, bv);
             bandsOf (xRing, xPos, bx);
+            prodview::smoothBands (bv);   // la forme générale, sans les pics d'un tiers d'octave
+            prodview::smoothBands (bx);
             for (int b = 0; b < onirique::mix::kBands; ++b)
             {
-                liveV[(size_t) b] += 0.35f * (bv[(size_t) b] - liveV[(size_t) b]);
-                liveX[(size_t) b] += 0.35f * (bx[(size_t) b] - liveX[(size_t) b]);
+                liveV[(size_t) b] += 0.15f * (bv[(size_t) b] - liveV[(size_t) b]);   // et lissé dans le temps
+                liveX[(size_t) b] += 0.15f * (bx[(size_t) b] - liveX[(size_t) b]);
             }
         }
         ui::approach (liveVoice, level > 0.15f ? 1.0f : 0.0f, 0.08f);
@@ -610,55 +613,16 @@ void StartScreen::paintSidechain (juce::Graphics& g, float u)
     }
     auto foot = inner.removeFromBottom (16.0f * u);
     const auto plot = inner.reduced (0.0f, 6.0f * u);
-    const auto& V = showReport ? context.voice : liveV;
-    const auto& X = showReport ? context.inst : liveX;
-    auto xOf = [&] (float f) { return plot.getX() + plot.getWidth() * (float) (std::log (f / 20.0f) / std::log (1000.0f)); };
-    auto yOf = [&] (float db) { return plot.getBottom() - plot.getHeight() * juce::jlimit (0.0f, 1.0f, (db + 24.0f) / 36.0f); };
+    prodview::Bands V = showReport ? context.voice : liveV;   // le compte rendu : la mesure des 10 s, lissée comme le direct
+    if (showReport) prodview::smoothBands (V);
+    prodview::Bands X = showReport ? context.inst : liveX;
+    if (showReport) prodview::smoothBands (X);
 
-    // les conflits : la prod plus forte que la voix là où la voix compte
+    // les conflits, puis les deux formes en courbes douces (le même tracé que la page PROD)
     std::vector<int> conf;
     if (showReport) conf = context.conflicts;
-    else if (liveVoice > 0.5f && liveInst > 0.5f)
-        for (int b = 10; b <= 26; ++b)
-            if (X[(size_t) b] - V[(size_t) b] > 4.0f && V[(size_t) b] > -12.0f) conf.push_back (b);
-    for (int b : conf)
-    {
-        const float x0 = xOf (mix::kCentres[b] * 0.8909f), x1 = xOf (mix::kCentres[b] * 1.1225f);
-        g.setGradientFill (juce::ColourGradient (cEmber.withAlpha (0.0f), 0.0f, plot.getY(), cEmber.withAlpha (0.28f), 0.0f, plot.getBottom(), false));
-        g.fillRect (juce::Rectangle<float> (x0, plot.getY(), x1 - x0, plot.getHeight()));
-    }
-    // la ligne 0 dB et les repères 100 Hz, 1 kHz, 10 kHz
-    g.setColour (juce::Colours::white.withAlpha (0.06f));
-    g.fillRect (juce::Rectangle<float> (plot.getX(), yOf (0.0f), plot.getWidth(), 1.0f));
-    for (float f : { 100.0f, 1000.0f, 10000.0f }) g.fillRect (juce::Rectangle<float> (xOf (f), plot.getY(), 1.0f, plot.getHeight()));
-
-    auto curve = [&] (const std::array<float, mix::kBands>& a)
-    {
-        juce::Path p;
-        for (int b = 1; b < mix::kBands - 1; ++b)
-        {
-            const juce::Point<float> pt (xOf (mix::kCentres[b]), yOf (a[(size_t) b]));
-            if (b == 1) p.startNewSubPath (pt); else p.lineTo (pt);
-        }
-        return p;
-    };
-    if (showReport || liveInst > 0.02f)
-    {
-        auto px = curve (X);
-        juce::Path fill (px);
-        fill.lineTo (xOf (mix::kCentres[mix::kBands - 2]), plot.getBottom());
-        fill.lineTo (xOf (mix::kCentres[1]), plot.getBottom());
-        fill.closeSubPath();
-        g.setGradientFill (juce::ColourGradient (cEmber.withAlpha (0.32f), 0.0f, plot.getY(), cEmber.withAlpha (0.02f), 0.0f, plot.getBottom(), false));
-        g.fillPath (fill);
-        g.setColour (cEmber.withAlpha (showReport ? 1.0f : 0.5f + 0.5f * liveInst));
-        g.strokePath (px, juce::PathStrokeType (1.6f * u, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-    }
-    if (showReport || liveVoice > 0.02f)
-    {
-        g.setColour (cBone.withAlpha (showReport ? 0.95f : 0.4f + 0.55f * liveVoice));
-        g.strokePath (curve (V), juce::PathStrokeType (1.4f * u, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-    }
+    else if (liveVoice > 0.5f && liveInst > 0.5f) conf = prodview::liveConflicts (V, X);
+    prodview::drawCompare (g, plot, V, X, conf, showReport ? 0.95f : 0.4f + 0.55f * liveVoice, showReport ? 1.0f : 0.4f + 0.6f * liveInst, u);
 
     // en bas : les conflits détectés, en clair
     juce::StringArray zones;

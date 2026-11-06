@@ -30,6 +30,10 @@ namespace ids
     inline constexpr const char* output    = "output";
     inline constexpr const char* autoGain  = "autoGain";
     inline constexpr const char* bypass    = "bypass";
+    // ADAPTATION À LA PROD (page PROD) : ce que les bandes « SC » de l'EQ font de la voix quand l'instru la charge
+    inline constexpr const char* scOn      = "scAdaptOn";      // l'adaptation en service
+    inline constexpr const char* scClean   = "scAdaptClean";   // les coupes (boue partagée) : 0 .. 150 % de ce qui a été décidé
+    inline constexpr const char* scClarity = "scAdaptClarity"; // les remontées (intelligibilité sous la prod) : 0 .. 150 %
     inline constexpr const char* oversampling = "oversampling";
     inline constexpr const char* plosive   = "plosive";
     inline constexpr const char* resoListen = "resoListen";
@@ -331,8 +335,19 @@ inline void addParams (std::vector<std::unique_ptr<juce::RangedAudioParameter>>&
         NormalisableRange<float> (-24.0f, 24.0f, 0.1f), 0.0f,
         Attr().withLabel ("dB").withStringFromValueFunction (dbText)));
 
-    if (k == 0) p.push_back (mkParam<AudioParameterBool> (k, 
+    if (k == 0) p.push_back (mkParam<AudioParameterBool> (k,
         ParameterID { ids::autoGain, 1 }, "Auto Gain", false));
+
+    // ADAPTATION À LA PROD : les bandes « SC » de l'EQ (qui suivent l'instrumentale de la SIDECHAIN), dosées après le mix
+    if (k == 0)
+    {
+        auto pct = [] (float v, int) { return String (juce::roundToInt (v)) + " %"; };
+        p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::scOn, 1 }, "Prod Adapt", true));
+        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::scClean, 1 }, "Prod Adapt Clean",
+            NormalisableRange<float> (0.0f, 150.0f, 1.0f), 100.0f, Attr().withLabel ("%").withStringFromValueFunction (pct)));
+        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::scClarity, 1 }, "Prod Adapt Clarity",
+            NormalisableRange<float> (0.0f, 150.0f, 1.0f), 100.0f, Attr().withLabel ("%").withStringFromValueFunction (pct)));
+    }
 
     if (k == 0) p.push_back (mkParam<AudioParameterBool> (k, 
         ParameterID { ids::bypass, 1 }, "Bypass", false));

@@ -91,7 +91,9 @@ public:
     // SIDECHAIN : l'entrée est-elle branchée dans le DAW, et que reçoit-elle (crête depuis la dernière lecture)
     bool sidechainConnected() const { return getBusCount (true) > 1 && getBus (true, 1) != nullptr && getBus (true, 1)->isEnabled(); }
     float consumeSidechainPeak() noexcept { return scPeak.exchange (0.0f); }
+    float sidechainLastPeak() const noexcept { return scLast.load (std::memory_order_relaxed); }   // sans le consommer (le bouton PROD)
     onirique::SpectrumTap sidechainTap;   // le spectre de l'instrumentale (mono), à comparer à celui de la voix
+    onirique::SpectrumTap voiceTap;       // la voix qui entre, pour la page PROD (inputTap a déjà son lecteur : l'analyseur de l'EQ)
 
 private:
     std::atomic<float>* pBypass = nullptr;
@@ -111,7 +113,7 @@ private:
     onirique::ModularChain chain { apvts, hostBpm, peqListenHold };
     std::atomic<float> outPeak { 0.0f }, autoGainDbShown { 0.0f };
     std::vector<float> capBuf, capScBuf, keyBuf;
-    std::atomic<float> capScEnergy { 0.0f }, scPeak { 0.0f };
+    std::atomic<float> capScEnergy { 0.0f }, scPeak { 0.0f }, scLast { 0.0f };
     std::atomic<int> capPos { 0 };
     std::atomic<bool> capturing { false };
     int capLen = 0;

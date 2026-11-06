@@ -768,11 +768,18 @@ VocalBoxView::VocalBoxView (OniriqueVocalBoxAudioProcessor& p)
       autoGain (p),
       oversampling (p.apvts, ids::oversampling, { "OFF", "2x", "4x", "8x" }),
       picker (p),
-      start (p)
+      start (p),
+      prodButton (p),
+      prodPage (p)
 {
     setLookAndFeel (&lnf);
     setOpaque (true);
     addAndMakeVisible (strip);
+    // PROD : la page de l'adaptation à la prod, par-dessus le module (le bouton n'apparaît qu'avec une sidechain ou des bandes « SC »)
+    addChildComponent (prodButton);
+    addChildComponent (prodPage);
+    prodButton.onClick = [this] { prodPage.setVisible (! prodPage.isVisible()); prodButton.open = prodPage.isVisible(); if (prodPage.isVisible()) prodPage.toFront (false); };
+    prodPage.onClose = [this] { prodPage.setVisible (false); prodButton.open = false; };
     addAndMakeVisible (inStrip);
     addAndMakeVisible (outStrip);
     addAndMakeVisible (autoGain);
@@ -887,6 +894,9 @@ void VocalBoxView::resized()
     autoGain.setBounds (juce::Rectangle<float> (24.0f * u + side + 18.0f * u, fy, 230.0f * u, fh).toNearestInt());
     outStrip.setBounds (juce::Rectangle<float> (w - 24.0f * u - side, fy, side, fh).toNearestInt());
     start.setBounds (a.toNearestInt());
+    prodPage.setBounds (a.toNearestInt());
+    prodButton.setBounds (juce::Rectangle<float> (0.0f, 6.0f * u, 110.0f * u, 36.0f * u)
+                              .withRightX ((float) oversampling.getX() - 14.0f * u).toNearestInt());
     picker.setBounds (getLocalBounds());
     backdrop = {};
 }
@@ -907,6 +917,28 @@ void VocalBoxView::timerCallback()
     picker.tick();
     syncSelection();
     if (panel != nullptr) panel->tick();
+    {
+        // PROD : avec une sidechain branchée, ou dès qu'une bande de l'EQ suit la prod ; pas sur l'écran de départ
+        bool keyed = false;
+        for (int code : processor.getChain())
+            if (modules::valid (code) && modules::typeOf (code) == modules::peq)
+                for (int b = 0; b < 8 && ! keyed; ++b)
+                    if (auto* v = processor.apvts.getRawParameterValue (ids::inst (ids::peqKey[b], modules::instanceOf (code)))) keyed = v->load() > 0.5f;
+        bool show = modules::valid (selected) && (processor.sidechainConnected() || keyed);
+       #if ONIRIQUE_UI_TEST
+        // essais locaux : ONIRIQUE_UI_TEST=…,prod ouvre la page PROD
+        if (juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_TEST", {}).contains ("prod") && modules::valid (selected))
+        {
+            show = true;
+            static bool opened = false;
+            if (! opened) { opened = true; prodPage.setVisible (true); prodButton.open = true; prodPage.toFront (false); }
+        }
+       #endif
+        if (prodButton.isVisible() != show) prodButton.setVisible (show);
+        if (! show && prodPage.isVisible()) { prodPage.setVisible (false); prodButton.open = false; }
+        if (show) prodButton.tick();
+        if (prodPage.isVisible()) prodPage.tick();
+    }
     // le module arrive comme dans la démo : il monte de 18 et sort du flou en 0.55 s
     bool moved = ui::approach (panelFade, 1.0f, 0.12f);
     moved |= ui::approach (powerLit, isOn (selected) ? 1.0f : 0.0f, 0.16f);
