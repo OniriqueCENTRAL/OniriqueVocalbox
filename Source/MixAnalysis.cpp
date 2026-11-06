@@ -1052,7 +1052,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& h)
             plan.modules.push_back (s);
             static const char* modes[] { "room", "plate", "plate 2", "hall", "shimmer" };
             rep.add (u8 ("Réverbe ") + modes[mode] + " " + juce::String (decay, 1) + " s, envoi " + juce::String (juce::roundToInt (mix)) + " %"
-                     + (tgt.valid && tgt.rt60 > 0.0f && ! h.reverbExplicit ? u8 (" (d'après la référence)") : juce::String()));
+                     + (tgt.valid && tgt.rt60 > 0.0f && ! h.reverbExplicit ? (tgtIn.valid ? u8 (" (d'après la référence)") : u8 (" (d'après la voix de ") + h.voiceOf + ")") : juce::String()));
         }
     }
 

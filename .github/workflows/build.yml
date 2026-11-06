@@ -79,6 +79,10 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with: { name: win, path: version/win }
+      # le cerveau d'ONR Neural Learning part avec la version : le site (page des fondateurs) le suit tout seul
+      - uses: actions/checkout@v4
+        with: { path: src, sparse-checkout: Resources/vocalbox-brain.json, sparse-checkout-cone-mode: false }
+      - run: cp src/Resources/vocalbox-brain.json version/brain.json && rm -rf src
       - name: Publier dans ONIRIQUE CENTRAL
         env:
           CLE: ${{ secrets.ONIRIQUE_PUBLISH_KEY }}
