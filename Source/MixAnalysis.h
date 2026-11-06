@@ -83,6 +83,10 @@ struct Hints
     juce::StringArray understood;   // ce qui a été compris (pour le compte rendu)
     juce::StringArray unknown;      // les mots non compris (des noms d'artistes, souvent)
     juce::StringArray artists;      // les artistes reconnus par le cerveau (leur fiche est appliquée)
+    // la voix mesurée du premier artiste demandé qui en a une (cerveau : « voice ») : sert de cible quand aucune référence n'est glissée
+    juce::String voiceOf;
+    std::array<float, kBands> voiceBands {};   // dB, comme Profile::bands ; -100 : pas mesuré (hors 160 Hz .. 8 kHz)
+    float voiceDyn = 0.0f, voiceRt60 = 0.0f, voiceWet = -60.0f, voiceEcho = 0.0f;
 };
 
 Hints parseHints (const juce::String& text);
@@ -96,6 +100,7 @@ struct ArtistStyle
     juce::String name, genre;
     juce::StringArray aliases;   // en minuscules, sans accents
     juce::var hints;             // bright, air, warm, dark, comp, reverb, reverbSize, delay, sat, satType, doubler, chorus, flanger, phone, controlled, parallel, dreamy
+    juce::var voice;             // facultatif : la voix mesurée sur une référence (bands, dyn, rt60, wet, echo)
 };
 std::shared_ptr<const std::vector<ArtistStyle>> brainArtists();
 juce::File brainFolder();

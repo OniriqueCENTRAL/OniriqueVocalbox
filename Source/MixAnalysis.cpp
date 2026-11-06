@@ -513,6 +513,7 @@ ArtistStyle artistFromVar (const juce::var& v)
             if (const auto t = plainText (x.toString()); t.length() >= 2) s.aliases.addIfNotAlreadyThere (t);
     if (s.name.isNotEmpty()) s.aliases.addIfNotAlreadyThere (plainText (s.name));
     s.hints = v["hints"];
+    s.voice = v["voice"];
     return s;
 }
 
@@ -536,6 +537,27 @@ void applyArtist (Hints& h, const ArtistStyle& a)
     if ((bool) x.getProperty ("controlled", false)) h.controlled = true;
     if ((bool) x.getProperty ("parallel", false)) h.parallel = true;
     if ((bool) x.getProperty ("dreamy", false)) h.dreamy = true;
+    // sa voix mesurée (une référence, souvent séparée par IA) : la cible du timbre, de la tenue et de l'espace
+    if (h.voiceOf.isEmpty() && a.voice.isObject())
+    {
+        const auto& v = a.voice;
+        h.voiceBands.fill (-100.0f);
+        int n = 0;
+        if (auto* o = v["bands"].getDynamicObject())
+            for (int b = 0; b < kBands; ++b)
+            {
+                const auto key = juce::Identifier (juce::String (juce::roundToInt (kCentres[b])));
+                if (kCentres[b] >= 160.0f && kCentres[b] <= 8000.0f && o->hasProperty (key)) { h.voiceBands[(size_t) b] = (float) (double) o->getProperty (key); ++n; }
+            }
+        if (n >= 8)
+        {
+            h.voiceOf = a.name;
+            h.voiceDyn = (float) (double) v.getProperty ("dyn", 0.0);
+            h.voiceRt60 = (float) (double) v.getProperty ("rt60", 0.0);
+            h.voiceWet = (float) (double) v.getProperty ("wet", -60.0);
+            h.voiceEcho = (float) (double) v.getProperty ("echo", 0.0);
+        }
+    }
     h.artists.addIfNotAlreadyThere (a.name);
     h.understood.addIfNotAlreadyThere (juce::String::fromUTF8 ("façon ") + a.name);
 }
@@ -651,10 +673,30 @@ constexpr float kDefaultDyn = 3.0f, kDefaultLoud = -18.5f, kDefaultSib = -6.5f;
 void put (Setting& s, const char* id, float v) { s.params.emplace_back (juce::String (id), v); }
 }
 
-Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
+Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& h)
 {
     Plan plan;
     auto& rep = plan.report;
+
+    // sans référence glissée, la voix mesurée de l'artiste demandé (le cerveau) sert de référence : son timbre entre 160 Hz
+    // et 8 kHz, à moitié (une part de l'écart tient au timbre naturel du chanteur, pas au mix ; et hors de cette zone, la
+    // séparation par IA a pu couper des fréquences), sa tenue et son espace. Son écho donne la quantité de delay, pas sa
+    // durée (elle dépend du tempo de son morceau, le delay reste calé sur celui du projet).
+    Profile voiceRef;
+    if (! tgtIn.valid && h.voiceOf.isNotEmpty())
+    {
+        voiceRef.valid = true;
+        for (int b = 0; b < kBands; ++b)
+            voiceRef.bands[(size_t) b] = h.voiceBands[(size_t) b] > -90.0f ? 0.5f * h.voiceBands[(size_t) b] + 0.5f * kDefaultTarget[b] : kDefaultTarget[b];
+        voiceRef.dynRange = h.voiceDyn > 0.0f ? juce::jlimit (2.5f, 9.0f, h.voiceDyn) : kDefaultDyn;
+        voiceRef.loudDb = kDefaultLoud;
+        voiceRef.sibilance = kDefaultSib;
+        voiceRef.rt60 = h.voiceRt60;
+        voiceRef.wetDb = h.voiceWet - 5.0f;   // la séparation laisse un peu de la réverbe de la prod autour de la voix
+        voiceRef.echoAmount = h.voiceEcho;
+        rep.add (u8 ("Voix de ") + h.voiceOf + u8 (" mesurée (cerveau) : son timbre, sa tenue et son espace servent de cible"));
+    }
+    const Profile& tgt = tgtIn.valid ? tgtIn : voiceRef;
     const bool tgtDyn = tgt.valid && ! tgt.fromMix;   // dynamique, niveau et sifflantes de la référence : voix vraiment seule
 
     // ---- la cible : le timbre de la référence, sinon celui d'une voix bien mixée ; puis les couleurs demandées
