@@ -4,6 +4,18 @@
 
 namespace onirique
 {
+// essais locaux seulement (build ONIRIQUE_UI_TEST, ONIRIQUE_UI_TEST=...demo) : la démo du site part d'une chaîne prête
+// (EQ, 1176, LA-2A, DE-ESSER, REVERB, allumés) au lieu d'une chaîne vide ; la version publiée ne change pas
+inline bool uiDemo()
+{
+   #if ONIRIQUE_UI_TEST
+    return juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_TEST", {}).contains ("demo");
+   #else
+    return false;
+   #endif
+}
+inline int uiDemoSlot (int s) { static constexpr int c[] { 16, 25, 28, 13, 52 }; return uiDemo() && s < 5 ? c[s] : 0; }
+
 namespace ids
 {
     inline constexpr const char* input     = "input";
@@ -498,7 +510,7 @@ inline void addParams (std::vector<std::unique_ptr<juce::RangedAudioParameter>>&
         addF (ids::delayHighCut, "Delay High Cut", skewed (1000.0f, 20000.0f, 1.0f, 6000.0f), 6000.0f, "Hz", hzT);
         addF (ids::delayDucking, "Delay Ducking", { 0.0f, 100.0f, 0.1f }, 0.0f, "%", pct);
 
-        addB (ids::reverbOn, "Reverb On", false);
+        addB (ids::reverbOn, "Reverb On", k == 0 && uiDemo());
         p.push_back (mkParam<AudioParameterChoice> (k, ParameterID { ids::reverbMode, 1 }, "Reverb Mode",
                                                              StringArray { "Room", "Plate 1", "Plate 2", "Hall", "Shimmer" }, 1));
         addF (ids::reverbPreDelay, "Reverb Pre-Delay", skewed (0.0f, 250.0f, 0.1f, 40.0f), 20.0f, "ms", msT);
@@ -629,8 +641,8 @@ inline void addParams (std::vector<std::unique_ptr<juce::RangedAudioParameter>>&
     //      convertis au chargement) et réglages de la SATURATION ajoutés (neutres par défaut : le son ne change pas)
     p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::nsOn, 1 }, "Noise Suppressor On", false));
     p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::plosOn, 1 }, "Plosives On", false));
-    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::fetOn, 1 }, "1176 On", false));
-    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::optoOn, 1 }, "LA-2A On", false));
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::fetOn, 1 }, "1176 On", k == 0 && uiDemo()));
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::optoOn, 1 }, "LA-2A On", k == 0 && uiDemo()));
     p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::satMix, 1 }, "Saturation Mix",
         NormalisableRange<float> (0.0f, 100.0f, 0.1f), 100.0f, Attr().withLabel ("%").withStringFromValueFunction (pctText)));
     p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::satOutput, 1 }, "Saturation Output",
@@ -657,7 +669,7 @@ inline void addParams (std::vector<std::unique_ptr<juce::RangedAudioParameter>>&
     // dans la liste des réglages ; un preset les emporte avec lui
     if (k == 0)
         for (int s = 0; s < kSlots; ++s)
-            p.push_back (std::make_unique<AudioParameterInt> (ParameterID { ids::slot[s], 1 }, "Chain Slot " + String (s + 1), 0, 255, 0,
+            p.push_back (std::make_unique<AudioParameterInt> (ParameterID { ids::slot[s], 1 }, "Chain Slot " + String (s + 1), 0, 255, uiDemoSlot (s),
                                                               AudioParameterIntAttributes().withAutomatable (false)));
 }
 
