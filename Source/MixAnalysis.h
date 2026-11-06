@@ -47,6 +47,27 @@ struct Profile
 // le portrait d'une voix mono
 Profile analyse (const float* mono, int numSamples, double sampleRate);
 
+/*  L'instrumentale (entrée SIDECHAIN) écoutée en même temps que la voix : comment les deux se partagent le spectre.
+    Tout se mesure sur les instants où la voix chante. Les deux spectres sont comparés par leur forme (chacun ramené à sa
+    moyenne 200 Hz .. 5 kHz) : le niveau de la voix dans le mix dépend du fader, pas de la prise. */
+struct Context
+{
+    bool valid = false;
+    std::array<float, kBands> voice {}, inst {};   // dB, chacun ramené à sa moyenne 200 Hz .. 5 kHz
+    std::array<float, kBands> masking {};          // inst - voix : > 0, la prod est plus forte que la voix dans cette zone
+    std::array<float, kBands> instBandDb {};       // niveau efficace de la prod dans chaque tiers d'octave (dBFS, médiane)
+    float relativeDb = 0.0f;   // voix - prod (dB, niveau global pendant qu'elle chante), à titre indicatif
+    float instDynDb = 0.0f;    // dynamique de la prod (fenêtres de 400 ms, 90e - 10e centile) : faible = mix très compressé
+    float instCrestDb = 0.0f;  // crêtes de 50 ms au-dessus du niveau de la prod : élevé = batterie très percussive
+    std::vector<int> conflicts;   // tiers d'octave où la prod masque la voix (200 Hz .. 8 kHz), du plus marqué au moins marqué
+    int mudBand = -1;          // accumulation dans le bas-médium (250 .. 500 Hz) : la voix et la prod y sont fortes
+    int presenceBand = -1;     // la place libre pour la présence (2 .. 5 kHz) : la prod y est la plus discrète
+    int maskBand = -1;         // le masquage le plus gênant pour l'intelligibilité (800 Hz .. 4 kHz), ou -1
+};
+
+// voice, inst : la prise et l'instrumentale, mono, aux mêmes instants
+Context analyseContext (const float* voice, const float* inst, int numSamples, double sampleRate);
+
 // la voix d'un morceau (stéréo : le centre du mix ; mono : tel quel) ; shouldStop est appelé de temps en temps
 std::vector<float> isolateVoice (const juce::AudioBuffer<float>& song, std::function<bool()> shouldStop = {});
 
@@ -94,6 +115,7 @@ struct Plan
     juce::StringArray report;         // ce qui a été entendu et décidé, en clair
 };
 
-// source : la prise (peut être invalide : pas de lecture) ; target : la voix de référence (peut être invalide)
-Plan buildPlan (const Profile& source, const Profile& target, const Hints& hints);
+// source : la prise (peut être invalide : pas de lecture) ; target : la voix de référence (peut être invalide) ;
+// context : l'instrumentale écoutée sur la sidechain (invalide : la chaîne se règle d'après la voix seule, comme avant)
+Plan buildPlan (const Profile& source, const Profile& target, const Hints& hints, const Context& context = {});
 } // namespace onirique::mix

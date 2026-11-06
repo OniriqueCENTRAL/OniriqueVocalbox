@@ -1606,6 +1606,8 @@ public:
             s.q = &knob (ids::peqQ[b], "Q");
             s.thr = &knob (ids::peqThr[b], "THRESHOLD");
             s.dyn = &toggle (ids::peqDyn[b], "DYNAMIQUE");
+            // la bande dynamique suit l'instrumentale de la SIDECHAIN (elle n'agit que quand la prod y pousse)
+            s.key = &toggle (ids::peqKey[b], juce::String::fromUTF8 ("SC · INSTRU"));
         }
         listen = &toggle (ids::peqListen, "LISTEN");
         addAndMakeVisible (analyzer); anim.push_back (&analyzer);
@@ -1629,7 +1631,7 @@ public:
             chips[(size_t) k]->selected = k == selected;
             auto& s = sets[(size_t) k];
             for (juce::Component* c : { (juce::Component*) s.types, (juce::Component*) s.freq, (juce::Component*) s.gain, (juce::Component*) s.q,
-                                        (juce::Component*) s.thr, (juce::Component*) s.dyn })
+                                        (juce::Component*) s.thr, (juce::Component*) s.dyn, (juce::Component*) s.key })
                 c->setVisible (k == selected);
         }
         resized();
@@ -1657,7 +1659,12 @@ public:
         auto& s = sets[(size_t) selected];
         s.types->setBounds (row.removeFromLeft (380.0f * u).withSizeKeepingCentre (380.0f * u, 70.0f * u).toNearestInt());
         row.removeFromLeft (16.0f * u);
-        s.dyn->setBounds (row.removeFromRight (150.0f * u).withSizeKeepingCentre (150.0f * u, 42.0f * u).toNearestInt());
+        {
+            // DYNAMIQUE, et dessous sa source : la voix ou l'instrumentale (SC)
+            const auto side = row.removeFromRight (150.0f * u);
+            s.dyn->setBounds (side.withSizeKeepingCentre (150.0f * u, 40.0f * u).translated (0.0f, -23.0f * u).toNearestInt());
+            s.key->setBounds (side.withSizeKeepingCentre (150.0f * u, 36.0f * u).translated (0.0f, 23.0f * u).toNearestInt());
+        }
         row.removeFromRight (16.0f * u);
         const float kw = 96.0f * u;
         float x = row.getCentreX() - 2.0f * kw - 1.5f * 8.0f * u;
@@ -1697,7 +1704,7 @@ public:
     }
 
 private:
-    struct Set { TypeGrid* types = nullptr; StarKnob *freq = nullptr, *gain = nullptr, *q = nullptr, *thr = nullptr; GlassToggle* dyn = nullptr; };
+    struct Set { TypeGrid* types = nullptr; StarKnob *freq = nullptr, *gain = nullptr, *q = nullptr, *thr = nullptr; GlassToggle* dyn = nullptr; GlassToggle* key = nullptr; };
     SpectrumAnalyzer analyzer;
     std::vector<BandChip*> chips;
     std::array<Set, 8> sets {};

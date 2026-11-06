@@ -221,6 +221,138 @@ Profile analyse (const float* x, int n, double sr)
 }
 
 //==============================================================================
+Context analyseContext (const float* v, const float* x, int n, double sr)
+{
+    Context c;
+    if (v == nullptr || x == nullptr || sr < 8000.0 || n < (int) (sr * 2.0)) return c;
+
+    // ---- trames de 4096 (8192 au-delà de 50 kHz), recouvrement de 50 %, fenêtre de Hann
+    const int order = sr > 50000.0 ? 13 : 12, N = 1 << order, hop = N / 2;
+    juce::dsp::FFT fft (order);
+    juce::dsp::WindowingFunction<float> win ((size_t) N, juce::dsp::WindowingFunction<float>::hann, false);
+    std::vector<int> bandOf ((size_t) (N / 2), -1);
+    for (int k = 1; k < N / 2; ++k)
+    {
+        const float f = (float) (k * sr / N);
+        for (int b = 0; b < kBands; ++b)
+            if (f >= kCentres[b] * 0.8909f && f < kCentres[b] * 1.1225f) { bandOf[(size_t) k] = b; break; }
+    }
+    // puissance d'une bande (moyenne quadratique du signal filtré, Parseval ; Hann : moyenne de w² = 0,375)
+    const double norm = 2.0 / ((double) N * (double) N * 0.375);
+
+    std::vector<float> frameDb;
+    for (int s = 0; s + N <= n; s += hop)
+    {
+        double e = 0.0;
+        for (int i = 0; i < N; ++i) e += (double) v[s + i] * v[s + i];
+        frameDb.push_back (dbOf (e / N));
+    }
+    if (frameDb.size() < 8) return c;
+    const float thr = pct (frameDb, 0.95f) - 25.0f;   // la voix chante
+
+    std::vector<float> bv ((size_t) (2 * N)), bx ((size_t) (2 * N));
+    std::array<double, kBands> accV {}, accX {};
+    std::array<std::vector<float>, kBands> instFrames;
+    double eV = 0.0, eX = 0.0;
+    int frames = 0;
+    for (size_t fi = 0, s = 0; s + (size_t) N <= (size_t) n; s += (size_t) hop, ++fi)
+    {
+        if (frameDb[fi] < thr) continue;
+        std::fill (bv.begin(), bv.end(), 0.0f);
+        std::fill (bx.begin(), bx.end(), 0.0f);
+        std::copy (v + s, v + s + (size_t) N, bv.begin());
+        std::copy (x + s, x + s + (size_t) N, bx.begin());
+        for (int i = 0; i < N; ++i) { eV += (double) bv[(size_t) i] * bv[(size_t) i]; eX += (double) bx[(size_t) i] * bx[(size_t) i]; }
+        win.multiplyWithWindowingTable (bv.data(), (size_t) N);
+        win.multiplyWithWindowingTable (bx.data(), (size_t) N);
+        fft.performFrequencyOnlyForwardTransform (bv.data());
+        fft.performFrequencyOnlyForwardTransform (bx.data());
+        std::array<double, kBands> fx {};
+        for (int k = 1; k < N / 2; ++k)
+            if (const int b = bandOf[(size_t) k]; b >= 0)
+            {
+                accV[(size_t) b] += (double) bv[(size_t) k] * bv[(size_t) k];
+                const double px = (double) bx[(size_t) k] * bx[(size_t) k];
+                accX[(size_t) b] += px;
+                fx[(size_t) b] += px;
+            }
+        for (int b = 0; b < kBands; ++b) instFrames[(size_t) b].push_back (dbOf (fx[(size_t) b] * norm));
+        ++frames;
+    }
+    if (frames < 6 || eX < 1.0e-9) return c;   // la voix ne chante pas, ou rien n'arrive sur la sidechain
+
+    std::array<float, kBands> dv {}, dx {};
+    for (int b = 0; b < kBands; ++b)
+    {
+        dv[(size_t) b] = dbOf (accV[(size_t) b] * norm / frames);
+        dx[(size_t) b] = dbOf (accX[(size_t) b] * norm / frames);
+        c.instBandDb[(size_t) b] = median (instFrames[(size_t) b]);
+    }
+    // chacun ramené à sa moyenne 200 Hz .. 5 kHz : on compare les formes
+    auto mean = [] (const std::array<float, kBands>& a) { double s = 0.0; for (int b = 10; b <= 24; ++b) s += a[(size_t) b]; return (float) (s / 15.0); };
+    const float mv = mean (dv), mx = mean (dx);
+    for (int b = 0; b < kBands; ++b)
+    {
+        c.voice[(size_t) b] = dv[(size_t) b] - mv;
+        c.inst[(size_t) b] = dx[(size_t) b] - mx;
+        c.masking[(size_t) b] = c.inst[(size_t) b] - c.voice[(size_t) b];
+    }
+    c.relativeDb = dbOf (eV) - dbOf (eX);
+
+    // ---- les conflits : la prod plus forte que la voix là où la voix a de quoi dire (200 Hz .. 8 kHz)
+    std::vector<std::pair<float, int>> conf;
+    for (int b = 10; b <= 26; ++b)
+        if (c.masking[(size_t) b] > 4.0f && c.voice[(size_t) b] > -12.0f) conf.push_back ({ c.masking[(size_t) b], b });
+    std::sort (conf.begin(), conf.end(), [] (auto& a, auto& b) { return a.first > b.first; });
+    for (auto& [m, b] : conf) c.conflicts.push_back (b);
+
+    // accumulation dans le bas-médium : la voix et la prod y sont toutes deux fortes (la boue)
+    float bestMud = 0.0f;
+    for (int b = 11; b <= 14; ++b)
+        if (const float both = juce::jmin (c.inst[(size_t) b], c.voice[(size_t) b] + 2.0f); both > bestMud) { bestMud = both; c.mudBand = b; }
+    // la place pour la présence : là où la prod est la plus discrète entre 2 et 5 kHz
+    float freest = 1.0e9f;
+    for (int b = 20; b <= 24; ++b)
+        if (c.inst[(size_t) b] < freest) { freest = c.inst[(size_t) b]; c.presenceBand = b; }
+    // le masquage qui coûte le plus d'intelligibilité : 800 Hz .. 4 kHz
+    float worst = 4.0f;
+    for (int b = 16; b <= 23; ++b)
+        if (c.masking[(size_t) b] > worst && c.voice[(size_t) b] > -10.0f) { worst = c.masking[(size_t) b]; c.maskBand = b; }
+
+    // ---- la dynamique de la prod : fenêtres de 400 ms et de 50 ms sur tout l'extrait
+    {
+        const int h10 = juce::jmax (1, (int) (sr * 0.01));
+        std::vector<float> env;
+        for (int i = 0; i + h10 <= n; i += h10)
+        {
+            double e = 0.0;
+            for (int j = 0; j < h10; ++j) e += (double) x[i + j] * x[i + j];
+            env.push_back (dbOf (e / h10));
+        }
+        std::vector<float> w400, w50;
+        for (size_t s = 0; s + 40 <= env.size(); s += 10)
+        {
+            double e = 0.0;
+            for (int j = 0; j < 40; ++j) e += std::pow (10.0, env[s + (size_t) j] / 10.0);
+            w400.push_back (dbOf (e / 40.0));
+        }
+        for (size_t s = 0; s + 5 <= env.size(); s += 5)
+        {
+            double e = 0.0;
+            for (int j = 0; j < 5; ++j) e += std::pow (10.0, env[s + (size_t) j] / 10.0);
+            w50.push_back (dbOf (e / 5.0));
+        }
+        if (w400.size() >= 5 && w50.size() >= 5)
+        {
+            c.instDynDb = pct (w400, 0.9f) - pct (w400, 0.1f);
+            c.instCrestDb = pct (w50, 0.97f) - median (w400);
+        }
+    }
+    c.valid = true;
+    return c;
+}
+
+//==============================================================================
 std::vector<float> isolateVoice (const juce::AudioBuffer<float>& song, std::function<bool()> shouldStop)
 {
     const int n = song.getNumSamples();
@@ -438,7 +570,7 @@ constexpr float kDefaultDyn = 3.0f, kDefaultLoud = -18.5f, kDefaultSib = -6.5f;
 void put (Setting& s, const char* id, float v) { s.params.emplace_back (juce::String (id), v); }
 }
 
-Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
+Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h, const Context& ctx)
 {
     Plan plan;
     auto& rep = plan.report;
@@ -531,18 +663,63 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
         float cut = 90.0f;
         if (src.valid && src.bands[7] > target[7] + 3.0f) cut = 110.0f;
         put (s, ids::peqOn[0], 1.0f); put (s, ids::peqType[0], 3.0f); put (s, ids::peqFreq[0], cut); put (s, ids::peqSlope[0], 1.0f); put (s, ids::peqQ[0], 0.71f);
-        const int centre[6] { 9, 12, 15, 18, 21, 24 };
+        int centre[6] { 9, 12, 15, 18, 21, 24 };
         juce::StringArray moves;
+        float gain[6] {}, thr[6] {}, q[6] { 1.1f, 1.1f, 1.1f, 1.1f, 1.1f, 1.1f };
+        bool dyn[6] {};
         for (int i = 0; i < 6; ++i)
         {
             float g = avg (centre[i] - 1, centre[i] + 1);
             if (i == 4 || i == 5) g += 0.6f + 0.8f * juce::jmax (0.0f, h.comp);   // présence : la voix passe devant la prod
-            g = juce::jlimit (-4.0f, 4.0f, g);
+            gain[i] = juce::jlimit (-4.0f, 4.0f, g);
+        }
+
+        // ---- l'instrumentale (SIDECHAIN) : la voix se règle pour sa prod
+        if (ctx.valid)
+        {
+            // la boue partagée (250 .. 500 Hz) : retirée de la voix seulement quand la prod y pousse (bande dynamique « SC »)
+            if (ctx.mudBand >= 0)
+            {
+                const int b = ctx.mudBand;
+                const float both = juce::jmin (ctx.inst[(size_t) b], ctx.voice[(size_t) b] + 2.0f);
+                centre[1] = b;
+                gain[1] = juce::jmin (0.0f, gain[1]) - juce::jlimit (1.5f, 3.5f, 1.5f + 0.4f * both);
+                dyn[1] = true; q[1] = 1.3f;
+                thr[1] = juce::jlimit (-60.0f, -6.0f, ctx.instBandDb[(size_t) b] - 2.0f);
+                rep.add (u8 ("Prod chargée vers ") + hzText (kCentres[b]) + u8 (" comme la voix : EQ dynamique −") + juce::String (-gain[1], 1)
+                         + u8 (" dB, seulement quand l'instru y pousse"));
+            }
+            // le masquage qui coûte l'intelligibilité (800 Hz .. 4 kHz) : la voix remonte là, seulement quand l'instru la couvre
+            if (ctx.maskBand >= 0)
+            {
+                const int b = ctx.maskBand;
+                centre[3] = b;
+                gain[3] = juce::jmax (0.0f, gain[3]) + juce::jlimit (1.5f, 3.0f, 1.0f + 0.25f * (ctx.masking[(size_t) b] - 4.0f));
+                dyn[3] = true; q[3] = 1.2f;
+                thr[3] = juce::jlimit (-60.0f, -6.0f, ctx.instBandDb[(size_t) b] - 1.0f);
+                rep.add (u8 ("L'instru masque la voix vers ") + hzText (kCentres[b]) + u8 (" : EQ dynamique +") + juce::String (gain[3], 1)
+                         + u8 (" dB qui ne s'ouvre que sous la prod"));
+            }
+            // la présence glisse vers la place que la prod laisse libre entre 2 et 5 kHz
+            if (ctx.presenceBand >= 0 && ctx.presenceBand != ctx.maskBand)
+            {
+                // vers 5 kHz, la bande de présence haute y est déjà : on la renforce (deux cloches au même endroit s'empileraient)
+                const int slot = std::abs (ctx.presenceBand - centre[5]) <= 1 ? 5 : 4;
+                centre[slot] = ctx.presenceBand;
+                gain[slot] = juce::jlimit (-4.0f, 4.5f, juce::jmax (gain[slot], 0.0f) + 0.8f);
+                rep.add (u8 ("Présence posée à ") + hzText (kCentres[ctx.presenceBand]) + u8 (", là où la prod laisse de la place"));
+            }
+        }
+
+        for (int i = 0; i < 6; ++i)
+        {
+            const float g = gain[i];
             const int bnd = i + 1;
             const bool on = std::abs (g) >= 0.7f;
             put (s, ids::peqOn[bnd], on ? 1.0f : 0.0f); put (s, ids::peqType[bnd], 0.0f); put (s, ids::peqFreq[bnd], kCentres[centre[i]]);
-            put (s, ids::peqGain[bnd], std::round (g * 10.0f) / 10.0f); put (s, ids::peqQ[bnd], 1.1f);
-            if (on) moves.add (dbText (g) + " " + hzText (kCentres[centre[i]]));
+            put (s, ids::peqGain[bnd], std::round (g * 10.0f) / 10.0f); put (s, ids::peqQ[bnd], q[i]);
+            if (dyn[i]) { put (s, ids::peqDyn[bnd], 1.0f); put (s, ids::peqKey[bnd], 1.0f); put (s, ids::peqThr[bnd], std::round (thr[i] * 10.0f) / 10.0f); }
+            if (on) moves.add (dbText (g) + " " + hzText (kCentres[centre[i]]) + (dyn[i] ? " (SC)" : ""));
             if (i >= 4) highBoost = juce::jmax (highBoost, g);
         }
         const float shelf = juce::jlimit (-4.0f, 4.0f, avg (26, 28) + 0.8f);   // un peu d'air en plus : une voix mixée brille
@@ -556,10 +733,17 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
 
     // ---- 4. 1176 puis 5. LA-2A : la dynamique de la prise ramenée vers celle d'une voix mixée (très tenue)
     const float srcDr = src.valid ? src.dynRange : 12.0f;
-    const float tgtDr = juce::jlimit (2.0f, 10.0f, (tgtDyn ? tgt.dynRange : kDefaultDyn) - 0.8f * h.comp);
+    // la prod : très compressée (dynamique faible), la voix doit être plus tenue pour ne pas s'y perdre ; aérée, elle respire
+    const float ctxDr = ! ctx.valid ? 0.0f : ctx.instDynDb < 6.0f ? 1.2f : ctx.instDynDb > 11.0f ? -1.0f : 0.0f;
+    const float tgtDr = juce::jlimit (2.0f, 10.0f, (tgtDyn ? tgt.dynRange : kDefaultDyn) - 0.8f * h.comp - ctxDr);
+    if (ctx.valid && ctxDr != 0.0f)
+        rep.add (ctxDr > 0.0f ? u8 ("Prod très compressée (") + juce::String (ctx.instDynDb, 1) + u8 (" dB de dynamique) : la voix est tenue plus serré")
+                              : u8 ("Prod aérée (") + juce::String (ctx.instDynDb, 1) + u8 (" dB de dynamique) : la voix garde plus de nuances"));
     const float need = juce::jlimit (0.0f, 18.0f, srcDr - tgtDr);
     {
-        const float grFet = juce::jlimit (3.0f, 10.0f, 3.0f + 0.5f * need + 1.5f * juce::jmax (0.0f, h.comp));
+        // une batterie très percussive : la voix est tenue un peu plus sur ses crêtes pour rester devant les coups
+        const float punch = ctx.valid && ctx.instCrestDb > 9.0f ? 1.0f : 0.0f;
+        const float grFet = juce::jlimit (3.0f, 10.0f, 3.0f + 0.5f * need + 1.5f * juce::jmax (0.0f, h.comp) + punch);
         const float in = juce::jlimit (-12.0f, 36.0f, grFet / 0.75f - 20.0f - P);   // 1176 ratio 4 : seuil -20 dBFS
         Setting fet { modules::fet, 0, {} };
         put (fet, ids::fetIn, std::round (in * 10.0f) / 10.0f);
@@ -594,7 +778,16 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
     {
         const float tgtSib = tgtDyn ? tgt.sibilance : kDefaultSib;
         const float excess = src.valid ? src.sibilance - tgtSib : 0.0f;
-        const float amt = juce::jlimit (25.0f, 75.0f, 35.0f + 4.0f * excess + 4.0f * juce::jmax (0.0f, highBoost) + 2.0f * need + 8.0f * h.air);
+        // la prod : des cymbales brillantes couvrent déjà les S (on retire moins) ; une prod sombre les laisse ressortir
+        float ctxSib = 0.0f;
+        if (ctx.valid)
+        {
+            const float hats = (ctx.inst[25] + ctx.inst[26] + ctx.inst[27]) / 3.0f;
+            ctxSib = hats > 2.0f ? -6.0f : hats < -6.0f ? 4.0f : 0.0f;
+            if (ctxSib != 0.0f) rep.add (ctxSib < 0.0f ? u8 ("Cymbales brillantes dans la prod : les S y sont déjà couverts, de-esser plus léger")
+                                                        : u8 ("Prod sombre dans les aigus : les S y ressortent, de-esser un peu plus ferme"));
+        }
+        const float amt = juce::jlimit (25.0f, 75.0f, 35.0f + 4.0f * excess + 4.0f * juce::jmax (0.0f, highBoost) + 2.0f * need + 8.0f * h.air + ctxSib);
         Setting s { modules::deess, 0, {} };
         put (s, ids::deessFreq, src.valid ? src.sibFreq : 6500.0f);
         put (s, ids::deessAmt, std::round (amt));
@@ -625,7 +818,10 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
         Setting s { modules::analog, 0, {} };
         const float mud = juce::jlimit (1.5f, 4.0f, 1.5f + 0.15f * need + (h.warm > 0.3f ? 0.0f : 0.5f));
         const float hi = juce::jlimit (0.0f, 4.0f, 1.5f + 1.5f * h.bright - 1.5f * h.dark);
-        const float air = juce::jlimit (0.0f, 5.0f, 2.0f + 3.0f * h.air - 0.6f * juce::jmax (0.0f, highBoost - 2.0f) - 2.0f * h.dark);
+        // l'air : moins quand la prod brille déjà tout en haut (rien ne s'empile), un peu plus quand elle y laisse de la place
+        const float top = ctx.valid ? (ctx.inst[27] + ctx.inst[28] + ctx.inst[29]) / 3.0f : 0.0f;
+        const float ctxAir = ! ctx.valid ? 0.0f : top > 3.0f ? -1.0f : top < -6.0f ? 0.8f : 0.0f;
+        const float air = juce::jlimit (0.0f, 5.0f, 2.0f + 3.0f * h.air - 0.6f * juce::jmax (0.0f, highBoost - 2.0f) - 2.0f * h.dark + ctxAir);
         put (s, ids::mud, std::round (mud * 10.0f) / 10.0f);
         put (s, ids::high, std::round (hi * 10.0f) / 10.0f);
         put (s, ids::air, std::round (air * 10.0f) / 10.0f);

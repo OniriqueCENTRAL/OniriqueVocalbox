@@ -290,15 +290,20 @@ private:
 };
 
 //------------------------------------------------------------------------------ TON
+// l'instrumentale reçue sur l'entrée SIDECHAIN (mono, à la cadence de l'hôte), pour le morceau de bloc en cours
+struct KeyBus { const float* data = nullptr; int n = 0; };
+
 class Peq final : public ChainModule
 {
 public:
-    Peq (juce::AudioProcessorValueTreeState& s, int k, std::atomic<bool>& hold) : ChainModule (s, modules::peq, k), listenHold (hold)
+    Peq (juce::AudioProcessorValueTreeState& s, int k, std::atomic<bool>& hold, const KeyBus& kb)
+        : ChainModule (s, modules::peq, k), listenHold (hold), keyBus (kb)
     {
         for (int bb = 0; bb < 8; ++bb)
         {
             const char* id[8] { ids::peqOn[bb], ids::peqType[bb], ids::peqFreq[bb], ids::peqGain[bb], ids::peqQ[bb], ids::peqSlope[bb], ids::peqDyn[bb], ids::peqThr[bb] };
             for (int j = 0; j < 8; ++j) p[bb][j] = raw (id[j]);
+            pKey[bb] = raw (ids::peqKey[bb]);
         }
         listen = raw (ids::peqListen); listenBand = raw (ids::peqListenBand);
     }
@@ -313,7 +318,7 @@ private:
         {
             auto& x = bands[(size_t) bb];
             x.on = b (p[bb][0]); x.type = i (p[bb][1]); x.freq = f (p[bb][2]); x.gainDb = f (p[bb][3]); x.q = f (p[bb][4]);
-            x.slope = i (p[bb][5]); x.dyn = b (p[bb][6]); x.thrDb = f (p[bb][7]);
+            x.slope = i (p[bb][5]); x.dyn = b (p[bb][6]); x.thrDb = f (p[bb][7]); x.key = b (pKey[bb]);
         }
         engine.setBands (bands, snap);
         // écoute d'une bande : seulement pendant qu'on la tient (casque armé, clic maintenu sur la bande)
@@ -324,7 +329,7 @@ private:
     }
     void processEngine (float* const* ch, int numCh, int n) noexcept override
     {
-        engine.process (ch, numCh, n);
+        engine.process (ch, numCh, n, keyBus.data, keyBus.n);
         if (! listenMix.isSmoothing() && listenMix.getTargetValue() <= 0.0f) return;
         for (int s = 0; s < n; ++s)
         {
@@ -353,6 +358,8 @@ private:
     }
     ParametricEQ engine;
     std::atomic<bool>& listenHold;
+    const KeyBus& keyBus;
+    std::atomic<float>* pKey[8] {};
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> listenMix;
     Biquad fa, fb;
     float lastF = -1.0f, lastQ = -1.0f, listenGain = 1.0f; int lastType = -1;
@@ -736,7 +743,7 @@ public:
             put (modules::plosive, new Plosive (s, k));
             put (modules::reso, new Reso (s, k));
             put (modules::deess, new DeEss (s, k));
-            put (modules::peq, new Peq (s, k, peqHold));
+            put (modules::peq, new Peq (s, k, peqHold, keyBus));
             put (modules::analog, new Analog (s, k));
             put (modules::sat, new Sat (s, k));
             put (modules::fet, new Fet (s, k));
@@ -811,6 +818,9 @@ public:
     // latence qu'aurait une chaîne donnée (thread de l'interface, pour l'annoncer dès le changement)
     int latencyFor (const modules::Chain& c) const noexcept { Plan p; build (c, p); return p.latency; }
 
+    /** L'instrumentale de l'entrée SIDECHAIN pour le prochain process() (mono, n échantillons), ou nullptr. */
+    void setKey (const float* key) noexcept { scKey = key; }
+
     void process (float* const* ch, int numCh, int n) noexcept
     {
         modules::Chain now;
@@ -821,6 +831,8 @@ public:
         {
             const int m = std::min (kChunk, n - pos);
             float* c[2] { ch[0] + pos, numCh > 1 ? ch[1] + pos : nullptr };
+            keyBus.data = scKey != nullptr ? scKey + pos : nullptr;
+            keyBus.n = m;
             processChunk (c, numCh, m);
         }
     }
@@ -1012,6 +1024,8 @@ private:
     }
 
     juce::AudioProcessorValueTreeState& apvts;
+    chainmods::KeyBus keyBus;            // l'instrumentale du morceau de bloc en cours, lue par les EQ (bandes « SC »)
+    const float* scKey = nullptr;        // l'instrumentale du bloc entier (process)
     std::array<std::unique_ptr<ChainModule>, kModules> mods;
     std::atomic<float>* pSlot[kSlots] {};
     std::atomic<float> *pInput = nullptr, *pOutput = nullptr, *pAutoGain = nullptr, *pBypass = nullptr;

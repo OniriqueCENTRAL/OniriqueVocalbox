@@ -25,6 +25,13 @@ StartScreen::StartScreen (OniriqueVocalBoxAudioProcessor& p) : processor (p)
         dots.push_back ({ r * std::cos (a), y, r * std::sin (a) });
     }
     t0 = juce::Time::getMillisecondCounterHiRes() * 0.001;
+    // SIDECHAIN : 4096 échantillons de voix et d'instrumentale pour leurs spectres (mis à jour toutes les 3 images)
+    vRing.assign (4096, 0.0f);
+    xRing.assign (4096, 0.0f);
+    fftBuf.assign (8192, 0.0f);
+    fft = std::make_unique<juce::dsp::FFT> (12);
+    window = std::make_unique<juce::dsp::WindowingFunction<float>> ((size_t) 4096, juce::dsp::WindowingFunction<float>::hann, false);
+    liveV.fill (-30.0f); liveX.fill (-30.0f);
 
     search.setMultiLine (false);
     search.setReturnKeyStartsNewLine (false);
@@ -105,7 +112,45 @@ void StartScreen::tick()
     float tmp[2048], pk = 0.0f;
     int got;
     while ((got = processor.inputTap.pull (tmp, 2048)) > 0)
+    {
         for (int i = 0; i < got; ++i) pk = std::max (pk, std::abs (tmp[i]));
+        pushRing (vRing, vPos, tmp, got);
+    }
+    // l'instrumentale sur la SIDECHAIN : son niveau (le témoin) et son spectre
+    {
+        float xpk = processor.consumeSidechainPeak();
+        while ((got = processor.sidechainTap.pull (tmp, 2048)) > 0) pushRing (xRing, xPos, tmp, got);
+        const float xdb = xpk > 1.0e-6f ? 20.0f * std::log10 (xpk) : -120.0f;
+        const float xt = juce::jlimit (0.0f, 1.0f, (xdb + 60.0f) / 54.0f);
+        scLevel += (xt > scLevel ? 0.35f : 0.06f) * (xt - scLevel);
+        if (--fftCountdown <= 0)
+        {
+            fftCountdown = 3;
+            std::array<float, onirique::mix::kBands> bv {}, bx {};
+            bandsOf (vRing, vPos, bv);
+            bandsOf (xRing, xPos, bx);
+            for (int b = 0; b < onirique::mix::kBands; ++b)
+            {
+                liveV[(size_t) b] += 0.35f * (bv[(size_t) b] - liveV[(size_t) b]);
+                liveX[(size_t) b] += 0.35f * (bx[(size_t) b] - liveX[(size_t) b]);
+            }
+        }
+        ui::approach (liveVoice, level > 0.15f ? 1.0f : 0.0f, 0.08f);
+        ui::approach (liveInst, scLevel > 0.12f ? 1.0f : 0.0f, 0.08f);
+       #if ONIRIQUE_UI_TEST
+        // essais locaux : ONIRIQUE_UI_TEST=…,sc simule une voix et une prod (conflit vers 2 kHz, boue vers 400 Hz)
+        if (juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_TEST", {}).contains ("sc"))
+        {
+            for (int b = 0; b < onirique::mix::kBands; ++b)
+            {
+                const float o = std::log2 (onirique::mix::kCentres[b] / 1000.0f);
+                liveV[(size_t) b] = -3.0f * o * o + 2.0f * std::sin ((float) b * 0.9f);
+                liveX[(size_t) b] = -2.0f * o + (b == 13 ? 4.0f : 0.0f) + (b == 20 || b == 21 ? 7.0f : 0.0f) - (b > 24 ? 6.0f : 0.0f);
+            }
+            scLevel = 0.7f; liveInst = liveVoice = 1.0f;
+        }
+       #endif
+    }
     const float db = pk > 1.0e-6f ? 20.0f * std::log10 (pk) : -120.0f;
     const float target = juce::jlimit (0.0f, 1.0f, (db + 50.0f) / 44.0f);
     level += (target > level ? 0.35f : 0.06f) * (target - level);
@@ -237,6 +282,8 @@ void StartScreen::paint (juce::Graphics& g)
             g.fillEllipse (juce::Rectangle<float> (5.0f * u, 5.0f * u).withCentre ({ row.getX() + 6.0f * u, row.getCentreY() }));
         }
     }
+
+    paintSidechain (g, u);
 
     // l'état, sous la sphère
     juce::String line = status;
@@ -379,13 +426,34 @@ void StartScreen::finish()
         src = mix::analyse (take.data(), (int) take.size(), processor.captureRate());
     }
     if (refState.load() == 2) tgt = refProfile;
-    plan = mix::buildPlan (src, tgt, hints);
+    // l'instrumentale reçue sur la SIDECHAIN pendant la prise : la voix se règle pour sa prod
+    context = {};
+    if (processor.captureDone() && processor.captureHasInstrumental())
+    {
+        const auto& take = processor.capturedTake();
+        const auto& inst = processor.capturedInstrumental();
+        context = mix::analyseContext (take.data(), inst.data(), (int) juce::jmin (take.size(), inst.size()), processor.captureRate());
+    }
+    plan = mix::buildPlan (src, tgt, hints, context);
     juce::StringArray head;
     head.add (src.valid ? utf8 ("Ta voix : 10 s écoutées") : utf8 ("Ta voix n'a pas été écoutée : réglages d'après la demande seule"));
     if (refState.load() == 2)
         head.add ((refAi.load() ? utf8 ("Référence : la voix séparée par l'IA (40 s de « ") : utf8 ("Référence : la voix prise au centre du mix de « "))
                   + reference.getFileNameWithoutExtension() + utf8 (refAi.load() ? " »)" : " »"));
     else if (refState.load() == 3) head.add (utf8 ("Référence illisible : ") + reference.getFileName());
+    if (context.valid)
+    {
+        juce::StringArray zones;
+        for (int i = 0; i < juce::jmin (3, (int) context.conflicts.size()); ++i)
+        {
+            const float f = mix::kCentres[context.conflicts[(size_t) i]];
+            zones.add (f >= 1000.0f ? juce::String (f / 1000.0f, 1) + " kHz" : juce::String (juce::roundToInt (f)) + " Hz");
+        }
+        head.add (utf8 ("Instru : écoutée sur la SIDECHAIN · ") + (zones.isEmpty() ? utf8 ("pas de conflit marqué avec la voix")
+                                                                     : utf8 ("conflits vers ") + zones.joinIntoString (", ")));
+    }
+    else if (processor.sidechainConnected())
+        head.add (utf8 ("SIDECHAIN branchée mais muette pendant la prise : réglages d'après la voix seule"));
     if (! hints.understood.isEmpty()) head.add (utf8 ("Compris : ") + hints.understood.joinIntoString (", "));
     if (! hints.unknown.isEmpty() && refState.load() != 2)
         head.add (utf8 ("« ") + hints.unknown.joinIntoString (" ") + utf8 (" » : glisse un de ses morceaux sur la sphère pour coller à sa voix"));
@@ -423,4 +491,176 @@ void StartScreen::apply()
     set (ids::output, 0.0f);
     set (ids::autoGain, 0.0f);
     processor.setChain (chain);
+}
+
+//==============================================================================
+// SIDECHAIN : l'instrumentale reçue, son spectre comparé à celui de la voix, les zones où elle la masque
+void StartScreen::pushRing (std::vector<float>& ring, int& pos, const float* x, int n)
+{
+    const int size = (int) ring.size();
+    for (int i = 0; i < n; ++i) { ring[(size_t) pos] = x[i]; pos = (pos + 1) % size; }
+}
+
+void StartScreen::bandsOf (const std::vector<float>& ring, int pos, std::array<float, onirique::mix::kBands>& out)
+{
+    namespace mix = onirique::mix;
+    const int N = (int) ring.size();
+    double e = 0.0;
+    for (int i = 0; i < N; ++i) { const float v = ring[(size_t) ((pos + i) % N)]; fftBuf[(size_t) i] = v; e += (double) v * v; }
+    if (e / N < 1.0e-9) { out.fill (-30.0f); return; }   // rien ne passe
+    std::fill (fftBuf.begin() + N, fftBuf.end(), 0.0f);
+    window->multiplyWithWindowingTable (fftBuf.data(), (size_t) N);
+    fft->performFrequencyOnlyForwardTransform (fftBuf.data());
+    const double sr = processor.captureRate() > 0.0 ? processor.captureRate() : 48000.0;
+    std::array<double, mix::kBands> acc {};
+    for (int k = 1; k < N / 2; ++k)
+    {
+        const float f = (float) (k * sr / N);
+        for (int b = 0; b < mix::kBands; ++b)
+            if (f >= mix::kCentres[b] * 0.8909f && f < mix::kCentres[b] * 1.1225f) { acc[(size_t) b] += (double) fftBuf[(size_t) k] * fftBuf[(size_t) k]; break; }
+    }
+    double mean = 0.0;
+    for (int b = 0; b < mix::kBands; ++b) out[(size_t) b] = acc[(size_t) b] > 1.0e-14 ? (float) (10.0 * std::log10 (acc[(size_t) b])) : -140.0f;
+    for (int b = 10; b <= 24; ++b) mean += out[(size_t) b];
+    mean /= 15.0;
+    for (auto& v : out) v = juce::jlimit (-40.0f, 20.0f, v - (float) mean);   // la forme : chacun ramené à sa moyenne 200 Hz .. 5 kHz
+}
+
+juce::Rectangle<float> StartScreen::scPanelArea() const
+{
+    const float u = ui::unitOf (*this);
+    const float w = 360.0f * u, h = 150.0f * u;
+    return { (float) getWidth() - 36.0f * u - w, barArea().getY() - 64.0f * u - h, w, h };
+}
+
+void StartScreen::paintSidechain (juce::Graphics& g, float u)
+{
+    namespace mix = onirique::mix;
+    bool connected = processor.sidechainConnected();
+   #if ONIRIQUE_UI_TEST
+    if (juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_TEST", {}).contains ("sc")) connected = true;
+   #endif
+    const bool showReport = stage == Stage::report && context.valid;
+    const auto area = scPanelArea();
+
+    // la pastille SIDECHAIN : le témoin s'allume quand l'instrumentale arrive
+    {
+        const auto chip = juce::Rectangle<float> (area.getX(), area.getY() - 42.0f * u, area.getWidth(), 32.0f * u);
+        juce::Path pill; pill.addRoundedRectangle (chip, chip.getHeight() * 0.5f);
+        g.setColour (juce::Colour (0xff120c0e).withAlpha (0.88f));
+        g.fillPath (pill);
+        ui::drawDemoGlass (g, chip, chip.getHeight() * 0.5f, u, false);
+        const auto led = juce::Rectangle<float> (8.0f * u, 8.0f * u).withCentre ({ chip.getX() + 18.0f * u, chip.getCentreY() });
+        if (liveInst > 0.02f) ui::softGlowEllipse (g, led, cEmber.withAlpha (0.85f * liveInst), 9.0f * u);
+        g.setColour (cEmber.interpolatedWith (juce::Colour (0xff4a3a3e), 1.0f - liveInst));
+        g.fillEllipse (led);
+        g.setColour (cBone);
+        g.setFont (ui::css (ui::Face::mono, 11.0f * u, 0.16f));
+        g.drawText ("SIDECHAIN", chip.withTrimmedLeft (32.0f * u).withWidth (90.0f * u), juce::Justification::centredLeft, false);
+        const juce::String state = ! connected ? utf8 ("NON BRANCHÉE")
+                                 : liveInst > 0.5f ? utf8 ("INSTRU REÇUE") : utf8 ("BRANCHÉE · RIEN NE PASSE");
+        g.setColour (liveInst > 0.5f ? cPink : cHaze);
+        g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.12f));
+        g.drawText (state, chip.withTrimmedLeft (122.0f * u).withTrimmedRight (88.0f * u), juce::Justification::centredLeft, true);
+        // le niveau reçu
+        const auto meter = juce::Rectangle<float> (70.0f * u, 4.0f * u).withCentre ({ chip.getRight() - 50.0f * u, chip.getCentreY() });
+        g.setColour (juce::Colours::white.withAlpha (0.08f));
+        g.fillRoundedRectangle (meter, 2.0f * u);
+        g.setColour (cEmber);
+        g.fillRoundedRectangle (meter.withWidth (meter.getWidth() * scLevel), 2.0f * u);
+    }
+
+    if (! connected && ! showReport)
+    {
+        // pas de sidechain : comment la brancher
+        g.setColour (cHaze);
+        g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.12f));
+        g.drawFittedText (utf8 ("ENVOIE L'INSTRU SUR L'ENTRÉE SIDECHAIN :\nLA VOIX SE RÈGLERA POUR SA PROD"),
+                          juce::Rectangle<float> (area.getX() + 14.0f * u, area.getY() - 4.0f * u, area.getWidth() - 28.0f * u, 34.0f * u).toNearestInt(),
+                          juce::Justification::topLeft, 2);
+        return;
+    }
+
+    // le panneau : la voix (trait clair) et l'instrumentale (couleur de l'interface), leurs formes comparées ; les conflits en surbrillance
+    juce::Path frame; frame.addRoundedRectangle (area, 18.0f * u);
+    g.setColour (juce::Colour (0xff0b0709).withAlpha (0.84f));
+    g.fillPath (frame);
+    ui::drawDemoGlass (g, area, 18.0f * u, u, false);
+    auto inner = area.reduced (16.0f * u, 12.0f * u);
+    auto head = inner.removeFromTop (16.0f * u);
+    g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.14f));
+    g.setColour (cHaze);
+    g.drawText (showReport ? utf8 ("VOIX / INSTRU · LES 10 S ÉCOUTÉES") : utf8 ("VOIX / INSTRU · EN DIRECT"), head, juce::Justification::centredLeft, false);
+    {
+        auto leg = head.removeFromRight (130.0f * u);
+        g.setColour (cBone); g.fillRect (leg.removeFromLeft (14.0f * u).withSizeKeepingCentre (14.0f * u, 2.0f * u));
+        g.setColour (cHaze); g.drawText ("VOIX", leg.removeFromLeft (48.0f * u).withTrimmedLeft (6.0f * u), juce::Justification::centredLeft, false);
+        g.setColour (cEmber); g.fillRect (leg.removeFromLeft (14.0f * u).withSizeKeepingCentre (14.0f * u, 4.0f * u));
+        g.setColour (cHaze); g.drawText ("INSTRU", leg.withTrimmedLeft (6.0f * u), juce::Justification::centredLeft, false);
+    }
+    auto foot = inner.removeFromBottom (16.0f * u);
+    const auto plot = inner.reduced (0.0f, 6.0f * u);
+    const auto& V = showReport ? context.voice : liveV;
+    const auto& X = showReport ? context.inst : liveX;
+    auto xOf = [&] (float f) { return plot.getX() + plot.getWidth() * (float) (std::log (f / 20.0f) / std::log (1000.0f)); };
+    auto yOf = [&] (float db) { return plot.getBottom() - plot.getHeight() * juce::jlimit (0.0f, 1.0f, (db + 24.0f) / 36.0f); };
+
+    // les conflits : la prod plus forte que la voix là où la voix compte
+    std::vector<int> conf;
+    if (showReport) conf = context.conflicts;
+    else if (liveVoice > 0.5f && liveInst > 0.5f)
+        for (int b = 10; b <= 26; ++b)
+            if (X[(size_t) b] - V[(size_t) b] > 4.0f && V[(size_t) b] > -12.0f) conf.push_back (b);
+    for (int b : conf)
+    {
+        const float x0 = xOf (mix::kCentres[b] * 0.8909f), x1 = xOf (mix::kCentres[b] * 1.1225f);
+        g.setGradientFill (juce::ColourGradient (cEmber.withAlpha (0.0f), 0.0f, plot.getY(), cEmber.withAlpha (0.28f), 0.0f, plot.getBottom(), false));
+        g.fillRect (juce::Rectangle<float> (x0, plot.getY(), x1 - x0, plot.getHeight()));
+    }
+    // la ligne 0 dB et les repères 100 Hz, 1 kHz, 10 kHz
+    g.setColour (juce::Colours::white.withAlpha (0.06f));
+    g.fillRect (juce::Rectangle<float> (plot.getX(), yOf (0.0f), plot.getWidth(), 1.0f));
+    for (float f : { 100.0f, 1000.0f, 10000.0f }) g.fillRect (juce::Rectangle<float> (xOf (f), plot.getY(), 1.0f, plot.getHeight()));
+
+    auto curve = [&] (const std::array<float, mix::kBands>& a)
+    {
+        juce::Path p;
+        for (int b = 1; b < mix::kBands - 1; ++b)
+        {
+            const juce::Point<float> pt (xOf (mix::kCentres[b]), yOf (a[(size_t) b]));
+            if (b == 1) p.startNewSubPath (pt); else p.lineTo (pt);
+        }
+        return p;
+    };
+    if (showReport || liveInst > 0.02f)
+    {
+        auto px = curve (X);
+        juce::Path fill (px);
+        fill.lineTo (xOf (mix::kCentres[mix::kBands - 2]), plot.getBottom());
+        fill.lineTo (xOf (mix::kCentres[1]), plot.getBottom());
+        fill.closeSubPath();
+        g.setGradientFill (juce::ColourGradient (cEmber.withAlpha (0.32f), 0.0f, plot.getY(), cEmber.withAlpha (0.02f), 0.0f, plot.getBottom(), false));
+        g.fillPath (fill);
+        g.setColour (cEmber.withAlpha (showReport ? 1.0f : 0.5f + 0.5f * liveInst));
+        g.strokePath (px, juce::PathStrokeType (1.6f * u, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    }
+    if (showReport || liveVoice > 0.02f)
+    {
+        g.setColour (cBone.withAlpha (showReport ? 0.95f : 0.4f + 0.55f * liveVoice));
+        g.strokePath (curve (V), juce::PathStrokeType (1.4f * u, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    }
+
+    // en bas : les conflits détectés, en clair
+    juce::StringArray zones;
+    for (int i = 0; i < juce::jmin (4, (int) conf.size()); ++i)
+    {
+        const float f = mix::kCentres[conf[(size_t) i]];
+        zones.add (f >= 1000.0f ? juce::String (f / 1000.0f, 1) + " kHz" : juce::String (juce::roundToInt (f)) + " Hz");
+    }
+    g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.12f));
+    g.setColour (zones.isEmpty() ? cHaze : cPink);
+    const bool listening = (liveVoice > 0.5f && liveInst > 0.5f) || showReport;
+    const juce::String text = ! zones.isEmpty() ? utf8 ("CONFLITS : ") + zones.joinIntoString (" · ")
+                            : listening ? utf8 ("PAS DE CONFLIT MARQUÉ") : utf8 ("JOUE LA VOIX ET L'INSTRU");
+    g.drawText (text, foot, juce::Justification::centredLeft, true);
 }

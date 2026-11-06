@@ -108,6 +108,8 @@ namespace ids
     inline constexpr const char* peqSlope[8] { "peq1Slope", "peq2Slope", "peq3Slope", "peq4Slope", "peq5Slope", "peq6Slope", "peq7Slope", "peq8Slope" };
     inline constexpr const char* peqDyn[8]   { "peq1Dyn", "peq2Dyn", "peq3Dyn", "peq4Dyn", "peq5Dyn", "peq6Dyn", "peq7Dyn", "peq8Dyn" };
     inline constexpr const char* peqThr[8]   { "peq1Thresh", "peq2Thresh", "peq3Thresh", "peq4Thresh", "peq5Thresh", "peq6Thresh", "peq7Thresh", "peq8Thresh" };
+    // la bande dynamique écoute l'instrumentale (entrée SIDECHAIN) au lieu de la voix : elle n'agit que quand la prod l'y pousse
+    inline constexpr const char* peqKey[8]   { "peq1Key", "peq2Key", "peq3Key", "peq4Key", "peq5Key", "peq6Key", "peq7Key", "peq8Key" };
     inline constexpr const char* resoAmt   = "resoAmount";
     inline constexpr const char* resoLow   = "resoLow";
     inline constexpr const char* resoMid   = "resoMid";
@@ -588,6 +590,7 @@ inline void addParams (std::vector<std::unique_ptr<juce::RangedAudioParameter>>&
             p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::peqThr[b], 1 }, n + "Threshold",
                 NormalisableRange<float> (-60.0f, 0.0f, 0.1f), -30.0f,
                 Attr().withLabel ("dB").withStringFromValueFunction ([] (float v, int) { return String (v, 1) + " dB"; })));
+            p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::peqKey[b], 1 }, n + "Sidechain", false));
         }
     }
 
