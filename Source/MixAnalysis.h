@@ -84,6 +84,7 @@ struct Hints
     juce::StringArray unknown;      // les mots non compris (des noms d'artistes, souvent)
     juce::StringArray artists;      // les artistes reconnus par le cerveau (leur fiche est appliquée)
     // la voix mesurée du premier artiste demandé qui en a une (cerveau : « voice ») : sert de cible quand aucune référence n'est glissée
+    float reverbBias = 0.0f, delayBias = 0.0f;   // appris sur toutes les demandes (ONR Neural Learning)
     juce::String voiceOf;
     std::array<float, kBands> voiceBands {};   // dB, comme Profile::bands ; -100 : pas mesuré (hors 160 Hz .. 8 kHz)
     float voiceDyn = 0.0f, voiceRt60 = 0.0f, voiceWet = -60.0f, voiceEcho = 0.0f;
@@ -104,7 +105,9 @@ struct ArtistStyle
 };
 std::shared_ptr<const std::vector<ArtistStyle>> brainArtists();
 juce::File brainFolder();
-void reloadBrain();                                   // après un téléchargement ou un nouvel artiste en cache
+void reloadBrain();
+juce::var brainCorrections();                     // « corrections » du cerveau en service
+bool installBrainIfNewer (const juce::var& brain);  // un cerveau téléchargé : gardé (brain.json) et chargé s'il est plus récent                                   // après un téléchargement ou un nouvel artiste en cache
 void applyArtist (Hints&, const ArtistStyle&);
 ArtistStyle artistFromVar (const juce::var&);        // une fiche lue dans le JSON (du cerveau ou du serveur)
 

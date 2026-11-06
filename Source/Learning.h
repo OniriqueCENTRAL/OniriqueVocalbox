@@ -33,7 +33,8 @@ inline juce::String installId()
 }
 } // namespace onirique::learning
 
-// Le réseau : seulement quand l'apprentissage est allumé, jamais sur le fil audio ni sur celui de l'interface (8 s au plus).
+// Le réseau : jamais sur le fil audio ni sur celui de l'interface (8 s au plus). Les envois (artiste inconnu, retours) seulement quand
+// l'apprentissage est allumé ; la lecture du cerveau publié (fetchBrain), pour tous.
 namespace onirique::learning
 {
 inline const char* kServer = "https://onirique.store";
@@ -55,6 +56,21 @@ inline bool postFeedback (const juce::var& payload)
                           .withConnectionTimeoutMs (8000).withExtraHeaders ("Content-Type: application/json");
     auto in = url.createInputStream (opts);
     return in != nullptr;
+}
+
+/** Le dernier cerveau publié (ONR Neural Learning : le fichier livré enrichi par les retours des utilisateurs). Demandé une
+ *  fois par jour au plus, à tous (rien n'est envoyé : une simple lecture, comme une mise à jour) ; vide si pas de réponse. */
+inline juce::var fetchBrain()
+{
+    const auto stamp = file().getSiblingFile ("brain-check.txt");
+    const auto now = juce::Time::currentTimeMillis();
+    if (now - stamp.loadFileAsString().getLargeIntValue() < 20LL * 3600 * 1000) return {};
+    stamp.getParentDirectory().createDirectory();
+    stamp.replaceWithText (juce::String (now));
+    const auto opts = juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress).withConnectionTimeoutMs (5000);
+    if (auto in = juce::URL (juce::String (kServer) + "/api/vocalbox/brain").createInputStream (opts))
+        return juce::JSON::parse (in->readEntireStreamAsString());
+    return {};
 }
 
 /** Un artiste trouvé par le serveur, gardé sur ce poste (artists-cache.json, lu par le cerveau) : plus besoin de le redemander. */

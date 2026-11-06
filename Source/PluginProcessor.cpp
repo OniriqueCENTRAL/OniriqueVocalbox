@@ -1,6 +1,7 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include "Learning.h"
+#include "MixAnalysis.h"
 
 using namespace onirique;
 
@@ -16,6 +17,8 @@ OniriqueVocalBoxAudioProcessor::OniriqueVocalBoxAudioProcessor()
 
     // presets d'avant la chaîne modulaire : leur chaîne se déduit de leurs anciens réglages
     presets.onLoad = [] (juce::ValueTree& s) { vocalbox::upgradeSnapshot (s); };
+    // ONR Neural Learning : le cerveau publié, s'il est plus récent que celui du plugin (une fois par jour, hors de l'audio)
+    learnPool.addJob ([] { onirique::mix::installBrainIfNewer (onirique::learning::fetchBrain()); });
     apvts.state.setProperty ("preset", "Init", nullptr);   // l'état de départ : les valeurs par défaut
     vocalbox::importOldUserPresets (presets);
     startTimerHz (10);

@@ -448,6 +448,14 @@ juce::String plainText (juce::String t)
 
 juce::SpinLock brainLock;
 std::shared_ptr<const std::vector<ArtistStyle>> brainNow;
+juce::var correctionsNow;   // « corrections » du cerveau en service (global : décalages appris sur toutes les demandes)
+// un cerveau est plus récent : version (le fichier du dépôt) plus haute, ou même version et révision (ce qu'ONR Neural Learning
+// y a ajouté sur le serveur) plus haute
+bool newerBrain (const juce::var& a, const juce::var& b)
+{
+    const int va = (int) a["version"], vb = (int) b["version"];
+    return va != vb ? va > vb : (int) a.getProperty ("revision", 0) > (int) b.getProperty ("revision", 0);
+}
 
 std::shared_ptr<const std::vector<ArtistStyle>> loadBrain()
 {
@@ -472,8 +480,13 @@ std::shared_ptr<const std::vector<ArtistStyle>> loadBrain()
     if (const auto env = juce::SystemStats::getEnvironmentVariable ("VOCALBOX_BRAIN", {}); env.isNotEmpty())   // le banc d'essai
         shipped = juce::JSON::parse (juce::File (env));
     const auto newer = juce::JSON::parse (brainFolder().getChildFile ("brain.json"));
-    const bool useNewer = newer.isObject() && (int) newer["version"] > (int) shipped["version"];
-    addFrom (useNewer ? newer : shipped, true);
+    const bool useNewer = newer.isObject() && newerBrain (newer, shipped);
+    const auto& inUse = useNewer ? newer : shipped;
+    addFrom (inUse, true);
+    {
+        const juce::SpinLock::ScopedLockType l (brainLock);
+        correctionsNow = inUse["corrections"];
+    }
     addFrom (juce::JSON::parse (brainFolder().getChildFile ("artists-cache.json")), false);
     return list;
 }
@@ -494,6 +507,29 @@ std::shared_ptr<const std::vector<ArtistStyle>> brainArtists()
     const juce::SpinLock::ScopedLockType l (brainLock);
     if (brainNow == nullptr) brainNow = fresh;
     return brainNow;
+}
+
+juce::var brainCorrections()
+{
+    brainArtists();
+    const juce::SpinLock::ScopedLockType l (brainLock);
+    return correctionsNow;
+}
+
+bool installBrainIfNewer (const juce::var& candidate)
+{
+    if (! candidate.isObject() || candidate["artists"].getArray() == nullptr) return false;
+    juce::var shipped;
+   #if __has_include (<BinaryData.h>)
+    shipped = juce::JSON::parse (juce::String::fromUTF8 (BinaryData::vocalboxbrain_json, BinaryData::vocalboxbrain_jsonSize));
+   #endif
+    const auto f = brainFolder().getChildFile ("brain.json");
+    const auto have = juce::JSON::parse (f);
+    if (! newerBrain (candidate, shipped) || (have.isObject() && ! newerBrain (candidate, have))) return false;
+    f.getParentDirectory().createDirectory();
+    if (! f.replaceWithText (juce::JSON::toString (candidate))) return false;
+    reloadBrain();
+    return true;
 }
 
 void reloadBrain()
@@ -656,6 +692,15 @@ Hints parseHints (const juce::String& text)
     h.dark = juce::jlimit (0.0f, 1.0f, h.dark);
     h.comp = juce::jlimit (-1.0f, 1.0f, h.comp);
     h.sat = juce::jlimit (0.0f, 1.0f, h.sat);
+    // ONR Neural Learning : ce que les utilisateurs retouchent sur toutes les demandes (décalages bornés, appris sur le serveur)
+    if (const auto c = brainCorrections()["global"]; c.isObject())
+    {
+        auto num = [&c] (const char* k) { return juce::jlimit (-0.25f, 0.25f, (float) (double) c.getProperty (juce::Identifier (k), 0.0)); };
+        h.bright = juce::jmax (0.0f, h.bright + num ("bright")); h.air = juce::jmax (0.0f, h.air + num ("air"));
+        h.warm = juce::jmax (0.0f, h.warm + num ("warm")); h.dark = juce::jmax (0.0f, h.dark + num ("dark"));
+        h.comp = juce::jlimit (-1.0f, 1.0f, h.comp + num ("comp")); h.sat = juce::jmax (0.0f, h.sat + num ("sat"));
+        h.reverbBias = num ("reverb"); h.delayBias = num ("delay");
+    }
     return h;
 }
 
@@ -1031,6 +1076,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& h)
     // ---- 10. REVERB : la queue de la référence, sinon l'espace demandé, sinon celui d'une voix mixée (plate ~1,8 s)
     {
         float send = h.reverb >= 0.0f ? h.reverb : 0.26f;
+        send = juce::jmax (0.0f, send + h.reverbBias);   // ce qu'ONR Neural Learning a appris
         float decay = h.reverbSize >= 0.0f ? 0.8f + 2.7f * h.reverbSize : 1.8f;
         if (tgt.valid && tgt.rt60 > 0.0f && ! h.reverbExplicit)
         {
@@ -1060,6 +1106,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& h)
     {
         float amount = h.delay;
         if (tgt.valid && tgt.echoAmount > 0.0f) amount = juce::jmax (amount, 0.3f + 0.4f * tgt.echoAmount);
+        if (amount > 0.05f) amount = juce::jmax (0.06f, amount + h.delayBias);
         if (amount > 0.05f)
         {
             Setting s { modules::delay, 0, {} };
