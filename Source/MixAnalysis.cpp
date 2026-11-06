@@ -578,16 +578,53 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
                  + u8 (" dB sur les crêtes) puis LA-2A (≈ −") + juce::String (juce::roundToInt (grOpto)) + " dB)");
     }
 
-    // ---- 6. MULTIBAND : un mix « bien contrôlé » demandé
-    if (h.controlled)
+    // ---- 6. MULTIBAND : chaque zone de la voix tenue à part, 4 à 5 dB de réduction ; ses gains finissent de la façonner.
+    //      Quand un mix « bien contrôlé » est demandé, quand la voix est très inégale, ou quand elle doit être très en avant.
+    if (h.controlled || need >= 6.0f || h.comp > 0.5f)
     {
         Setting s { modules::multi, 0, {} };
-        const float offs[4] { -9.0f, -5.0f, -7.0f, -12.0f };   // chaque bande a moins d'énergie que la voix entière
-        for (int b = 0; b < 4; ++b) put (s, ids::mbThr[b], juce::jlimit (-60.0f, 0.0f, L + offs[b]));
+        // la réduction visée : 4 dB, jusqu'à 5 pour une voix très maîtrisée, un peu moins pour un rendu naturel
+        const float gr = juce::jlimit (3.0f, 5.0f, 4.0f + (h.controlled ? 0.6f : 0.0f) + 0.08f * juce::jmax (0.0f, need - 6.0f)
+                                                    + 0.5f * juce::jmax (0.0f, h.comp) - 0.8f * juce::jmax (0.0f, -h.comp));
+        // l'énergie de la voix dans chaque bande (coupures 200 Hz, 1,5 kHz, 6 kHz), par rapport à la voix entière
+        const float edges[5] { 20.0f, 200.0f, 1500.0f, 6000.0f, 20000.0f };
+        double all = 0.0, part[4] {};
+        for (int b = 0; b < kBands; ++b)
+        {
+            const double pw = std::pow (10.0, (src.valid ? src.bands[(size_t) b] : kDefaultTarget[b]) / 10.0);
+            all += pw;
+            for (int k = 0; k < 4; ++k) if (kCentres[b] >= edges[k] && kCentres[b] < edges[k + 1]) part[k] += pw;
+        }
+        // l'écart à la cible dans chaque bande : ce que les gains peuvent encore façonner, au-delà de l'EQ
+        auto gap = [&] (float lo, float hi)
+        {
+            float v = 0.0f; int cnt = 0;
+            for (int b = 0; b < kBands; ++b)
+                if (kCentres[b] >= lo && kCentres[b] < hi) { v += src.valid ? target[(size_t) b] - src.bands[(size_t) b] : 0.0f; ++cnt; }
+            return cnt > 0 ? v / (float) cnt : 0.0f;
+        };
+        // 3:1 et un genou large : environ 2/3 du dépassement est retiré ; les graves et les aigus un peu moins pressés
+        const float bandGr[4] { 0.8f * gr, gr, gr, 0.8f * gr };
+        const float muddy = src.valid ? juce::jmax (0.0f, (src.bands[11] + src.bands[12] + src.bands[13]) / 3.0f - (target[11] + target[12] + target[13]) / 3.0f) : 0.0f;
+        const float shape[4] {
+            juce::jlimit (-2.0f, 0.5f, 0.25f * gap (100.0f, 200.0f) - 0.5f),                                  // LOW : des graves tenus (rien à gagner sous 100 Hz)
+            juce::jlimit (-2.0f, 1.5f, 0.35f * gap (200.0f, 1500.0f) - 0.4f * muddy + (thin ? 0.8f : 0.0f)),   // LO-MID : le corps, sans la boue
+            juce::jlimit (-1.5f, 1.0f, 0.2f * gap (1500.0f, 6000.0f) + 0.3f + 0.3f * juce::jmax (0.0f, h.comp) + 0.4f * h.bright - 0.6f * h.dark),   // HI-MID : la présence (l'EQ en a déjà donné)
+            juce::jlimit (-1.5f, 1.0f, 0.2f * gap (6000.0f, 16000.0f) + 0.6f * h.air - 0.8f * h.dark) };      // HIGH : l'air (l'EQ et l'EQ ANALOG en donnent déjà)
+        static const char* names[4] { "LOW", "LO-MID", "HI-MID", "HIGH" };
+        juce::StringArray gains;
+        for (int k = 0; k < 4; ++k)
+        {
+            const float bandLevel = L + (float) (10.0 * std::log10 (juce::jmax (1.0e-9, part[k] / juce::jmax (1.0e-9, all))));
+            put (s, ids::mbThr[k], std::round (juce::jlimit (-60.0f, 0.0f, bandLevel - bandGr[k] / 0.667f) * 10.0f) / 10.0f);
+            const float g = juce::jlimit (-6.0f, 9.0f, 0.8f * bandGr[k] + shape[k]);   // la réduction compensée, et le façonnage
+            put (s, ids::mbGain[k], std::round (g * 10.0f) / 10.0f);
+            gains.add (juce::String (names[k]) + " " + dbText (g));
+        }
         put (s, ids::mbAttack, 12.0f);
         put (s, ids::mbRelease, 160.0f);
         plan.modules.push_back (s);
-        rep.add (u8 ("Multiband : chaque zone de la voix tenue à part (mix bien contrôlé)"));
+        rep.add (u8 ("Multiband : environ −") + juce::String (gr, 1) + u8 (" dB par zone pour une voix maîtrisée · gains ") + gains.joinIntoString (u8 (" · ")));
     }
 
     // ---- 7. DE-ESSER : après les compressions et l'EQ, qui font ressortir les S

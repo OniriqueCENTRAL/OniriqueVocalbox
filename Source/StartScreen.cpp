@@ -172,13 +172,6 @@ void StartScreen::paint (juce::Graphics& g)
     const float orbit = R * 1.32f;
     g.setColour (juce::Colours::white.withAlpha (0.06f + 0.10f * dropGlow));
     g.drawEllipse (juce::Rectangle<float> (2.0f * orbit, 2.0f * orbit).withCentre (c), 1.0f);
-    {
-        const float a = t * 0.35f;
-        const juce::Point<float> sp (c.x + orbit * std::sin (a), c.y - orbit * std::cos (a));
-        ui::softGlowEllipse (g, juce::Rectangle<float> (6.0f * u, 6.0f * u).withCentre (sp), cEmber.withAlpha (0.9f), 10.0f * u);
-        g.setColour (cBone);
-        g.fillPath (ui::starPath (sp, 6.0f * u, a));
-    }
     // pendant l'écoute : l'orbite se remplit de braise au fil des 10 s de voix
     if (stage == Stage::listening && progress > 0.002f)
     {
@@ -189,6 +182,17 @@ void StartScreen::paint (juce::Graphics& g)
         ui::softGlow (g, stroke, cEmber.withAlpha (0.8f), 10.0f * u);
         g.setColour (cEmber);
         g.strokePath (arc, juce::PathStrokeType (2.5f * u, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    }
+    // l'étoile qui tourne, par-dessus l'orbite et son arc : une lueur douce, l'étoile claire et son cœur blanc
+    {
+        const float a = t * 0.35f;
+        const juce::Point<float> sp (c.x + orbit * std::sin (a), c.y - orbit * std::cos (a));
+        ui::softGlowEllipse (g, juce::Rectangle<float> (5.0f * u, 5.0f * u).withCentre (sp), cEmber.withAlpha (0.35f), 7.0f * u);
+        ui::softGlowEllipse (g, juce::Rectangle<float> (3.0f * u, 3.0f * u).withCentre (sp), juce::Colours::white.withAlpha (0.35f), 4.0f * u);
+        g.setColour (cBone);
+        g.fillPath (ui::starPath (sp, 7.5f * u, a));
+        g.setColour (juce::Colours::white);
+        g.fillEllipse (juce::Rectangle<float> (2.2f * u, 2.2f * u).withCentre (sp));
     }
 
     // les points : rotation lente, ondes sphériques qui partent d'un pôle et parcourent la surface ; plus la voix est forte,
