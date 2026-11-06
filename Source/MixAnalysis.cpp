@@ -727,7 +727,8 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
     }
 
     // ---- 3. EQ : l'écart entre la prise et la cible (±4 dB lissés), présence pour la mettre en avant
-    float highBoost = 0.0f, mudCut = 0.0f;
+    float highBoost = 0.0f, mudCut = 0.0f, mudExcess = 0.0f, compGr = 0.0f;
+    bool multiUsed = false;
     // chant ou rap : d'après la prise (notes tenues), et ce que la demande en dit
     const float sung = juce::jlimit (0.0f, 1.0f, (src.valid ? src.sung : 0.0f) + h.sung);
     {
@@ -772,6 +773,7 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
                 ex += d / 5.0f;
                 if (d > worst) { worst = d; at = b; }
             }
+            mudExcess = juce::jmax (0.0f, ex);
             if (ex > 1.5f)
             {
                 float k = 1.0f;
@@ -855,6 +857,7 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
         put (fet, ids::fetRatio, h.comp > 0.6f ? 1.0f : 0.0f);
         plan.modules.push_back (fet);
         const float grOpto = juce::jlimit (2.0f, 7.0f, 2.0f + 0.35f * need);
+        compGr = grFet + grOpto;
         const float level = L + 0.4f * grFet;
         Setting opto { modules::opto, 0, {} };
         put (opto, ids::laPeak, std::round (juce::jlimit (0.0f, 100.0f, -(level - 1.5f * grOpto) / 0.45f)));   // seuil -0,45 × PEAK
@@ -866,7 +869,8 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
 
     // ---- 6. MULTIBAND : chaque zone de la voix tenue à part, 4 à 5 dB de réduction ; ses gains finissent de la façonner.
     //      Quand un mix « bien contrôlé » est demandé, quand la voix est très inégale, ou quand elle doit être très en avant.
-    if (h.controlled || need >= 6.0f || h.comp > 0.5f)
+    multiUsed = h.controlled || need >= 6.0f || h.comp > 0.5f;
+    if (multiUsed)
     {
         Setting s { modules::multi, 0, {} };
         // la réduction visée : 4 dB, jusqu'à 5 pour une voix très maîtrisée, un peu moins pour un rendu naturel
@@ -948,8 +952,15 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
     //      légèrement (MUD, coupe-bas 85 Hz) et on rend la clarté (HI, AIR), sans empiler sur l'air déjà ajouté par l'EQ
     {
         Setting s { modules::analog, 0, {} };
-        // la boue déjà coupée à sa fréquence par l'EQ du début : ici, seulement ce que les compressions ont fait remonter
-        const float mud = juce::jlimit (1.0f, 4.0f, 1.5f + 0.15f * need + (h.warm > 0.3f ? 0.0f : 0.5f) + 0.3f * mudCut);
+        // SECONDE COUCHE DE DEMUD : ce que la voix récupère de boue après les compresseurs. Elle est estimée : la boue que l'EQ
+        // du début a laissée (mesurée sur la prise, moins sa coupe), plus ce que la compression remonte (elle écrase les crêtes,
+        // le bas-médium tenu des voyelles ressort d'autant plus que la réduction est forte), moins ce que le multiband tient
+        // déjà dans le bas-médium. Chaleur demandée ou voix chantée : on en garde davantage. Rien à reprendre : MUD reste à 0.
+        const float residual = juce::jmax (0.0f, mudExcess - std::abs (mudCut) / 0.8f);
+        float regained = 0.6f * residual + 0.09f * compGr + (h.parallel || h.comp > 0.4f ? 0.4f : 0.0f)
+                         - (multiUsed ? 0.5f : 0.0f) - (h.warm > 0.3f ? 0.8f : 0.0f) - 0.4f * sung;
+        if (src.valid && mudExcess <= 0.0f) regained *= 0.5f;   // prise sans boue : très peu à reprendre
+        const float mud = regained < 0.5f ? 0.0f : juce::jlimit (1.0f, 5.0f, 0.6f + 1.4f * regained);
         const float hi = juce::jlimit (0.0f, 4.0f, 1.5f + 1.5f * h.bright - 1.5f * h.dark);
         const float air = juce::jlimit (0.0f, 5.0f, 2.0f + 3.0f * h.air - 0.6f * juce::jmax (0.0f, highBoost - 2.0f) - 2.0f * h.dark);
         put (s, ids::mud, std::round (mud * 10.0f) / 10.0f);
@@ -957,8 +968,10 @@ Plan buildPlan (const Profile& src, const Profile& tgt, const Hints& h)
         put (s, ids::air, std::round (air * 10.0f) / 10.0f);
         put (s, ids::lowCut, 1.0f);
         plan.modules.push_back (s);
-        rep.add (u8 ("EQ analog après les compressions : boue retirée (MUD ") + juce::String (mud, 1) + u8 ("), clarté HI +") + juce::String (hi, 1)
-                 + " et AIR +" + juce::String (air, 1));
+        rep.add (u8 ("EQ analog après les compressions : ")
+                 + (mud > 0.0f ? u8 ("seconde couche de DeMud (MUD ") + juce::String (mud, 1) + u8 (", la boue que les compresseurs font remonter), ")
+                               : u8 ("pas de boue à reprendre, "))
+                 + u8 ("clarté HI +") + juce::String (hi, 1) + " et AIR +" + juce::String (air, 1));
     }
 
     // ---- 9 bis. COMPRESSION PARALLÈLE en fin de traitement : de la densité et du punch quand la voix doit passer devant
