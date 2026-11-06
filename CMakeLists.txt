@@ -60,7 +60,7 @@ target_sources(OniriqueVocalBox PRIVATE
     Source/Widgets.cpp)
 
 # logo du site (sigil blanc), intégré au binaire
-juce_add_binary_data(OniriqueAssets SOURCES Resources/logo.png)
+juce_add_binary_data(OniriqueAssets SOURCES Resources/logo.png Resources/vocalbox-brain.json)   # le cerveau de CRÉER LE MIX
 
 target_include_directories(OniriqueVocalBox PRIVATE Source)
 

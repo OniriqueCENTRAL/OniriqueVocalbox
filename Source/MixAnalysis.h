@@ -76,9 +76,26 @@ struct Hints
     bool parallel = false;       // densité, punch : COMPRESSION PARALLÈLE
     juce::StringArray understood;   // ce qui a été compris (pour le compte rendu)
     juce::StringArray unknown;      // les mots non compris (des noms d'artistes, souvent)
+    juce::StringArray artists;      // les artistes reconnus par le cerveau (leur fiche est appliquée)
 };
 
 Hints parseHints (const juce::String& text);
+
+/*  LE CERVEAU : la façon de mixer la voix de chaque artiste. Il est livré dans le plugin (Resources/vocalbox-brain.json) ;
+    une version plus récente téléchargée (AppData/Onirique/VocalBox/brain.json) prend sa place, et les artistes trouvés par le
+    serveur ONIRIQUE s'y ajoutent (artists-cache.json). Un nom d'artiste reconnu dans la demande applique sa fiche, sur les
+    mêmes échelles que les mots de la barre de recherche. */
+struct ArtistStyle
+{
+    juce::String name, genre;
+    juce::StringArray aliases;   // en minuscules, sans accents
+    juce::var hints;             // bright, air, warm, dark, comp, reverb, reverbSize, delay, sat, satType, doubler, chorus, flanger, phone, controlled, parallel, dreamy
+};
+std::shared_ptr<const std::vector<ArtistStyle>> brainArtists();
+juce::File brainFolder();
+void reloadBrain();                                   // après un téléchargement ou un nouvel artiste en cache
+void applyArtist (Hints&, const ArtistStyle&);
+ArtistStyle artistFromVar (const juce::var&);        // une fiche lue dans le JSON (du cerveau ou du serveur)
 
 struct Setting
 {

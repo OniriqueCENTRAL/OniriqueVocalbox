@@ -1,6 +1,10 @@
 #include "MixAnalysis.h"
 #include "Modules.h"
 #include "onirique_separate.hpp"
+#include <memory>
+#if __has_include (<BinaryData.h>)
+ #include <BinaryData.h>   // le cerveau livré dans le plugin
+#endif
 
 namespace onirique::mix
 {
@@ -340,6 +344,114 @@ bool separateVoice (const juce::AudioBuffer<float>& song, double sr, std::vector
 }
 
 //==============================================================================
+//==============================================================================
+// LE CERVEAU : la façon de mixer des artistes
+namespace
+{
+juce::String plainText (juce::String t)
+{
+    // minuscules sans accents : comme la barre de recherche
+    t = t.toLowerCase();
+    const char* from[] { "é", "è", "ê", "ë", "à", "â", "î", "ï", "ô", "ù", "û", "ç", "’" };
+    const char* to[] { "e", "e", "e", "e", "a", "a", "i", "i", "o", "u", "u", "c", "'" };
+    for (int i = 0; i < 13; ++i) t = t.replace (juce::String::fromUTF8 (from[i]), to[i]);
+    return t.trim();
+}
+
+juce::SpinLock brainLock;
+std::shared_ptr<const std::vector<ArtistStyle>> brainNow;
+
+std::shared_ptr<const std::vector<ArtistStyle>> loadBrain()
+{
+    auto list = std::make_shared<std::vector<ArtistStyle>>();
+    auto addFrom = [&list] (const juce::var& root, bool replace)
+    {
+        if (auto* a = root["artists"].getArray())
+            for (const auto& v : *a)
+            {
+                auto s = artistFromVar (v);
+                if (s.name.isEmpty() || s.aliases.isEmpty()) continue;
+                auto same = std::find_if (list->begin(), list->end(), [&s] (const ArtistStyle& o) { return o.name.equalsIgnoreCase (s.name); });
+                if (same == list->end()) list->push_back (s);
+                else if (replace) *same = s;
+            }
+    };
+    // 1. le cerveau livré dans le plugin ; 2. une version plus récente téléchargée ; 3. les artistes trouvés par le serveur
+    juce::var shipped;
+   #if __has_include (<BinaryData.h>)
+    shipped = juce::JSON::parse (juce::String::fromUTF8 (BinaryData::vocalboxbrain_json, BinaryData::vocalboxbrain_jsonSize));
+   #endif
+    if (const auto env = juce::SystemStats::getEnvironmentVariable ("VOCALBOX_BRAIN", {}); env.isNotEmpty())   // le banc d'essai
+        shipped = juce::JSON::parse (juce::File (env));
+    const auto newer = juce::JSON::parse (brainFolder().getChildFile ("brain.json"));
+    const bool useNewer = newer.isObject() && (int) newer["version"] > (int) shipped["version"];
+    addFrom (useNewer ? newer : shipped, true);
+    addFrom (juce::JSON::parse (brainFolder().getChildFile ("artists-cache.json")), false);
+    return list;
+}
+} // namespace
+
+juce::File brainFolder()
+{
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("Onirique").getChildFile ("VocalBox");
+}
+
+std::shared_ptr<const std::vector<ArtistStyle>> brainArtists()
+{
+    {
+        const juce::SpinLock::ScopedLockType l (brainLock);
+        if (brainNow != nullptr) return brainNow;
+    }
+    auto fresh = loadBrain();
+    const juce::SpinLock::ScopedLockType l (brainLock);
+    if (brainNow == nullptr) brainNow = fresh;
+    return brainNow;
+}
+
+void reloadBrain()
+{
+    auto fresh = loadBrain();
+    const juce::SpinLock::ScopedLockType l (brainLock);
+    brainNow = fresh;
+}
+
+ArtistStyle artistFromVar (const juce::var& v)
+{
+    ArtistStyle s;
+    s.name = v["name"].toString().trim();
+    s.genre = v["genre"].toString();
+    if (auto* a = v["aliases"].getArray())
+        for (const auto& x : *a)
+            if (const auto t = plainText (x.toString()); t.length() >= 2) s.aliases.addIfNotAlreadyThere (t);
+    if (s.name.isNotEmpty()) s.aliases.addIfNotAlreadyThere (plainText (s.name));
+    s.hints = v["hints"];
+    return s;
+}
+
+void applyArtist (Hints& h, const ArtistStyle& a)
+{
+    const auto& x = a.hints;
+    auto has = [&x] (const char* k) { return x.hasProperty (juce::Identifier (k)); };
+    auto num = [&x] (const char* k) { return (float) (double) x.getProperty (juce::Identifier (k), 0.0); };
+    // la couleur et la tenue de l'artiste s'ajoutent à ce qui est dit ; l'espace et les effets prennent le plus marqué
+    h.bright += 0.8f * num ("bright"); h.air += 0.8f * num ("air"); h.warm += 0.8f * num ("warm"); h.dark += 0.8f * num ("dark");
+    h.comp += 0.8f * num ("comp"); h.sat += 0.8f * num ("sat");
+    if (has ("reverb") && ! h.reverbExplicit) h.reverb = juce::jmax (h.reverb, num ("reverb"));
+    if (has ("reverbSize")) h.reverbSize = juce::jmax (h.reverbSize, num ("reverbSize"));
+    if (has ("delay")) h.delay = juce::jmax (h.delay, num ("delay"));
+    if (has ("satType") && h.satType < 0) h.satType = juce::jlimit (0, 3, (int) num ("satType"));
+    h.doubler = juce::jmax (h.doubler, num ("doubler"));
+    h.chorus = juce::jmax (h.chorus, num ("chorus"));
+    h.flanger = juce::jmax (h.flanger, num ("flanger"));
+    h.phone = juce::jmax (h.phone, num ("phone"));
+    if ((bool) x.getProperty ("controlled", false)) h.controlled = true;
+    if ((bool) x.getProperty ("parallel", false)) h.parallel = true;
+    if ((bool) x.getProperty ("dreamy", false)) h.dreamy = true;
+    h.artists.addIfNotAlreadyThere (a.name);
+    h.understood.addIfNotAlreadyThere (juce::String::fromUTF8 ("façon ") + a.name);
+}
+
+
 Hints parseHints (const juce::String& text)
 {
     Hints h;
@@ -405,6 +517,17 @@ Hints parseHints (const juce::String& text)
     if (has ({ "double", "doublee", "doubled", "doubleur", "doubler", "stereo", "large", "wide", "epaisse", "thick" })) { h.doubler = juce::jmax (h.doubler, 0.6f); note ("doublée"); }
     if (has ({ "chorus" })) { h.chorus = 0.6f; note ("chorus"); }
     if (has ({ "flanger", "flange", "avion", "jet" })) { h.flanger = 0.6f; note ("flanger"); }
+
+    // les artistes que le cerveau connaît : leur façon de mixer la voix
+    if (const auto brain = brainArtists())
+        for (const auto& a : *brain)
+            for (const auto& alias : a.aliases)
+                if (joined.contains (" " + alias + " "))
+                {
+                    applyArtist (h, a);
+                    juce::StringArray kw; kw.addTokens (alias, " ", ""); used.addArray (kw);
+                    break;
+                }
 
     // les mots non compris : souvent des noms d'artistes
     static const juce::StringArray stop { "de", "la", "le", "les", "du", "des", "voix", "voice", "vocal", "vocals", "type", "facon", "style", "comme", "like",
