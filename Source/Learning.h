@@ -1,10 +1,10 @@
 #pragma once
 #include <juce_core/juce_core.h>
 
-/*  L'APPRENTISSAGE de CRÉER LE MIX : l'utilisateur choisit (menu ⋯, case désactivée au départ) d'aider VOCALBOX à progresser.
+/*  L'APPRENTISSAGE d’AUTO MIX : l'utilisateur choisit (menu ⋯, case désactivée au départ) d'aider VOCALBOX à progresser.
     Accepté, le plugin envoie au serveur ONIRIQUE, sans compte ni audio : le texte de la demande, le portrait de la voix
     (des mesures), la chaîne décidée, les retouches faites ensuite et la note 👍 / 👎 ; et il demande au serveur la fiche d'un
-    artiste que son cerveau ne connaît pas. Refusé, rien ne part : CRÉER LE MIX fonctionne seul, comme avant.
+    artiste que son cerveau ne connaît pas. Refusé, rien ne part : AUTO MIX fonctionne seul, comme avant.
     Le choix est gardé pour l'ordinateur : AppData/Onirique/VocalBox/learning.txt (« 1 » ou « 0 »). */
 namespace onirique::learning
 {

@@ -39,7 +39,7 @@ StartScreen::StartScreen (OniriqueVocalBoxAudioProcessor& p) : processor (p)
     search.onReturnKey = [this] { submit(); };
     addAndMakeVisible (search);
    #if ONIRIQUE_UI_TEST
-    // essais locaux : ONIRIQUE_UI_MIX="demande" lance CRÉER LE MIX à l'ouverture (ONIRIQUE_UI_REF=morceau de référence)
+    // essais locaux : ONIRIQUE_UI_MIX="demande" lance AUTO MIX à l'ouverture (ONIRIQUE_UI_REF=morceau de référence)
     if (const auto m = juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_MIX", {}); m.isNotEmpty())
     {
         search.setText (m, false);
@@ -85,7 +85,7 @@ juce::Rectangle<float> StartScreen::goArea() const
 {
     const float u = ui::unitOf (*this);
     const auto bar = barArea();
-    const float w = 22.0f * u + 14.0f * u + ui::textWidth (ui::css (ui::Face::mono, 11.0f * u, 0.14f), utf8 ("CRÉER LE MIX")) + 26.0f * u;
+    const float w = 22.0f * u + 14.0f * u + ui::textWidth (ui::css (ui::Face::mono, 11.0f * u, 0.14f), utf8 ("AUTO MIX")) + 26.0f * u;
     // une gélule qui épouse le bout de la barre (même arrondi, 5 de marge tout autour)
     return { bar.getRight() - 5.0f * u - w - 14.0f * u, bar.getY() + 5.0f * u, w + 14.0f * u, bar.getHeight() - 10.0f * u };
 }
@@ -255,7 +255,7 @@ void StartScreen::paint (juce::Graphics& g)
         g.drawText (line, juce::Rectangle<float> (0.0f, barArea().getY() - 34.0f * u, b.getWidth(), 16.0f * u), juce::Justification::centred, false);
     }
 
-    // la barre de recherche : gélule de verre, loupe, champ, bouton CRÉER LE MIX
+    // la barre de recherche : gélule de verre, loupe, champ, bouton AUTO MIX
     const auto bar = barArea();
     juce::Path pill; pill.addRoundedRectangle (bar, bar.getHeight() * 0.5f);
     ui::softGlow (g, pill, cEmber.withAlpha (0.18f + 0.25f * (search.hasKeyboardFocus (true) ? 1.0f : 0.0f)), 26.0f * u);
@@ -291,7 +291,7 @@ void StartScreen::paint (juce::Graphics& g)
     g.setColour (juce::Colours::white);
     g.fillPath (ui::starPath ({ go.getX() + 30.0f * u, go.getCentreY() }, 7.0f * u, t * 0.6f));
     g.setFont (ui::css (ui::Face::mono, 11.0f * u, 0.14f));
-    g.drawText (utf8 ("CRÉER LE MIX"), go.withTrimmedLeft (44.0f * u), juce::Justification::centredLeft, false);
+    g.drawText (utf8 ("AUTO MIX"), go.withTrimmedLeft (44.0f * u), juce::Justification::centredLeft, false);
 }
 
 void StartScreen::mouseMove (const juce::MouseEvent& e)
@@ -452,7 +452,7 @@ void StartScreen::apply()
 }
 
 //==============================================================================
-// L'APPRENTISSAGE : ce que CRÉER LE MIX vient de décider (la demande, le portrait de la voix en mesures, la chaîne), gardé par
+// L'APPRENTISSAGE : ce que AUTO MIX vient de décider (la demande, le portrait de la voix en mesures, la chaîne), gardé par
 // le processeur jusqu'à la note ou 10 minutes de retouches. Rien de tout ça si l'apprentissage est éteint.
 void StartScreen::armLearning()
 {

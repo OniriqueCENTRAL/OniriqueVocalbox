@@ -44,7 +44,7 @@ private:
     double t0 = 0.0, listenUntil = 0.0;
     bool dragging = false, overGo = false;
 
-    // CRÉER LE MIX : idle → listening (référence en calcul, prise en écoute) → report (compte rendu) → la chaîne
+    // AUTO MIX : idle → listening (référence en calcul, prise en écoute) → report (compte rendu) → la chaîne
     enum class Stage { idle, listening, report };
     Stage stage = Stage::idle;
     onirique::mix::Hints hints;
@@ -60,7 +60,7 @@ private:
     bool forceBuild = false;
 
     // L'APPRENTISSAGE (si l'utilisateur l'a allumé) : la fiche d'un artiste inconnu demandée au serveur pendant l'écoute,
-    // et ce que CRÉER LE MIX a décidé, gardé par le processeur jusqu'à la note
+    // et ce que AUTO MIX a décidé, gardé par le processeur jusqu'à la note
     juce::String requestText;
     std::thread lookup;
     std::atomic<bool> lookupFound { false };

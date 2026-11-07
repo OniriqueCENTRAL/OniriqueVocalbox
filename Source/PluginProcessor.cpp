@@ -220,7 +220,7 @@ void OniriqueVocalBoxAudioProcessor::processBlock (juce::AudioBuffer<float>& buf
     inputTap.push (ch[0], ch[1], total);    // analyseur : signal d'entrée
     if (capturing.load (std::memory_order_acquire))
     {
-        // CRÉER LE MIX : la prise en mono, sans les blocs silencieux (transport arrêté, blancs)
+        // AUTO MIX : la prise en mono, sans les blocs silencieux (transport arrêté, blancs)
         double e = 0.0;
         for (int i = 0; i < total; ++i) { const float m = numCh > 1 ? 0.5f * (ch[0][i] + ch[1][i]) : ch[0][i]; e += (double) m * m; }
         if (std::sqrt (e / total) > 1.0e-4)   // -80 dB : le transport arrêté ne compte pas, le fond de la pièce si

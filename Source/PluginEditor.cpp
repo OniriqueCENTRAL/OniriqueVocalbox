@@ -1033,7 +1033,7 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
         onirique::look::apply (juce::Colour ((juce::uint32) (0xff000000u | (t.getHexValue32() & 0xffffffu))));
    #endif
     bar.onThemeChanged = [this] { refreshTheme(); };
-    // le menu ⋯ : ONR NEURAL LEARNING, l'apprentissage de CRÉER LE MIX (désactivé tant que l'utilisateur ne l'allume pas)
+    // le menu ⋯ : ONR NEURAL LEARNING, l'apprentissage d’AUTO MIX (désactivé tant que l'utilisateur ne l'allume pas)
     bar.setMenuOption ("ONR NEURAL LEARNING", juce::String::fromUTF8 ("HELP VOCALBOX LEARN"),
                        juce::String::fromUTF8 ("Anonymous: your request, voice measurements, the chain and your tweaks. Never audio."),
                        [] { return onirique::learning::enabled(); },

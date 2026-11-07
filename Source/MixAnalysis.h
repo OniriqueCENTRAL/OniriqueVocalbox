@@ -5,7 +5,7 @@
 #include <array>
 #include <vector>
 
-/*  CRÉER LE MIX : ce que le plugin entend d'une voix, et la chaîne qu'il en déduit.
+/*  AUTO MIX : ce que le plugin entend d'une voix, et la chaîne qu'il en déduit.
 
     - Profile : le portrait d'une voix (timbre en tiers d'octave, dynamique, sifflantes, souffle, plosives, réverbe et
       échos autour d'elle). Il se mesure sur la prise de l'utilisateur (10 s) et sur la voix d'un morceau de référence.

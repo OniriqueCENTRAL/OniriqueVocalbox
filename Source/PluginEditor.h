@@ -117,7 +117,7 @@ private:
     float lit = 0.0f;
 };
 
-// L'APPRENTISSAGE : « CE MIX TE PLAÎT ? OUI · BOF », dans l'en-tête de la chaîne, tant qu'un mix de CRÉER LE MIX attend sa note
+// L'APPRENTISSAGE : « CE MIX TE PLAÎT ? OUI · BOF », dans l'en-tête de la chaîne, tant qu'un mix d’AUTO MIX attend sa note
 class RateChip : public juce::Component, public Animated
 {
 public:

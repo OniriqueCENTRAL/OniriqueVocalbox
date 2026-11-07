@@ -61,7 +61,7 @@ target_sources(OniriqueVocalBox PRIVATE
     Source/dsp/cl1b/Opto.cpp)   # le CL1B : la cellule optique et la lampe de l'OptoBox
 
 # logo du site (sigil blanc), intégré au binaire
-juce_add_binary_data(OniriqueAssets SOURCES Resources/logo.png Resources/vocalbox-brain.json)   # le cerveau de CRÉER LE MIX
+juce_add_binary_data(OniriqueAssets SOURCES Resources/logo.png Resources/vocalbox-brain.json)   # le cerveau d’AUTO MIX
 
 target_include_directories(OniriqueVocalBox PRIVATE Source)
 
@@ -83,7 +83,7 @@ if(APPLE)
     target_compile_definitions(OniriqueVocalBox PUBLIC JUCE_COREGRAPHICS_RENDER_WITH_MULTIPLE_PAINT_CALLS=1)
 endif()
 
-# CRÉER LE MIX : séparation de la voix d'un morceau de référence (demucs.cpp + Eigen, MIT / MPL2), compilée à part
+# AUTO MIX : séparation de la voix d'un morceau de référence (demucs.cpp + Eigen, MIT / MPL2), compilée à part
 file(GLOB ONIRIQUE_DEMUCS_SOURCES ThirdParty/demucs/*.cpp)
 add_library(onirique_demucs STATIC ${ONIRIQUE_DEMUCS_SOURCES} ThirdParty/separation/onirique_separate.cpp ThirdParty/separation/onirique_model_res.cpp)
 target_include_directories(onirique_demucs PUBLIC ThirdParty/separation PRIVATE ThirdParty/demucs ThirdParty/eigen)
@@ -121,7 +121,7 @@ if(EXISTS "${ONIRIQUE_DEMUCS_MODEL}")
             COMMAND ${CMAKE_COMMAND} -E copy_if_different "${ONIRIQUE_DEMUCS_MODEL}" "$<TARGET_FILE_DIR:OniriqueVocalBox_Standalone>/")
     endif()
 else()
-    message(WARNING "Modèle de séparation absent (${ONIRIQUE_DEMUCS_MODEL}) : CRÉER LE MIX prendra la voix au centre du mix")
+    message(WARNING "Modèle de séparation absent (${ONIRIQUE_DEMUCS_MODEL}) : AUTO MIX prendra la voix au centre du mix")
 endif()
 
 target_link_libraries(OniriqueVocalBox

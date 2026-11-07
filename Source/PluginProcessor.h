@@ -76,7 +76,7 @@ public:
     // écoute d'une bande de l'EQ paramétrique : vraie seulement pendant qu'on tient une bande
     std::atomic<bool> peqListenHold { false };
 
-    // CRÉER LE MIX : la prise écoutée (mono, 10 s de voix ; les blocs silencieux ne comptent pas)
+    // AUTO MIX : la prise écoutée (mono, 10 s de voix ; les blocs silencieux ne comptent pas)
     void startCapture() noexcept { capPos.store (0); capturing.store (capLen > 0, std::memory_order_release); }
     void stopCapture() noexcept { capturing.store (false); }
     float captureProgress() const noexcept { return capLen > 0 ? (float) capPos.load() / (float) capLen : 0.0f; }
@@ -85,7 +85,7 @@ public:
     const std::vector<float>& capturedTake() const noexcept { return capBuf; }
     double captureRate() const noexcept { return currentRate; }
 
-    // L'APPRENTISSAGE (seulement si l'utilisateur l'a allumé, menu ⋯) : le mix monté par CRÉER LE MIX attend sa note
+    // L'APPRENTISSAGE (seulement si l'utilisateur l'a allumé, menu ⋯) : le mix monté par AUTO MIX attend sa note
     // (👍 / 👎) ou 10 minutes de retouches, puis part au serveur, anonyme, sans audio. Thread de l'interface.
     void learnArm (juce::var payload, std::vector<std::pair<juce::String, float>> applied);
     bool learnPending() const noexcept { return learnPayload.isObject(); }
@@ -110,7 +110,7 @@ private:
     std::atomic<float> outPeak { 0.0f }, autoGainDbShown { 0.0f };
     std::vector<float> capBuf;
     juce::var learnPayload;
-    std::vector<std::pair<juce::String, float>> learnApplied;   // les réglages posés par CRÉER LE MIX
+    std::vector<std::pair<juce::String, float>> learnApplied;   // les réglages posés par AUTO MIX
     double learnAt = 0.0;
     juce::ThreadPool learnPool { 1 };   // l'envoi, hors de l'interface ; attendu à la fermeture
     std::atomic<int> capPos { 0 };

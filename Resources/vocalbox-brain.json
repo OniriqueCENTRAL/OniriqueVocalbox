@@ -1,7 +1,7 @@
 {
   "version": 5,
   "updated": "2026-11-07",
-  "about": "Le cerveau de CRÉER LE MIX : la façon de mixer la voix de chaque artiste (couleur, tenue, espace, texture, effets), sur les échelles de la barre de recherche (0..1 ; comp -1..1 ; satType 0 lampe, 1 analog, 2 bande, 3 transformateur). Les corrections viennent de l'apprentissage (retouches et notes des utilisateurs qui l'ont accepté) : elles s'ajoutent aux réglages décidés.",
+  "about": "Le cerveau d’AUTO MIX : la façon de mixer la voix de chaque artiste (couleur, tenue, espace, texture, effets), sur les échelles de la barre de recherche (0..1 ; comp -1..1 ; satType 0 lampe, 1 analog, 2 bande, 3 transformateur). Les corrections viennent de l'apprentissage (retouches et notes des utilisateurs qui l'ont accepté) : elles s'ajoutent aux réglages décidés.",
   "artists": [
     { "name": "Travis Scott", "aliases": ["travis scott", "la flame", "cactus jack"], "genre": "rap",
       "hints": { "dark": 0.4, "air": 0.3, "comp": 0.6, "reverb": 0.45, "reverbSize": 0.75, "delay": 0.55, "sat": 0.35, "satType": 2, "doubler": 0.5, "parallel": true , "preamp": 0.6, "preampType": "mic", "peakComp": "cl1b" } },

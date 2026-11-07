@@ -1,4 +1,4 @@
-// La séparation de la voix pour CRÉER LE MIX : demucs.cpp sur plusieurs threads (le morceau découpé en parts qui se
+// La séparation de la voix pour AUTO MIX : demucs.cpp sur plusieurs threads (le morceau découpé en parts qui se
 // recouvrent de 0,75 s, recollées en fondu, comme threaded_inference.hpp de demucs.cpp).
 #include "onirique_separate.hpp"
 #include "model.hpp"
