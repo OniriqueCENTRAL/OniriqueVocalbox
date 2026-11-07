@@ -2921,6 +2921,7 @@ std::unique_ptr<ModulePanel> createModulePanel (OniriqueVocalBoxAudioProcessor& 
         case modules::plosive:
         {
             auto s = stdPanel (p, code, std::make_unique<WaveViz> (p, code));
+            s->topRow = { &s->toggle (ids::plosListen, "LISTEN") };
             s->knobs = { &s->knob (ids::plosive, "AMOUNT") };
             return s;
         }

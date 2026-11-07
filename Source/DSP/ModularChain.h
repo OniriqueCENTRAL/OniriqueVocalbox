@@ -191,17 +191,38 @@ private:
 class Plosive final : public ChainModule
 {
 public:
-    Plosive (juce::AudioProcessorValueTreeState& s, int k) : ChainModule (s, modules::plosive, k) { amt = raw (ids::plosive); }
+    Plosive (juce::AudioProcessorValueTreeState& s, int k) : ChainModule (s, modules::plosive, k) { amt = raw (ids::plosive); listen = raw (ids::plosListen); }
     int getLatencySamples() const noexcept override { return engine.getLatencySamples(); }
     float getReductionDb() const noexcept override { return engine.getReductionDb(); }
 
 private:
-    void prepareEngine (double rate, int factor, int) override { engine.prepare (rate, false, factor); }
+    void prepareEngine (double rate, int factor, int) override
+    {
+        engine.prepare (rate, false, factor);
+        for (auto& d : dry) d.prepare (engine.getLatencySamples());
+    }
     void updateEngine (bool, bool) noexcept override { engine.set (true, f (amt) * 0.01f); }
-    void processEngine (float* const* ch, int numCh, int n) noexcept override { engine.process (ch, numCh, n); }
-    void resetEngine() noexcept override { engine.reset(); }
+    // LISTEN : seulement ce qui est retiré (le son d'origine, aligné sur la latence, moins le son traité)
+    void processEngine (float* const* ch, int numCh, int n) noexcept override
+    {
+        // le son d'origine passe toujours dans sa ligne à retard : LISTEN s'allume sans saut
+        if (! b (listen)) { for (int c = 0; c < numCh; ++c) for (int i = 0; i < n; ++i) dry[c].process (ch[c][i]); engine.process (ch, numCh, n); return; }
+        for (int pos = 0; pos < n; pos += 512)
+        {
+            const int m = std::min (512, n - pos);
+            for (int c = 0; c < numCh; ++c)
+                for (int i = 0; i < m; ++i) tmp[(size_t) c][(size_t) i] = dry[c].process (ch[c][pos + i]);
+            float* part[2] { ch[0] + pos, numCh > 1 ? ch[1] + pos : nullptr };
+            engine.process (part, numCh, m);
+            for (int c = 0; c < numCh; ++c)
+                for (int i = 0; i < m; ++i) ch[c][pos + i] = tmp[(size_t) c][(size_t) i] - ch[c][pos + i];
+        }
+    }
+    void resetEngine() noexcept override { engine.reset(); for (auto& d : dry) d.reset(); }
     mini::DePlosive engine;
-    std::atomic<float>* amt = nullptr;
+    DelayLine dry[2];
+    std::array<std::array<float, 512>, 2> tmp {};
+    std::atomic<float>* amt = nullptr, *listen = nullptr;
 };
 
 class Reso final : public ChainModule

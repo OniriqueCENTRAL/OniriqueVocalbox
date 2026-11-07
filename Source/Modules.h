@@ -81,7 +81,7 @@ inline const std::vector<juce::String>& paramIds (int type)
         auto add = [&t] (int ty, std::initializer_list<const char*> l) { for (auto* s : l) t[(size_t) ty].push_back (s); };
         add (gate, { ids::gateOn, ids::gateThr, ids::gateRange, ids::gateAttack, ids::gateHold, ids::gateRelease, ids::gateHyst });
         add (noise, { ids::nsOn, ids::nsAmount });
-        add (plosive, { ids::plosOn, ids::plosive });
+        add (plosive, { ids::plosOn, ids::plosive, ids::plosListen });
         add (reso, { ids::resoOn, ids::resoAmt, ids::resoLow, ids::resoMid, ids::resoHigh, ids::resoLowFreq, ids::resoMidFreq,
                      ids::resoHighFreq, ids::resoLowWidth, ids::resoMidWidth, ids::resoHighWidth, ids::resoListen });
         add (deess, { ids::deessOn, ids::deessFreq, ids::deessAmt, ids::deessS, ids::deessT, ids::deessCH, ids::deessF, ids::deessClarity });

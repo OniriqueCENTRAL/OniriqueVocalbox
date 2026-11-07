@@ -135,6 +135,7 @@ namespace ids
     //      et les 16 emplacements de la chaîne (0 = vide, sinon le code du module : voir Modules.h)
     inline constexpr const char* nsOn      = "nsOn";
     inline constexpr const char* plosOn    = "plosOn";
+    inline constexpr const char* plosListen = "plosListen";   // PLOSIVES : seulement ce qui est retiré
     inline constexpr const char* fetOn     = "fetOn";
     inline constexpr const char* optoOn    = "optoOn";
     inline constexpr const char* satMix    = "satMix";
@@ -741,6 +742,7 @@ inline void addParams (std::vector<std::unique_ptr<juce::RangedAudioParameter>>&
         NormalisableRange<float> (0.0f, 100.0f, 0.1f), 100.0f, Attr().withLabel ("%").withStringFromValueFunction (pctText)));
 
     // ---- DE-CLICK, DE-BREATH, DE-REVERB : deux potards et LISTEN (seulement ce qui est retiré)
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::plosListen, 1 }, "Plosives Listen", false));
     p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::dclkOn, 1 }, "De-Click On", false));
     p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::dclkSens, 1 }, "De-Click Sensitivity",
         NormalisableRange<float> (0.0f, 100.0f, 0.1f), 50.0f, Attr().withLabel ("%").withStringFromValueFunction (pctText)));
