@@ -78,6 +78,10 @@ private:
     float groupY (int group) const;   // haut du titre du groupe, dans la carte
     int itemAt (juce::Point<float>) const;
     int freeCount (int type) const;
+    void paintItem (juce::Graphics&, int type, float hoverGlow, bool overlayOnly) const;
+    void paintCard (juce::Graphics&) const;
+    juce::Image cache;            // la carte au repos, dessinée une fois : le survol ne redessine que sa case
+    juce::int64 cacheKey = 0;
     OniriqueVocalBoxAudioProcessor& processor;
     float shown = 0.0f, target = 0.0f, hoverGlow[onirique::modules::numTypes] {};
     int hover = -1;

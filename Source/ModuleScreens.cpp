@@ -2735,7 +2735,7 @@ public:
         field.setFont (ui::css (ui::Face::body, 16.0f * u));
         field.applyFontToAllText (ui::css (ui::Face::body, 16.0f * u));
         feedback = r.removeFromTop (30.0f * u);
-        auto bottom = r.removeFromBottom (54.0f * u);
+        auto bottom = r.removeFromBottom (116.0f * u);
         r.removeFromBottom (12.0f * u);
         // les quatre macros, grandes, côte à côte
         const float gap = 24.0f * u, cw = (r.getWidth() - 3.0f * gap) / 4.0f;
@@ -2750,7 +2750,7 @@ public:
         roleLabel = juce::Rectangle<float> (bottom.getX(), bottom.getY(), 90.0f * u, bottom.getHeight());
         const float aw = again.idealWidth();
         again.setBounds (juce::Rectangle<float> (bottom.getRight() - aw, bottom.getCentreY() - 20.0f * u, aw, 40.0f * u).toNearestInt());
-        pan->setBounds (juce::Rectangle<float> (role.getRight() + 30.0f * u, bottom.getY() - 62.0f * u, 116.0f * u, bottom.getHeight() + 62.0f * u).toNearestInt());
+        pan->setBounds (juce::Rectangle<float> (role.getRight() + 30.0f * u, bottom.getY(), 110.0f * u, bottom.getHeight()).toNearestInt());   // dans sa rangée : ne touche plus les macros
         pan->setShowText (true, true);
         projectArea = juce::Rectangle<float> ((float) pan->getRight() + 20.0f * u, bottom.getY(), (float) again.getX() - pan->getRight() - 40.0f * u, bottom.getHeight());
     }

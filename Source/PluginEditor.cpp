@@ -559,32 +559,77 @@ int ModulePicker::itemAt (juce::Point<float> p) const
 
 void ModulePicker::tick()
 {
-    bool moved = ui::approach (shown, target, 0.16f);
-    for (int t = 0; t < modules::numTypes; ++t) moved |= ui::approach (hoverGlow[t], t == hover ? 1.0f : 0.0f, 0.16f);
-    if (target < 0.5f && shown < 0.01f && isVisible()) setVisible (false);
-    if (moved) repaint();
+    // l'ouverture et la fermeture : tout le menu bouge, il est redessiné ; le survol seul : seulement les cases qui changent
+    const bool opening = ui::approach (shown, target, 0.16f);
+    juce::Rectangle<int> dirty;
+    for (int t = 0; t < modules::numTypes; ++t)
+        if (ui::approach (hoverGlow[t], t == hover ? 1.0f : 0.0f, 0.16f))
+            dirty = dirty.getUnion (itemRect (t).expanded (20.0f * ui::unitOf (*this)).getSmallestIntegerContainer());
+    if (target < 0.5f && shown < 0.01f && isVisible()) { setVisible (false); cache = {}; }
+    if (opening) repaint();
+    else if (! dirty.isEmpty()) repaint (dirty);
 }
 
-void ModulePicker::paint (juce::Graphics& g)
+// une case du catalogue ; hg : la lueur du survol (0 au repos)
+void ModulePicker::paintItem (juce::Graphics& g, int t, float hg, bool overlayOnly) const
 {
     const float u = ui::unitOf (*this);
-    g.setColour (juce::Colour (5, 3, 4).withAlpha (0.66f * shown));
-    g.fillAll();
-    g.beginTransparencyLayer (shown);
+    const auto& inf = modules::info (t);
+    const bool free = freeCount (t) > 0;
+    const auto r = itemRect (t);
+    if (! overlayOnly)
+    {
+        if (! free) g.beginTransparencyLayer (0.4f);
+        ui::drawDemoGlass (g, r, 16.0f * u, u, true);
+    }
+    if (hg > 0.01f)
+    {
+        g.setColour (onirique::look::ember.withAlpha (0.16f * hg));
+        g.fillRoundedRectangle (r, 16.0f * u);
+        g.setColour (onirique::look::emberLit.withAlpha (0.45f * hg));
+        g.drawRoundedRectangle (r.reduced (0.5f), 16.0f * u, 1.0f);
+    }
+    // pastille de 44 : dégradé braise, liseré rose, lueur ; elle grossit au survol
+    auto ic = juce::Rectangle<float> (44.0f * u, 44.0f * u).withPosition (r.getX() + 16.0f * u, r.getCentreY() - 22.0f * u);
+    ic = ic.withSizeKeepingCentre (ic.getWidth() * (1.0f + 0.06f * hg), ic.getHeight() * (1.0f + 0.06f * hg));
+    if (hg > 0.01f || ! overlayOnly) ui::softGlowRect (g, ic, 14.0f * u, onirique::look::ember.withAlpha (0.3f + 0.35f * hg), 16.0f * u);
+    juce::ColourGradient grd (onirique::look::ember.withAlpha (0.45f), ic.getX() + ic.getWidth() * 0.3f, ic.getY() + ic.getHeight() * 0.2f,
+                              onirique::look::emberDeep.withAlpha (0.35f), ic.getRight() + ic.getWidth() * 0.2f, ic.getBottom() + ic.getHeight() * 0.2f, true);
+    g.setColour (onirique::look::litBottom.withMultipliedBrightness (0.55f).withAlpha (1.0f));
+    g.fillRoundedRectangle (ic, 14.0f * u);
+    g.setGradientFill (grd);
+    g.fillRoundedRectangle (ic, 14.0f * u);
+    g.setColour (onirique::look::emberPink.withAlpha (0.35f + 0.35f * hg));
+    g.drawRoundedRectangle (ic.reduced (0.5f), 14.0f * u, 1.0f);
+    ui::drawModuleIcon (g, t, ic.withSizeKeepingCentre (22.0f * u, 22.0f * u), onirique::look::emberPink.interpolatedWith (juce::Colours::white, 0.55f).interpolatedWith (juce::Colours::white, hg),
+                        1.8f * 22.0f * u / 24.0f);
+    if (overlayOnly) return;
+
+    const auto tr = juce::Rectangle<float> (ic.getRight() + 12.0f * u, r.getY() + 12.0f * u, r.getRight() - ic.getRight() - 28.0f * u, r.getHeight() - 24.0f * u);
+    const auto nf = ui::css (ui::Face::display, 13.0f * u);
+    g.setColour (cBone);
+    g.setFont (nf);
+    g.drawText (inf.name, tr.withHeight (nf.getHeight()), juce::Justification::centredLeft, false);
+    g.setColour (juce::Colour (0xffcdb8bb));
+    g.setFont (ui::css (ui::Face::body, 11.0f * u));
+    g.drawFittedText (juce::String::fromUTF8 (free ? inf.desc : "Trois exemplaires déjà dans la chaîne"),
+                      tr.withTrimmedTop (nf.getHeight() + 4.0f * u).toNearestInt(), juce::Justification::topLeft, 2, 1.0f);
+    if (! free) g.endTransparencyLayer();
+}
+
+// le menu au repos (carte, verres, pastilles, textes) : dessiné une fois, puis seulement recopié
+void ModulePicker::paintCard (juce::Graphics& g) const
+{
+    const float u = ui::unitOf (*this);
     const auto c = card();
     const float rad = 30.0f * u;
     g.setColour (juce::Colour (24, 12, 15));
     g.fillRoundedRectangle (c, rad);
     ui::drawDemoGlass (g, c, rad, u, true);
-
     const auto head = juce::Rectangle<float> (c.getX() + kPad * u, c.getY() + kPad * u, c.getWidth() - 2.0f * kPad * u, kHead * u);
     g.setColour (cBone);
     g.setFont (ui::css (ui::Face::display, 20.0f * u, 0.05f));
     g.drawText ("AJOUTER UN MODULE", head, juce::Justification::centredLeft, false);
-    const auto cr = closeRect();
-    drawLitButton (g, cr, 0.0f, closeHover ? 1.0f : 0.0f, u);
-    drawCross (g, cr.withSizeKeepingCentre (13.0f * u, 13.0f * u), closeHover ? juce::Colours::white : cBtn);
-
     for (int gi = 0; gi < 4; ++gi)
     {
         g.setColour (cHaze);
@@ -593,49 +638,45 @@ void ModulePicker::paint (juce::Graphics& g)
                     juce::Justification::centredLeft, false);
     }
     for (int t = 0; t < modules::numTypes; ++t)
-    {
-        if (! modules::inPicker (t)) continue;
-        const auto& inf = modules::info (t);
-        const bool free = freeCount (t) > 0;
-        const float hg = hoverGlow[t];
-        const auto r = itemRect (t).translated (0.0f, -2.0f * u * hg);
-        const float a = free ? 1.0f : 0.4f;
-        g.beginTransparencyLayer (a);
-        ui::drawDemoGlass (g, r, 16.0f * u, u, true);
-        if (hg > 0.01f)
-        {
-            g.setColour (onirique::look::ember.withAlpha (0.16f * hg));
-            g.fillRoundedRectangle (r, 16.0f * u);
-            g.setColour (onirique::look::emberLit.withAlpha (0.45f * hg));
-            g.drawRoundedRectangle (r.reduced (0.5f), 16.0f * u, 1.0f);
-        }
-        // pastille de 44 : dégradé braise, liseré rose, lueur ; elle grossit au survol
-        auto ic = juce::Rectangle<float> (44.0f * u, 44.0f * u).withPosition (r.getX() + 16.0f * u, r.getCentreY() - 22.0f * u);
-        ic = ic.withSizeKeepingCentre (ic.getWidth() * (1.0f + 0.06f * hg), ic.getHeight() * (1.0f + 0.06f * hg));
-        ui::softGlowRect (g, ic, 14.0f * u, onirique::look::ember.withAlpha (0.3f + 0.35f * hg), 16.0f * u);
-        juce::ColourGradient grd (onirique::look::ember.withAlpha (0.45f), ic.getX() + ic.getWidth() * 0.3f, ic.getY() + ic.getHeight() * 0.2f,
-                                  onirique::look::emberDeep.withAlpha (0.35f), ic.getRight() + ic.getWidth() * 0.2f, ic.getBottom() + ic.getHeight() * 0.2f, true);
-        g.setColour (onirique::look::litBottom.withMultipliedBrightness (0.55f));
-        g.fillRoundedRectangle (ic, 14.0f * u);
-        g.setGradientFill (grd);
-        g.fillRoundedRectangle (ic, 14.0f * u);
-        g.setColour (onirique::look::emberPink.withAlpha (0.35f + 0.35f * hg));
-        g.drawRoundedRectangle (ic.reduced (0.5f), 14.0f * u, 1.0f);
-        ui::drawModuleIcon (g, t, ic.withSizeKeepingCentre (22.0f * u, 22.0f * u), onirique::look::emberPink.interpolatedWith (juce::Colours::white, 0.55f).interpolatedWith (juce::Colours::white, hg),
-                            1.8f * 22.0f * u / 24.0f);
+        if (modules::inPicker (t)) paintItem (g, t, 0.0f, false);
+}
 
-        const auto tr = juce::Rectangle<float> (ic.getRight() + 12.0f * u, r.getY() + 12.0f * u, r.getRight() - ic.getRight() - 28.0f * u, r.getHeight() - 24.0f * u);
-        const auto nf = ui::css (ui::Face::display, 13.0f * u);
-        g.setColour (cBone);
-        g.setFont (nf);
-        g.drawText (inf.name, tr.withHeight (nf.getHeight()), juce::Justification::centredLeft, false);
-        g.setColour (juce::Colour (0xffcdb8bb));
-        g.setFont (ui::css (ui::Face::body, 11.0f * u));
-        g.drawFittedText (juce::String::fromUTF8 (free ? inf.desc : "Trois exemplaires déjà dans la chaîne"),
-                          tr.withTrimmedTop (nf.getHeight() + 4.0f * u).toNearestInt(), juce::Justification::topLeft, 2, 1.0f);
-        g.endTransparencyLayer();
+void ModulePicker::paint (juce::Graphics& g)
+{
+    const float u = ui::unitOf (*this);
+    g.setColour (juce::Colour (5, 3, 4).withAlpha (0.66f * shown));
+    g.fillAll();
+    const auto c = card();
+    const bool settled = shown > 0.999f;
+    if (settled)
+    {
+        // la carte en image (refaite si la taille, l'échelle de l'écran ou la chaîne ont changé), puis le survol par-dessus
+        const float scale = g.getInternalContext().getPhysicalPixelScaleFactor();
+        juce::int64 key = (juce::int64) getWidth() * 7919 + getHeight() * 31 + juce::roundToInt (scale * 100.0f);
+        for (int x : processor.getChain()) key = key * 131 + x;
+        if (! cache.isValid() || key != cacheKey)
+        {
+            cacheKey = key;
+            cache = juce::Image (juce::Image::ARGB, std::max (1, juce::roundToInt ((float) getWidth() * scale)), std::max (1, juce::roundToInt ((float) getHeight() * scale)), true, juce::SoftwareImageType());
+            juce::Graphics cg (cache);
+            cg.addTransform (juce::AffineTransform::scale (scale));
+            paintCard (cg);
+        }
+        g.setOpacity (1.0f);   // l'image prend sinon l'opacité du voile sombre (66 %)
+        g.drawImage (cache, getLocalBounds().toFloat());
     }
-    g.endTransparencyLayer();
+    else
+    {
+        g.beginTransparencyLayer (shown);
+        paintCard (g);
+    }
+    for (int t = 0; t < modules::numTypes; ++t)
+        if (modules::inPicker (t) && hoverGlow[t] > 0.01f) paintItem (g, t, hoverGlow[t], true);
+    const auto cr = closeRect();
+    drawLitButton (g, cr, 0.0f, closeHover ? 1.0f : 0.0f, u);
+    drawCross (g, cr.withSizeKeepingCentre (13.0f * u, 13.0f * u), closeHover ? juce::Colours::white : cBtn);
+    if (! settled) g.endTransparencyLayer();
+    juce::ignoreUnused (c);
 }
 
 void ModulePicker::mouseMove (const juce::MouseEvent& e)
@@ -644,9 +685,9 @@ void ModulePicker::mouseMove (const juce::MouseEvent& e)
     const bool ch = closeRect().contains (e.position);
     if (h != hover || ch != closeHover)
     {
+        if (ch != closeHover) repaint (closeRect().expanded (4.0f).getSmallestIntegerContainer());
         hover = h; closeHover = ch;
         setMouseCursor (h >= 0 || ch ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
-        repaint();
     }
 }
 
