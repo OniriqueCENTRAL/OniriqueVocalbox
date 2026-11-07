@@ -657,7 +657,7 @@ void ModulePicker::paint (juce::Graphics& g)
         if (! cache.isValid() || key != cacheKey)
         {
             cacheKey = key;
-            cache = juce::Image (juce::Image::ARGB, std::max (1, juce::roundToInt ((float) getWidth() * scale)), std::max (1, juce::roundToInt ((float) getHeight() * scale)), true, juce::SoftwareImageType());
+            cache = juce::Image (juce::Image::ARGB, std::max (1, juce::roundToInt ((float) getWidth() * scale)), std::max (1, juce::roundToInt ((float) getHeight() * scale)), true);   // image native : même moteur de rendu (et mêmes couleurs) que l'interface
             juce::Graphics cg (cache);
             cg.addTransform (juce::AffineTransform::scale (scale));
             paintCard (cg);
