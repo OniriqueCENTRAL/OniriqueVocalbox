@@ -80,6 +80,12 @@ struct Hints
     float phone = 0.0f, doubler = 0.0f, chorus = 0.0f, flanger = 0.0f;
     bool controlled = false;     // « bien contrôlé » : MULTIBAND
     bool parallel = false;       // densité, punch : COMPRESSION PARALLÈLE
+    float preamp = 0.0f;         // PREAMP N73 en tête (0 : aucun ; 0..1 : son gain) : les artistes qui en ont un à l'enregistrement
+    bool preampMic = false;      // entrée MIC (grain plus marqué) plutôt que LINE
+    juce::String preampOf;       // l'artiste d'où vient le préampli (compte rendu)
+    int peakComp = -1;           // le compresseur des crêtes : -1 au choix, 0 le 1176, 1 le CL1B
+    bool fast = false;           // rap moderne : attaques et relâchements plus rapides
+    bool rapStyle = false;       // rap, drill, trap (demandé, ou le genre de l'artiste) : le 1176 tient les crêtes, même sur une voix mélodique
     juce::StringArray understood;   // ce qui a été compris (pour le compte rendu)
     juce::StringArray unknown;      // les mots non compris (des noms d'artistes, souvent)
     juce::StringArray artists;      // les artistes reconnus par le cerveau (leur fiche est appliquée)

@@ -14,7 +14,16 @@ inline bool uiDemo()
     return false;
    #endif
 }
-inline int uiDemoSlot (int s) { static constexpr int c[] { 16, 25, 28, 13, 52 }; return uiDemo() && s < 5 ? c[s] : 0; }
+inline int uiDemoSlot (int s)
+{
+    static constexpr int c[] { 16, 25, 28, 13, 52 };
+   #if ONIRIQUE_UI_TEST
+    // essais locaux : ONIRIQUE_UI_SLOTS=58,61 monte cette chaîne (codes des modules, voir Modules.h)
+    const auto list = juce::StringArray::fromTokens (juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_SLOTS", {}), ",", "");
+    if (uiDemo() && ! list.isEmpty() && list[0].isNotEmpty()) return s < list.size() ? list[s].getIntValue() : 0;
+   #endif
+    return uiDemo() && s < 5 ? c[s] : 0;
+}
 
 namespace ids
 {
@@ -137,6 +146,10 @@ namespace ids
     inline constexpr const char* satDynamics = "satDynamics";
     // DE-ESSER : les sons traités (S, T, CH, F) et CLARITY
     inline constexpr const char* deessS = "deessS", *deessT = "deessT", *deessCH = "deessCH", *deessF = "deessF", *deessClarity = "deessClarity";
+    // PREAMP (l'étage préampli du N73, sans son EQ, plus lisse) et CL1B (la cellule optique et la lampe de l'OptoBox)
+    inline constexpr const char* preampOn = "preampOn", *preampMic = "preampMic", *preampGain = "preampGain", *preampOutput = "preampOutput";
+    inline constexpr const char* cl1bOn = "cl1bOn", *cl1bThreshold = "cl1bThreshold", *cl1bRatio = "cl1bRatio", *cl1bAttack = "cl1bAttack",
+                                 *cl1bRelease = "cl1bRelease", *cl1bGain = "cl1bGain", *cl1bMix = "cl1bMix";
     inline constexpr const char* slot[16] { "slot1", "slot2", "slot3", "slot4", "slot5", "slot6", "slot7", "slot8",
                                             "slot9", "slot10", "slot11", "slot12", "slot13", "slot14", "slot15", "slot16" };
     // identifiant d'un réglage pour l'exemplaire k (0 = le premier, qui garde l'identifiant d'origine)
@@ -664,6 +677,32 @@ inline void addParams (std::vector<std::unique_ptr<juce::RangedAudioParameter>>&
     p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::deessF, 1 }, "De-Ess F", false));
     p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::deessClarity, 1 }, "De-Ess Clarity",
         NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f, Attr().withLabel ("%").withStringFromValueFunction (pctText)));
+
+    // ---- PREAMP : MIC ou LINE, GAIN (sa position : LINE -10 .. +20 dB, MIC +20 .. +50 dB), le niveau nominal compensé
+    //      (le bouton pousse le grain, pas le volume), OUTPUT
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::preampOn, 1 }, "Preamp On", false));
+    p.push_back (mkParam<AudioParameterChoice> (k, ParameterID { ids::preampMic, 1 }, "Preamp Input", StringArray { "LINE", "MIC" }, 0));
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::preampGain, 1 }, "Preamp Gain",
+        NormalisableRange<float> (-10.0f, 50.0f, 0.1f), 0.0f, Attr().withLabel ("dB").withStringFromValueFunction (dbText)));
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::preampOutput, 1 }, "Preamp Output",
+        NormalisableRange<float> (-12.0f, 12.0f, 0.1f), 0.0f, Attr().withLabel ("dB").withStringFromValueFunction (dbText)));
+
+    // ---- CL1B : seuil (celui du premier dB de réduction, en dB du 0 VU ; +20 = coupé), ratio, attaque, relâchement, gain, mix
+    auto msText = [] (float v, int) { return v >= 1000.0f ? String (v / 1000.0f, 2) + " s" : String (v, v < 10.0f ? 1 : 0) + " ms"; };
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::cl1bOn, 1 }, "CL1B On", false));
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::cl1bThreshold, 1 }, "CL1B Threshold",
+        NormalisableRange<float> (-40.0f, 20.0f, 0.1f), 0.0f, Attr().withLabel ("dB").withStringFromValueFunction (dbText)));
+    { NormalisableRange<float> r (2.0f, 10.0f, 0.01f); r.setSkewForCentre (4.0f);
+      p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::cl1bRatio, 1 }, "CL1B Ratio", r, 4.0f,
+          Attr().withStringFromValueFunction ([] (float v, int) { return String (v, 1) + ":1"; }))); }
+    { NormalisableRange<float> r (0.5f, 300.0f, 0.1f); r.setSkewForCentre (15.0f);
+      p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::cl1bAttack, 1 }, "CL1B Attack", r, 12.0f, Attr().withLabel ("ms").withStringFromValueFunction (msText))); }
+    { NormalisableRange<float> r (50.0f, 10000.0f, 1.0f); r.setSkewForCentre (600.0f);
+      p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::cl1bRelease, 1 }, "CL1B Release", r, 700.0f, Attr().withLabel ("ms").withStringFromValueFunction (msText))); }
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::cl1bGain, 1 }, "CL1B Gain",
+        NormalisableRange<float> (-24.0f, 30.0f, 0.1f), 0.0f, Attr().withLabel ("dB").withStringFromValueFunction (dbText)));
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::cl1bMix, 1 }, "CL1B Mix",
+        NormalisableRange<float> (0.0f, 100.0f, 0.1f), 100.0f, Attr().withLabel ("%").withStringFromValueFunction (pctText)));
 
     // les emplacements de la chaîne : ni automation (le DAW ne doit pas reconstruire la chaîne en lecture), ni nom de module
     // dans la liste des réglages ; un preset les emporte avec lui

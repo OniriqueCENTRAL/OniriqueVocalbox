@@ -57,7 +57,8 @@ target_sources(OniriqueVocalBox PRIVATE
     Source/ModuleScreens.cpp
     Source/MixAnalysis.cpp
     Source/StartScreen.cpp
-    Source/Widgets.cpp)
+    Source/Widgets.cpp
+    Source/dsp/cl1b/Opto.cpp)   # le CL1B : la cellule optique et la lampe de l'OptoBox
 
 # logo du site (sigil blanc), intégré au binaire
 juce_add_binary_data(OniriqueAssets SOURCES Resources/logo.png Resources/vocalbox-brain.json)   # le cerveau de CRÉER LE MIX

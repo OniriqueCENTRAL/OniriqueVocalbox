@@ -573,6 +573,16 @@ void applyArtist (Hints& h, const ArtistStyle& a)
     if ((bool) x.getProperty ("controlled", false)) h.controlled = true;
     if ((bool) x.getProperty ("parallel", false)) h.parallel = true;
     if ((bool) x.getProperty ("dreamy", false)) h.dreamy = true;
+    // sa chaîne d'enregistrement : un préampli (MIC ou LINE), le compresseur des crêtes (1176 ou CL1B), la vitesse du rap moderne
+    if (has ("preamp") && num ("preamp") > h.preamp)
+    {
+        h.preamp = juce::jlimit (0.0f, 1.0f, num ("preamp"));
+        h.preampMic = x.getProperty ("preampType", "line").toString().equalsIgnoreCase ("mic");
+        h.preampOf = a.name;
+    }
+    if (h.peakComp < 0 && has ("peakComp")) h.peakComp = x["peakComp"].toString().equalsIgnoreCase ("cl1b") ? 1 : 0;
+    if ((bool) x.getProperty ("fast", false)) h.fast = true;
+    if (a.genre.containsIgnoreCase ("rap") || a.genre.containsIgnoreCase ("drill") || a.genre.containsIgnoreCase ("trap")) h.rapStyle = true;
     // sa voix mesurée (une référence, souvent séparée par IA) : la cible du timbre, de la tenue et de l'espace
     if (h.voiceOf.isEmpty() && a.voice.isObject())
     {
@@ -627,7 +637,12 @@ Hints parseHints (const juce::String& text)
 
     // styles
     if (has ({ "chant", "chante", "chantee", "chanteur", "chanteuse", "sung", "singing", "singer", "melodique", "melodic", "ballade", "ballad", "toplines" })) { h.sung = 0.6f; note ("chant"); }
-    if (has ({ "rap", "hip hop", "hiphop", "drill", "trap", "rap fr", "boom bap" })) { h.comp += 0.5f; h.bright += 0.3f; h.air += 0.2f; if (h.reverb < 0) h.reverb = 0.12f; note ("rap"); }
+    // la chaîne d'enregistrement demandée : un préampli, le compresseur des crêtes, la vitesse
+    if (has ({ "preampli", "preamp", "neve", "1073", "console" })) { h.preamp = juce::jmax (h.preamp, 0.5f); h.preampMic = true; note ("préampli"); }
+    if (has ({ "cl1b", "tubetech", "tube-tech" })) { h.peakComp = 1; note ("CL1B"); }
+    if (has ({ "1176", "fet" })) { h.peakComp = 0; note ("1176"); }
+    if (has ({ "punchy", "agressif", "agressive", "nerveux", "nerveuse", "percutant", "percutante" })) { h.fast = true; note ("compression rapide"); }
+    if (has ({ "rap", "hip hop", "hiphop", "drill", "trap", "rap fr", "boom bap" })) { h.rapStyle = true; h.comp += 0.5f; h.bright += 0.3f; h.air += 0.2f; if (h.reverb < 0) h.reverb = 0.12f; note ("rap"); }
     if (has ({ "rnb", "r&b", "r b", "soul", "neo soul" })) { h.warm += 0.4f; h.air += 0.3f; h.comp += 0.2f; h.reverb = juce::jmax (h.reverb, 0.3f); h.doubler += 0.3f; note ("R&B"); }
     if (has ({ "pop" })) { h.bright += 0.4f; h.air += 0.5f; h.comp += 0.5f; h.reverb = juce::jmax (h.reverb, 0.22f); note ("pop"); }
     if (has ({ "rock", "punk", "metal", "grunge" })) { h.sat += 0.4f; h.comp += 0.5f; h.satType = 3; note ("rock"); }
@@ -797,20 +812,25 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& h)
         }
     }
 
-    // ---- 2. PRÉAMPLI (au choix) : une saturation légère quand la voix doit gagner en chaleur et en densité
+    // ---- 2. PREAMP N73 en tête de chaîne : pas pour tout le monde. Pour les artistes qui en ont un dans leur chaîne
+    //      d'enregistrement (le cerveau : « preamp »), quand il est demandé (« préampli », « Neve », « 1073 »), ou quand il est
+    //      utile : voix fine, ou chaleur demandée. MIC (le grain d'une prise micro, plus marqué) ou LINE (plus discret).
     const bool thin = src.valid && (src.bands[11] + src.bands[12] + src.bands[13]) / 3.0f < (target[11] + target[12] + target[13]) / 3.0f - 3.0f;
-    const bool preamp = h.warm > 0.3f || h.satType == 0 || h.satType == 2 || thin;
+    const bool usePre = h.preamp > 0.0f || thin || h.warm > 0.4f;
     int satInstance = 0;
-    if (preamp)
+    if (usePre)
     {
-        Setting s { modules::sat, 0, {} };
-        put (s, ids::satType, h.satType == 2 ? 2.0f : 0.0f);
-        put (s, ids::drive, 2.0f);
-        put (s, ids::satMix, 60.0f);
-        put (s, ids::satWarmth, 35.0f + 30.0f * h.warm);
-        plan.modules.push_back (s);
-        satInstance = 1;
-        rep.add (u8 ("Préampli : saturation ") + (h.satType == 2 ? u8 ("bande") : u8 ("lampe")) + u8 (" légère en entrée") + (thin ? u8 (" (voix un peu fine)") : juce::String()));
+        const float a = juce::jlimit (0.2f, 1.0f, h.preamp > 0.0f ? h.preamp : (thin ? 0.45f : 0.35f) + 0.3f * h.warm);
+        const bool mic = h.preampMic;
+        const float gdb = mic ? 22.0f + 8.0f * a : 9.0f * a;   // MIC +22 .. +30 dB ; LINE 0 .. +9 dB
+        Setting s { modules::preamp, 0, {} };
+        put (s, ids::preampMic, mic ? 1.0f : 0.0f);
+        put (s, ids::preampGain, std::round (gdb * 10.0f) / 10.0f);
+        plan.modules.insert (plan.modules.begin(), s);   // le tout premier de la chaîne, comme à l'enregistrement
+        const int db = juce::roundToInt (gdb);
+        rep.add (u8 ("Préampli N73 en tête (") + (mic ? "MIC +" : "LINE ") + juce::String (db) + u8 (" dB) : ")
+                 + (h.preamp > 0.0f ? (h.preampOf.isNotEmpty() ? u8 ("comme dans la chaîne d'enregistrement de ") + h.preampOf : u8 ("demandé"))
+                                    : thin ? u8 ("de la densité pour une voix un peu fine") : u8 ("de la chaleur")));
     }
 
     // ---- 3. EQ : l'écart entre la prise et la cible (±4 dB lissés), présence pour la mettre en avant
@@ -932,17 +952,41 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& h)
     const float need = juce::jlimit (0.0f, 18.0f, srcDr - tgtDr);
     {
         const float grFet = juce::jlimit (3.0f, 10.0f, 3.0f + 0.5f * need + 1.5f * juce::jmax (0.0f, h.comp));
-        const float in = juce::jlimit (-12.0f, 36.0f, grFet / 0.75f - 20.0f - P);   // 1176 ratio 4 : seuil -20 dBFS
-        Setting fet { modules::fet, 0, {} };
-        put (fet, ids::fetIn, std::round (in * 10.0f) / 10.0f);
-        put (fet, ids::fetOut, juce::jlimit (-24.0f, 24.0f, -in + 0.8f * grFet));
-        // voix moderne : attaque et release rapides (7 = le plus rapide) ; un peu plus lent pour un rendu naturel
-        //               une voix chantée garde ses attaques et ses fins de notes : attaque plus lente, release plus long
-        const float soft = juce::jlimit (0.0f, 1.0f, sung + (h.comp < -0.2f ? 0.4f : 0.0f));
-        put (fet, ids::fetAttack, std::round (10.0f * ((h.comp > 0.3f ? 5.5f : 5.0f) - 2.5f * soft)) / 10.0f);
-        put (fet, ids::fetRelease, std::round (10.0f * (6.5f - 2.5f * soft)) / 10.0f);
-        put (fet, ids::fetRatio, h.comp > 0.6f ? 1.0f : 0.0f);
-        plan.modules.push_back (fet);
+        // les crêtes : 1176 (FET, mordant, rap) ou CL1B (optique à lampe, crêtes tenues en douceur : voix chantées, R&B, pop).
+        // Le cerveau peut l'imposer (« peakComp ») ; sinon une voix surtout chantée prend le CL1B.
+        const bool useCl1b = h.peakComp == 1 || (h.peakComp < 0 && ! h.rapStyle && sung >= 0.5f);
+        // rap moderne (SCH, Niro, Damso...) : attaque et relâchement plus rapides encore, la voix reste collée et en avant
+        const float fast = h.fast ? 1.0f : 0.0f;
+        const float soft = juce::jlimit (0.0f, 1.0f, sung + (h.comp < -0.2f ? 0.4f : 0.0f)) * (1.0f - 0.7f * fast);
+        if (useCl1b)
+        {
+            // le seuil du CL1B : le niveau (en dB du 0 VU, -18 dBFS) où commence le premier dB ; au-dessus, ratio R
+            const float ratio = sung >= 0.5f ? 3.0f : 4.0f;
+            const float peakVu = P + 18.0f;
+            const float thr = juce::jlimit (-40.0f, 20.0f, peakVu - (grFet - 1.0f) / (1.0f - 1.0f / ratio));
+            Setting c { modules::cl1b, 0, {} };
+            put (c, ids::cl1bThreshold, std::round (thr * 10.0f) / 10.0f);
+            put (c, ids::cl1bRatio, ratio);
+            put (c, ids::cl1bAttack, std::round (10.0f * (fast > 0.5f ? 1.0f : 3.0f + 9.0f * soft)) / 10.0f);
+            put (c, ids::cl1bRelease, std::round (fast > 0.5f ? 90.0f : 150.0f + 350.0f * soft));
+            put (c, ids::cl1bGain, std::round (0.8f * grFet * 10.0f) / 10.0f);
+            plan.modules.push_back (c);
+        }
+        else
+        {
+            const float in = juce::jlimit (-12.0f, 36.0f, grFet / 0.75f - 20.0f - P);   // 1176 ratio 4 : seuil -20 dBFS
+            Setting fet { modules::fet, 0, {} };
+            put (fet, ids::fetIn, std::round (in * 10.0f) / 10.0f);
+            put (fet, ids::fetOut, juce::jlimit (-24.0f, 24.0f, -in + 0.8f * grFet));
+            // voix moderne : attaque et release rapides (7 = le plus rapide) ; un peu plus lent pour un rendu naturel
+            //               une voix chantée garde ses attaques et ses fins de notes : attaque plus lente, release plus long
+            const float atk = fast > 0.5f ? 6.3f : (h.comp > 0.3f ? 5.5f : 5.0f) - 2.5f * soft;
+            const float rel = fast > 0.5f ? 6.9f : 6.5f - 2.5f * soft;
+            put (fet, ids::fetAttack, std::round (10.0f * atk) / 10.0f);
+            put (fet, ids::fetRelease, std::round (10.0f * rel) / 10.0f);
+            put (fet, ids::fetRatio, h.comp > 0.6f ? 1.0f : 0.0f);
+            plan.modules.push_back (fet);
+        }
         const float grOpto = juce::jlimit (2.0f, 7.0f, 2.0f + 0.35f * need);
         compGr = grFet + grOpto;
         const float level = L + 0.4f * grFet;
@@ -950,8 +994,10 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& h)
         put (opto, ids::laPeak, std::round (juce::jlimit (0.0f, 100.0f, -(level - 1.5f * grOpto) / 0.45f)));   // seuil -0,45 × PEAK
         put (opto, ids::laGain, juce::jlimit (-12.0f, 30.0f, 0.8f * grOpto));
         plan.modules.push_back (opto);
-        rep.add (u8 ("Dynamique ") + juce::String (srcDr, 1) + u8 (" dB → ") + juce::String (tgtDr, 1) + u8 (" dB : 1176 (≈ −") + juce::String (juce::roundToInt (grFet))
-                 + u8 (" dB sur les crêtes) puis LA-2A (≈ −") + juce::String (juce::roundToInt (grOpto)) + " dB)");
+        rep.add (u8 ("Dynamique ") + juce::String (srcDr, 1) + u8 (" dB → ") + juce::String (tgtDr, 1) + u8 (" dB : ")
+                 + (useCl1b ? u8 ("CL1B (≈ −") : u8 ("1176 (≈ −")) + juce::String (juce::roundToInt (grFet))
+                 + u8 (" dB sur les crêtes") + (fast > 0.5f ? u8 (", attaque et relâchement rapides du rap moderne") : juce::String())
+                 + u8 (") puis LA-2A (≈ −") + juce::String (juce::roundToInt (grOpto)) + " dB)");
     }
 
     // ---- 6. MULTIBAND : chaque zone de la voix tenue à part, 4 à 5 dB de réduction ; ses gains finissent de la façonner.
@@ -1000,8 +1046,8 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& h)
         }
         // rapide sur le rap (la zone est tenue dès l'attaque de la syllabe), plus souple sur le chant
         const float soft = juce::jlimit (0.0f, 1.0f, sung + (h.comp < -0.2f ? 0.4f : 0.0f));
-        put (s, ids::mbAttack, std::round (6.0f + 14.0f * soft));
-        put (s, ids::mbRelease, std::round (90.0f + 130.0f * soft));
+        put (s, ids::mbAttack, h.fast ? 3.0f : std::round (6.0f + 14.0f * soft));
+        put (s, ids::mbRelease, h.fast ? 60.0f : std::round (90.0f + 130.0f * soft));
         plan.modules.push_back (s);
         rep.add (u8 ("Multiband : environ −") + juce::String (gr, 1) + u8 (" dB par zone pour une voix maîtrisée · gains ") + gains.joinIntoString (u8 (" · ")));
     }
@@ -1022,7 +1068,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& h)
     }
 
     // ---- 8. SATURATION de couleur : seulement si elle est demandée
-    if (h.sat > 0.05f)
+    if (h.sat > 0.05f || h.satType >= 0)
     {
         Setting s { modules::sat, satInstance, {} };
         const int type = h.satType >= 0 ? h.satType : 1;
@@ -1067,8 +1113,8 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& h)
         Setting s { modules::parallel, 0, {} };
         put (s, ids::parAmount, juce::jlimit (20.0f, 55.0f, 25.0f + 25.0f * juce::jmax (0.0f, h.comp)));
         put (s, ids::parThresh, juce::jlimit (-57.0f, -9.0f, L - 14.0f));
-        put (s, ids::parAttack, std::round (10.0f * (6.0f - 2.0f * sung)) / 10.0f);
-        put (s, ids::parRelease, std::round (10.0f * (6.5f - 2.0f * sung)) / 10.0f);
+        put (s, ids::parAttack, h.fast ? 6.6f : std::round (10.0f * (6.0f - 2.0f * sung)) / 10.0f);
+        put (s, ids::parRelease, h.fast ? 7.0f : std::round (10.0f * (6.5f - 2.0f * sung)) / 10.0f);
         plan.modules.push_back (s);
         rep.add (u8 ("Compression parallèle : la voix gagne en densité et passe devant la prod"));
     }

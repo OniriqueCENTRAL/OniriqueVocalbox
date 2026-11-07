@@ -16,7 +16,9 @@ namespace modules
 enum Type
 {
     gate = 0, noise, plosive, reso, deess, peq, analog, sat, fet, opto, multi, parallel,
-    doubler, chorus, flanger, phone, delay, reverb, creative, numTypes
+    doubler, chorus, flanger, phone, delay, reverb, creative,
+    preamp, cl1b,   // ajoutés à la fin : les codes des anciennes chaînes ne changent pas
+    numTypes
 };
 
 // où tourne le module : à la cadence de l'hôte (analyse FFT, effets) ou dans la chaîne suréchantillonnée
@@ -54,6 +56,8 @@ inline const Info& info (int type)
         { "DELAY",    "DELAY",            "Échos au tempo, ping-pong, ducking",        3, host,        ids::delayOn },
         { "REVERB",   "REVERB",           "Room, plates, hall, shimmer",               3, host,        ids::reverbOn },
         { "CREATIVE", "CREATIVE FX",      "Doubleur, chorus, flanger, phone",          3, host,        ids::creativeOn },
+        { "PREAMP",   "PREAMP N73",       "Préampli micro ou ligne, grain de console", 1, oversampled, ids::preampOn },
+        { "CL1B",     "CL1B OPTO",        "Optique à lampe : crêtes tenues en douceur", 2, oversampled, ids::cl1bOn },
     };
     return table[juce::jlimit (0, (int) numTypes - 1, type)];
 }
@@ -97,6 +101,8 @@ inline const std::vector<juce::String>& paramIds (int type)
                        ids::reverbWidth, ids::reverbClean });
         add (creative, { ids::creativeOn, ids::doublerOn, ids::doublerAmount, ids::chorusOn, ids::chorusRate, ids::chorusDepth, ids::chorusMix,
                          ids::flangerOn, ids::flangerRate, ids::flangerDepth, ids::flangerFeedback, ids::flangerMix, ids::phoneOn, ids::phoneAmount });
+        add (preamp, { ids::preampOn, ids::preampMic, ids::preampGain, ids::preampOutput });
+        add (cl1b, { ids::cl1bOn, ids::cl1bThreshold, ids::cl1bRatio, ids::cl1bAttack, ids::cl1bRelease, ids::cl1bGain, ids::cl1bMix });
         return t;
     }();
     return table[(size_t) juce::jlimit (0, (int) numTypes - 1, type)];

@@ -5,6 +5,8 @@
 #include "../Modules.h"
 #include "VocalChain.h"   // ModuleSwitch, et tous les moteurs des modules
 #include "SpectrumTap.h"
+#include "PreampN73.h"     // PREAMP : l'étage préampli du N73
+#include "cl1b/Opto.h"      // CL1B : la cellule optique et la lampe de l'OptoBox
 
 namespace onirique
 {
@@ -490,6 +492,62 @@ private:
                        *bias = nullptr, *dyn = nullptr;
 };
 
+//------------------------------------------------------------------------------ PREAMP et CL1B
+/*  PREAMP : en tête de chaîne, le grain d'un préampli de console (voir PreampN73). MIC / LINE, GAIN, OUTPUT. */
+class Preamp final : public ChainModule
+{
+public:
+    Preamp (juce::AudioProcessorValueTreeState& s, int k) : ChainModule (s, modules::preamp, k)
+    {
+        mic = raw (ids::preampMic); gain = raw (ids::preampGain); out = raw (ids::preampOutput);
+    }
+    int getLatencySamples() const noexcept override { return engine.getLatencySamples(); }
+    float driveNow() const noexcept { return engine.drive(); }
+
+private:
+    void prepareEngine (double rate, int, int maxBlock) override { engine.prepare (rate, maxBlock); }
+    void updateEngine (bool, bool snap) noexcept override { engine.set (i (mic) == 1, f (gain), f (out), snap); }
+    void processEngine (float* const* ch, int numCh, int n) noexcept override { engine.process (ch, numCh, n); }
+    void resetEngine() noexcept override { engine.reset(); }
+    PreampN73 engine;
+    std::atomic<float> *mic = nullptr, *gain = nullptr, *out = nullptr;
+};
+
+/*  CL1B : compresseur optique à lampe (le moteur de l'OptoBox, génération moderne, attaque et relâchement manuels). Ses
+    crêtes sont tenues en douceur, sans le mordant du 1176 : la cellule suit avec un léger retard et se souvient. */
+class Cl1b final : public ChainModule
+{
+public:
+    Cl1b (juce::AudioProcessorValueTreeState& s, int k) : ChainModule (s, modules::cl1b, k)
+    {
+        thr = raw (ids::cl1bThreshold); ratio = raw (ids::cl1bRatio); atk = raw (ids::cl1bAttack); rel = raw (ids::cl1bRelease);
+        gain = raw (ids::cl1bGain); mix = raw (ids::cl1bMix);
+    }
+    float getReductionDb() const noexcept override { return -std::abs (engine.reductionDb()); }
+    float needle() const noexcept { return engine.needle(); }
+
+private:
+    void prepareEngine (double rate, int, int) override { engine.setSettings (settings()); engine.prepare (rate, 2); }
+    void updateEngine (bool, bool) noexcept override { engine.setSettings (settings()); }
+    void processEngine (float* const* ch, int numCh, int n) noexcept override
+    {
+        if (numCh == 1) { const float* in[1] { ch[0] }; engine.process (in, ch, n, nullptr, 0); return; }
+        const float* in[2] { ch[0], ch[1] };
+        engine.process (in, ch, n, nullptr, 0);
+    }
+    void resetEngine() noexcept override { engine.reset(); }
+    obx::Settings settings() const noexcept
+    {
+        obx::Settings s;
+        s.thresholdDb = f (thr); s.ratio = f (ratio); s.attackMs = f (atk); s.releaseMs = f (rel);
+        s.outputDb = f (gain); s.parallel = f (mix) * 0.01f;
+        s.timing = obx::Timing::manual; s.generation = obx::Generation::modern;
+        return s;
+    }
+    obx::Compressor engine;
+    std::atomic<float> *thr = nullptr, *ratio = nullptr, *atk = nullptr, *rel = nullptr, *gain = nullptr, *mix = nullptr;
+};
+
 //------------------------------------------------------------------------------ DYNAMIQUE
 class Fet final : public ChainModule
 {
@@ -750,6 +808,8 @@ public:
             put (modules::delay, new Delay (s, k, tempo));
             put (modules::reverb, new Reverb (s, k));
             put (modules::creative, new CreativeFx (s, k));
+            put (modules::preamp, new Preamp (s, k));
+            put (modules::cl1b, new Cl1b (s, k));
             static_cast<CreativeFx*> (module (modules::creative, k))->setParts (module (modules::doubler, k), module (modules::chorus, k),
                                                                               module (modules::flanger, k), module (modules::phone, k));
         }

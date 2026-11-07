@@ -915,6 +915,97 @@ private:
 };
 
 //==============================================================================
+// PREAMP : la courbe de l'étage (elle se plie avec le gain, et plus tôt en MIC), et à droite le grain qu'elle donne :
+// les harmoniques d'une voix tenue, qui s'allument avec la dérive de l'étage de sortie
+class PreampViz : public Viz
+{
+public:
+    PreampViz (OniriqueVocalBoxAudioProcessor& p, int code) : processor (p), k (modules::instanceOf (code))
+    {
+        legend = { { "H1", juce::Colour (244, 236, 236).withAlpha (0.5f) }, { "HARMONIQUES", cEmber } };
+    }
+    void tick() override
+    {
+        const bool mic = get (ids::preampMic) > 0.5f;
+        const float db = get (ids::preampGain);
+        title = utf8 ("PREAMP N73 · ") + (mic ? "MIC" : "LINE");
+        stat = utf8 ("GAIN ") + (db > 0.0f ? "+" : "") + juce::String (juce::roundToInt (db)) + utf8 (" dB · GRAIN DE CONSOLE, NIVEAU COMPENSÉ");
+        float live = 0.0f;
+        if (auto* m = dynamic_cast<chainmods::Preamp*> (processor.module (modules::code (modules::preamp, k)))) live = m->driveNow();
+        glow += 0.2f * (live - glow);
+        phase += 0.012f;
+        repaint();
+    }
+
+private:
+    float get (const char* id) const { return processor.apvts.getRawParameterValue (ids::inst (id, k))->load(); }
+    float amount() const
+    {
+        const bool mic = get (ids::preampMic) > 0.5f;
+        const float db = get (ids::preampGain);
+        return juce::jlimit (0.02f, 1.2f, (db - (mic ? 22.0f : 4.0f)) / 34.0f);   // LINE 0 dB : presque propre ; MIC +40 : franchement saturé
+    }
+    float fx (float x) const
+    {
+        const float d = amount(), kk = 0.55f + 1.7f * d;
+        const float u = kk * x + 0.18f * d * x * x;   // un peu dissymétrique : de la deuxième harmonique
+        return std::tanh (u) / std::tanh (kk);
+    }
+    void draw (juce::Graphics& g) override
+    {
+        const auto box = juce::Rectangle<float> (40.0f, 20.0f, 320.0f, 320.0f);
+        g.setColour (juce::Colours::black.withAlpha (0.3f));
+        g.fillRoundedRectangle (box, 16.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.08f));
+        g.drawLine (40.0f, 180.0f, 360.0f, 180.0f, 1.0f);
+        g.drawLine (200.0f, 20.0f, 200.0f, 340.0f, 1.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.14f));
+        { juce::Path d; d.startNewSubPath (40.0f, 340.0f); d.lineTo (360.0f, 20.0f); dashed (g, d, 1.0f, 4.0f, 6.0f); }
+        std::vector<juce::Point<float>> c;
+        for (int i = 0; i <= 60; ++i) { const float x = -1.0f + (float) i / 30.0f; c.push_back ({ 200.0f + x * 160.0f, 180.0f - juce::jlimit (-1.0f, 1.0f, fx (x)) * 160.0f }); }
+        const auto curve = poly (c);
+        glowPath (g, curve, cEmber.withAlpha (0.85f), 10.0f, false);
+        g.setColour (cEmber);
+        g.strokePath (curve, juce::PathStrokeType (4.0f, juce::PathStrokeType::curved));
+
+        // les harmoniques (DFT d'un sinus passé dans la courbe), H1 en référence
+        constexpr int N = 128;
+        float hs[8] {};
+        for (int hN = 1; hN <= 7; ++hN)
+        {
+            double re = 0.0, im = 0.0;
+            for (int i = 0; i < N; ++i)
+            {
+                const double ph = 2.0 * juce::MathConstants<double>::pi * i / N;
+                const double y = fx (0.85f * (float) std::sin (ph));
+                re += y * std::cos (hN * ph); im += y * std::sin (hN * ph);
+            }
+            hs[hN] = (float) std::sqrt (re * re + im * im);
+        }
+        const float x0 = 440.0f, w = (vw - 40.0f - x0) / 7.0f;
+        g.setColour (juce::Colours::white.withAlpha (0.06f));
+        g.drawLine (x0, 320.0f, vw - 40.0f, 320.0f, 1.0f);
+        for (int hN = 1; hN <= 7; ++hN)
+        {
+            const float db = juce::Decibels::gainToDecibels (hs[hN] / std::max (1.0e-9f, hs[1]), -90.0f);
+            const float hgt = juce::jmap (juce::jlimit (-90.0f, 0.0f, db), -90.0f, 0.0f, 6.0f, 270.0f);
+            const auto bar = juce::Rectangle<float> (x0 + (float) (hN - 1) * w + w * 0.3f, 320.0f - hgt, w * 0.4f, hgt);
+            const float lit = hN == 1 ? 0.35f : juce::jlimit (0.25f, 1.0f, 0.45f + 0.9f * glow + 0.05f * std::sin (phase * 3.0f + (float) hN));
+            g.setColour (cEmber.withAlpha (0.18f * lit));
+            g.fillRoundedRectangle (bar.expanded (5.0f), 8.0f);
+            g.setColour (hN == 1 ? juce::Colour (244, 236, 236).withAlpha (0.45f) : cEmber.withAlpha (lit));
+            g.fillRoundedRectangle (bar, 5.0f);
+            g.setColour (juce::Colour (0xffbba7aa));
+            g.setFont (ui::css (ui::Face::mono, 13.0f, 0.1f));
+            g.drawText ("H" + juce::String (hN), juce::Rectangle<float> (bar.getCentreX() - 30.0f, 326.0f, 60.0f, 18.0f), juce::Justification::centred, false);
+        }
+    }
+    OniriqueVocalBoxAudioProcessor& processor;
+    int k;
+    float phase = 0.0f, glow = 0.0f;
+};
+
+//==============================================================================
 // DELAY : les échos partent vers l'horizon (point de fuite en haut au centre), à gauche et à droite en ping-pong ; leur
 // nombre et leur force suivent FEEDBACK et SEND, leur écart la valeur de note
 class DelayViz : public Viz
@@ -1432,6 +1523,206 @@ private:
     VintageVu vu;
     CompStrip strip;
     float headY = 0.0f;
+};
+
+//==============================================================================
+/*  CL1B : une façade à lui, rien du 1176. À gauche la fenêtre de la cellule : la lampe, dont le filament s'allume avec la
+    compression, éclaire la cellule optique (le faisceau suit la réduction) ; dessous, l'échelle de réduction horizontale
+    0 .. 20 dB, avec la crête tenue. À droite les six réglages sur deux rangées. En bas, l'historique de la compression. */
+class Cl1bPanel final : public ModulePanel
+{
+public:
+    Cl1bPanel (OniriqueVocalBoxAudioProcessor& p, int c) : ModulePanel (p, c), strip (engine)
+    {
+        addAndMakeVisible (strip); anim.push_back (&strip);
+        knobs = { &knob (ids::cl1bThreshold, "THRESHOLD"), &knob (ids::cl1bRatio, "RATIO"), &knob (ids::cl1bGain, "GAIN"),
+                  &knob (ids::cl1bAttack, "ATTACK"), &knob (ids::cl1bRelease, "RELEASE"), &knob (ids::cl1bMix, "MIX") };
+    }
+    void tick() override
+    {
+        ModulePanel::tick();
+        const float gr = engine != nullptr ? std::abs (engine->getReductionDb()) : 0.0f;
+        shown += (gr > shown ? 0.5f : 0.12f) * (gr - shown);
+        if (gr > hold) { hold = gr; holdT = 60; } else if (--holdT < 0) hold = std::max (0.0f, hold - 0.25f);
+        flicker = 0.97f + 0.03f * std::sin ((float) juce::Time::getMillisecondCounter() * 0.011f);
+        if (std::abs (shown - drawn) > 0.02f || hold != drawnHold || shown > 0.05f)
+        {
+            drawn = shown; drawnHold = hold;
+            repaint (window.toNearestInt().expanded (30));
+        }
+    }
+    void resized() override
+    {
+        const float u = ui::unitOf (*this);
+        auto r = getLocalBounds().toFloat().reduced (40.0f * u, 30.0f * u);
+        strip.setBounds (r.removeFromBottom (112.0f * u).toNearestInt());
+        r.removeFromBottom (16.0f * u);
+        head = r.removeFromTop (40.0f * u);
+        r.removeFromTop (12.0f * u);
+        window = r.removeFromLeft (std::min (520.0f * u, r.getWidth() * 0.42f));
+        r.removeFromLeft (40.0f * u);
+        layoutKnobs (knobs, r, 3);
+    }
+    void paint (juce::Graphics& g) override
+    {
+        const float u = ui::unitOf (*this);
+        const auto r = getLocalBounds().toFloat();
+        const float rad = 18.0f * u;
+        // la façade : noir chaud, une bande de braise sous le titre, quatre vis
+        juce::ColourGradient bg (juce::Colour (0xff1a1213), r.getX(), r.getY(), juce::Colour (0xff070506), r.getX(), r.getBottom(), false);
+        g.setGradientFill (bg);
+        g.fillRoundedRectangle (r, rad);
+        g.setColour (juce::Colour (0xff2b1d20));
+        g.drawRoundedRectangle (r.reduced (1.0f * u), rad, 2.0f * u);
+        for (auto pt : { r.getTopLeft(), r.getTopRight(), r.getBottomLeft(), r.getBottomRight() })
+        {
+            const juce::Point<float> c (pt.x + (pt.x < r.getCentreX() ? 18.0f : -18.0f) * u, pt.y + (pt.y < r.getCentreY() ? 18.0f : -18.0f) * u);
+            g.setColour (juce::Colour (0xff2a2526));
+            g.fillEllipse (juce::Rectangle<float> (11.0f * u, 11.0f * u).withCentre (c));
+            g.setColour (juce::Colours::black.withAlpha (0.6f));
+            g.drawLine (c.x - 3.5f * u, c.y + 3.5f * u, c.x + 3.5f * u, c.y - 3.5f * u, 1.4f * u);
+        }
+        g.setColour (juce::Colour (0xffeee6e6));
+        g.setFont (ui::css (ui::Face::display, 22.0f * u, 0.4f));
+        g.drawText ("CL1B", head.withWidth (140.0f * u), juce::Justification::centredLeft, false);
+        g.setColour (juce::Colour (0xff9a8c8f));
+        g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.16f));
+        g.drawText (utf8 ("OPTICAL TUBE COMPRESSOR · CELLULE ET LAMPE"), head.withTrimmedLeft (130.0f * u), juce::Justification::centredLeft, false);
+        juce::ColourGradient band (cEmber.withAlpha (0.0f), head.getX(), 0.0f, cEmber.withAlpha (0.0f), head.getRight(), 0.0f, false);
+        band.addColour (0.3, cEmber.withAlpha (0.8f));
+        g.setGradientFill (band);
+        g.fillRect (head.getX(), head.getBottom() + 2.0f * u, head.getWidth(), 1.5f * u);
+
+        // la fenêtre de la cellule
+        const auto w = window;
+        g.setColour (juce::Colours::black.withAlpha (0.45f));
+        g.fillRoundedRectangle (w, 16.0f * u);
+        g.setColour (juce::Colour (255, 220, 225).withAlpha (0.10f));
+        g.drawRoundedRectangle (w.reduced (0.5f), 16.0f * u, 1.0f * u);
+        const float lit = juce::jlimit (0.0f, 1.0f, shown / 14.0f) * flicker;
+        auto glass = w.withTrimmedBottom (w.getHeight() * 0.32f).reduced (26.0f * u, 22.0f * u);
+        // la lampe : une ampoule de verre, son filament
+        const auto bulb = glass.removeFromLeft (glass.getWidth() * 0.42f);
+        const auto bulbBody = juce::Rectangle<float> (bulb.getWidth() * 0.62f, bulb.getHeight() * 0.92f).withCentre (bulb.getCentre());
+        juce::ColourGradient halo (cEmber.withAlpha (0.10f + 0.55f * lit), bulbBody.getCentreX(), bulbBody.getCentreY(),
+                                   cEmber.withAlpha (0.0f), bulbBody.getCentreX() + bulbBody.getWidth() * 1.1f, bulbBody.getCentreY(), true);
+        g.setGradientFill (halo);
+        g.fillEllipse (bulbBody.expanded (bulbBody.getWidth() * 0.6f));
+        {
+            // la lampe : une enveloppe de verre au sommet arrondi sur un culot sombre, l'anode grise, le filament au centre
+            const auto glassR = bulbBody.withTrimmedBottom (bulbBody.getHeight() * 0.14f);
+            const auto base = bulbBody.withTop (glassR.getBottom()).reduced (bulbBody.getWidth() * 0.12f, 0.0f);
+            juce::Path env;
+            const float rw = glassR.getWidth() * 0.5f;
+            env.startNewSubPath (glassR.getX(), glassR.getBottom());
+            env.lineTo (glassR.getX(), glassR.getY() + rw);
+            env.addCentredArc (glassR.getCentreX(), glassR.getY() + rw, rw, rw, 0.0f, -juce::MathConstants<float>::halfPi, juce::MathConstants<float>::halfPi);
+            env.lineTo (glassR.getRight(), glassR.getBottom());
+            env.closeSubPath();
+            g.setColour (juce::Colours::white.withAlpha (0.07f));
+            g.fillPath (env);
+            g.setColour (juce::Colours::white.withAlpha (0.26f));
+            g.strokePath (env, juce::PathStrokeType (1.5f * u));
+            g.setColour (juce::Colour (0xff2a2224));
+            g.fillRoundedRectangle (base, 4.0f * u);
+            g.setColour (juce::Colours::white.withAlpha (0.12f));
+            for (int i = 1; i < 3; ++i) g.fillRect (base.getX(), base.getY() + base.getHeight() * (float) i / 3.0f, base.getWidth(), 1.0f * u);
+            // l'anode : une plaque grise, ouverte devant le filament
+            const auto plate = juce::Rectangle<float> (glassR.getWidth() * 0.56f, glassR.getHeight() * 0.42f).withCentre ({ glassR.getCentreX(), glassR.getCentreY() + glassR.getHeight() * 0.06f });
+            g.setColour (juce::Colour (0xff3a3335).withAlpha (0.9f));
+            g.drawRect (plate, 2.0f * u);
+            // les deux supports et le filament (une spirale serrée), qui rougit puis blanchit avec la compression
+            const float cx = plate.getCentreX(), top = plate.getY() + plate.getHeight() * 0.2f, bot = plate.getBottom() - plate.getHeight() * 0.2f;
+            g.setColour (juce::Colour (0xff5a5254));
+            g.drawLine (cx - 9.0f * u, bot, cx - 9.0f * u, base.getY(), 1.2f * u);
+            g.drawLine (cx + 9.0f * u, bot, cx + 9.0f * u, base.getY(), 1.2f * u);
+            juce::Path fil;
+            fil.startNewSubPath (cx - 9.0f * u, bot);
+            const int turns = 7;
+            for (int i = 0; i <= turns * 8; ++i)
+            {
+                const float t = (float) i / (float) (turns * 8);
+                const float y = bot + (top - bot) * std::sin (t * juce::MathConstants<float>::pi);
+                fil.lineTo (cx - 9.0f * u + 18.0f * u * t + 3.0f * u * std::sin (t * juce::MathConstants<float>::twoPi * (float) turns), y);
+            }
+            glowPath (g, fil, cEmber.withAlpha (0.25f + 0.75f * lit), 6.0f + 12.0f * lit, false);
+            g.setColour (cEmber.interpolatedWith (juce::Colours::white, 0.55f * lit).withAlpha (0.4f + 0.6f * lit));
+            g.strokePath (fil, juce::PathStrokeType (1.6f * u));
+            // un reflet sur le verre
+            g.setColour (juce::Colours::white.withAlpha (0.10f));
+            g.fillRoundedRectangle (juce::Rectangle<float> (glassR.getX() + rw * 0.25f, glassR.getY() + rw * 0.5f, rw * 0.18f, glassR.getHeight() * 0.55f), rw * 0.09f);
+        }
+        // le faisceau, puis la cellule optique (une pastille de verre qui s'éclaire)
+        const float side = std::min (glass.getWidth(), glass.getHeight()) * 0.62f;
+        const auto cell = juce::Rectangle<float> (side, side).withCentre (glass.getCentre().translated (glass.getWidth() * 0.12f, 0.0f));
+        {
+            juce::Path beam;
+            beam.startNewSubPath (bulbBody.getRight(), bulbBody.getCentreY() - 10.0f * u);
+            beam.lineTo (cell.getCentreX(), cell.getY());
+            beam.lineTo (cell.getCentreX(), cell.getBottom());
+            beam.lineTo (bulbBody.getRight(), bulbBody.getCentreY() + 10.0f * u);
+            beam.closeSubPath();
+            juce::ColourGradient bm (cEmber.withAlpha (0.45f * lit), bulbBody.getRight(), 0.0f, cEmber.withAlpha (0.05f * lit), cell.getX(), 0.0f, false);
+            g.setGradientFill (bm);
+            g.fillPath (beam);
+        }
+        g.setColour (juce::Colour (0xff120c0d));
+        g.fillEllipse (cell);
+        juce::ColourGradient cg (cEmber.interpolatedWith (juce::Colours::white, 0.3f).withAlpha (0.15f + 0.8f * lit), cell.getCentreX(), cell.getCentreY(),
+                                 cEmber.withAlpha (0.0f), cell.getRight(), cell.getCentreY(), true);
+        g.setGradientFill (cg);
+        g.fillEllipse (cell.reduced (cell.getWidth() * 0.08f));
+        g.setColour (juce::Colours::white.withAlpha (0.18f));
+        g.drawEllipse (cell, 1.4f * u);
+        {   // le sillon de la cellule (la piste résistive)
+            juce::Path z;
+            const auto in = cell.reduced (cell.getWidth() * 0.28f);
+            for (int i = 0; i < 5; ++i)
+            {
+                const float y = in.getY() + in.getHeight() * (float) i / 4.0f;
+                if (i == 0) z.startNewSubPath (in.getX(), y); else z.lineTo (i % 2 ? in.getRight() : in.getX(), y);
+            }
+            g.setColour (juce::Colours::black.withAlpha (0.5f));
+            g.strokePath (z, juce::PathStrokeType (1.6f * u));
+        }
+        g.setColour (juce::Colour (0xff9a8c8f));
+        g.setFont (ui::css (ui::Face::mono, 9.0f * u, 0.14f));
+        g.drawText ("LAMPE", juce::Rectangle<float> (bulb.getX(), w.getY() + 10.0f * u, bulb.getWidth(), 12.0f * u), juce::Justification::centred, false);
+        g.drawText ("CELLULE", juce::Rectangle<float> (cell.getX() - 30.0f * u, w.getY() + 10.0f * u, cell.getWidth() + 60.0f * u, 12.0f * u), juce::Justification::centred, false);
+
+        // l'échelle de réduction, horizontale
+        auto sc = w.withTrimmedTop (w.getHeight() * 0.70f).reduced (26.0f * u, 14.0f * u);
+        const auto track = sc.withHeight (10.0f * u).withY (sc.getY() + 6.0f * u);
+        g.setColour (juce::Colours::white.withAlpha (0.07f));
+        g.fillRoundedRectangle (track, 5.0f * u);
+        auto xOf = [&] (float db) { return track.getX() + track.getWidth() * std::sqrt (juce::jlimit (0.0f, 20.0f, db) / 20.0f); };
+        const auto fillR = track.withRight (xOf (shown));
+        juce::ColourGradient fg (cEmber.withAlpha (0.7f), track.getX(), 0.0f, cEmber.interpolatedWith (juce::Colours::white, 0.35f), track.getRight(), 0.0f, false);
+        g.setGradientFill (fg);
+        g.fillRoundedRectangle (fillR, 5.0f * u);
+        g.setColour (juce::Colours::white.withAlpha (0.85f));
+        g.fillRect (juce::Rectangle<float> (2.0f * u, track.getHeight() + 6.0f * u).withCentre ({ xOf (hold), track.getCentreY() }));
+        g.setFont (ui::css (ui::Face::mono, 9.0f * u, 0.1f));
+        for (float db : { 0.0f, 1.0f, 2.0f, 4.0f, 6.0f, 10.0f, 15.0f, 20.0f })
+        {
+            const float x = xOf (db);
+            g.setColour (juce::Colours::white.withAlpha (0.25f));
+            g.fillRect (x - 0.5f * u, track.getBottom() + 4.0f * u, 1.0f * u, 5.0f * u);
+            g.setColour (juce::Colour (0xffbba7aa));
+            g.drawText (juce::String ((int) db), juce::Rectangle<float> (x - 14.0f * u, track.getBottom() + 10.0f * u, 28.0f * u, 12.0f * u), juce::Justification::centred, false);
+        }
+        g.setColour (juce::Colour (0xffe9e1e1));
+        g.setFont (ui::css (ui::Face::mono, 11.0f * u, 0.12f));
+        g.drawText ("GR  -" + juce::String (shown, 1) + " dB", juce::Rectangle<float> (track.getX(), track.getY() - 22.0f * u, track.getWidth(), 14.0f * u),
+                    juce::Justification::centredRight, false);
+    }
+
+private:
+    std::vector<StarKnob*> knobs;
+    CompStrip strip;
+    juce::Rectangle<float> head, window;
+    float shown = 0.0f, drawn = -1.0f, hold = 0.0f, drawnHold = -1.0f, flicker = 1.0f;
+    int holdT = 0;
 };
 
 //==============================================================================
@@ -2075,6 +2366,15 @@ std::unique_ptr<ModulePanel> createModulePanel (OniriqueVocalBoxAudioProcessor& 
             return s;
         }
         case modules::creative: return std::make_unique<CreativePanel> (p, code);
+        case modules::preamp:
+        {
+            auto s = stdPanel (p, code, std::make_unique<PreampViz> (p, code));
+            s->topRow = { &s->tabs (ids::preampMic, T { "LINE", "MIC" }) };
+            s->note = utf8 ("EN TÊTE DE CHAÎNE · LE GAIN POUSSE LE GRAIN, PAS LE VOLUME");
+            s->knobs = { &s->knob (ids::preampGain, "GAIN"), &s->knob (ids::preampOutput, "OUTPUT") };
+            return s;
+        }
+        case modules::cl1b: return std::make_unique<Cl1bPanel> (p, code);
         default: break;
     }
     return createGenericPanel (p, code);

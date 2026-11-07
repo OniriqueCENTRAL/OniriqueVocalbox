@@ -60,6 +60,8 @@ const char* iconPath (int type)
         "M4 6v12M9.5 8v8M14.5 10v4M19.5 11.2v1.6",                                                            // delay
         "M3 19a9 9 0 0 1 18 0M6.5 19a5.5 5.5 0 0 1 11 0M10 19a2 2 0 0 1 4 0",                                 // reverb
         "M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z",       // creative
+        "M4 5h16v14H4zM8 12a4 4 0 1 0 8 0a4 4 0 1 0-8 0M12 12l2.5-2.5M7 16.5h1M16 16.5h1",                    // preamp (un bouton de gain)
+        "M3 12h3M18 12h3M8 9.5h8v5H8zM10.5 9.5V7M13.5 9.5V7M12 17v2M9 19h6",                                  // cl1b (la lampe et sa cellule)
     };
     return p[juce::jlimit (0, (int) modules::numTypes - 1, type)];
 }
@@ -1132,8 +1134,10 @@ void OniriqueVocalBoxAudioProcessorEditor::paintTitle (juce::Graphics& g, juce::
 void OniriqueVocalBoxAudioProcessorEditor::refreshTheme()
 {
     view.themeChanged();
-    bar.repaint();
-    repaint();
+    // les potards et les panneaux gardés en image (setBufferedToImage) ne se redessinent pas avec leur parent : sans ceci,
+    // ils gardaient l'ancienne couleur jusqu'au passage de la souris
+    std::function<void (juce::Component&)> all = [&all] (juce::Component& c) { c.repaint(); for (auto* ch : c.getChildren()) all (*ch); };
+    all (*this);
 }
 
 // une fois par seconde : la couleur a-t-elle été changée dans un autre plugin ONIRIQUE ?
