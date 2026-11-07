@@ -66,7 +66,18 @@ public:
         auto up = os != nullptr ? os->processSamplesUp (block) : block;
         const int un = (int) up.getNumSamples();
         float pk = 0.0f;
-        for (int c = 0; c < numCh; ++c)
+        // une voix mono sur une piste stéréo (gauche = droite) : un seul canal calculé, recopié (moitié moins de calcul). Quand
+        // la stéréo revient, le canal droit repart de l'état du gauche (le même, puisqu'ils recevaient la même voix)
+        bool same = numCh == 2;
+        if (same)
+        {
+            const float* a = up.getChannelPointer (0); const float* b = up.getChannelPointer (1);
+            for (int i = 0; i < un && same; ++i) same = a[i] == b[i];
+        }
+        if (! same && monoRun) ch[1] = ch[0];
+        monoRun = same;
+        const int work = same ? 1 : numCh;
+        for (int c = 0; c < work; ++c)
         {
             auto* s = up.getChannelPointer ((size_t) c);
             for (int i = 0; i < un; ++i)
@@ -77,6 +88,7 @@ public:
             }
             pk = std::max (pk, (float) ch[c].drive());
         }
+        if (same) std::copy (up.getChannelPointer (0), up.getChannelPointer (0) + un, up.getChannelPointer (1));
         if (os != nullptr) os->processSamplesDown (block);
         for (int i = 0; i < n; ++i)
         {
@@ -178,7 +190,7 @@ private:
     std::unique_ptr<juce::dsp::Oversampling<float>> os;
     double work = 96000.0;
     int factor = 1;
-    bool configured = false, isMic = false, pendingMic = false, switching = false;
+    bool configured = false, isMic = false, pendingMic = false, switching = false, monoRun = false;
     juce::SmoothedValue<double> comp;
     juce::SmoothedValue<float> outS { 1.0f }, fade { 1.0f };
     std::atomic<float> lastDrive { 0.0f };

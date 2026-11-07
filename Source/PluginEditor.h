@@ -135,6 +135,21 @@ private:
     float glow = 0.0f;
 };
 
+// AUTO MIX, en haut à droite de la chaîne : ouvre l'écran des macros (et « affiner en mots ») ; allumé quand il est affiché
+class MixPageButton : public juce::Component
+{
+public:
+    MixPageButton() { setMouseCursor (juce::MouseCursor::PointingHandCursor); }
+    std::function<void()> onClick;
+    bool active = false;
+    void paint (juce::Graphics&) override;
+    void mouseEnter (const juce::MouseEvent&) override { hover = true; repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { hover = false; repaint(); }
+    void mouseUp (const juce::MouseEvent& e) override { if (getLocalBounds().contains (e.getPosition()) && onClick) onClick(); }
+private:
+    bool hover = false;
+};
+
 //==============================================================================
 /*  L'interface sous la barre, telle que la démo validée (1600 x 936) : la chaîne en haut, le module choisi en grand dans son
     panneau de verre (son en-tête : point braise, nom, ce qu'il fait, ON), IN / AUTO GAIN / OUT en bas. Le catalogue du +
@@ -154,6 +169,7 @@ private:
     void timerCallback() override;
     void select (int code);
     void syncSelection();
+    void openMixPage();
     juce::Rectangle<float> panelArea() const;
     juce::Rectangle<float> headerPower() const;
     bool isOn (int code) const;
@@ -168,6 +184,8 @@ private:
     ModulePicker picker;
     StartScreen start;   // chaîne vide : la sphère et la barre de recherche
     RateChip rate;       // la note du mix (apprentissage)
+    MixPageButton mixButton;
+    bool mixPage = false;   // l'écran AUTO MIX (macros) à la place d'un module
     juce::TooltipWindow tooltips { this, 600 };
     int selected = 0;
     float panelFade = 1.0f, powerLit = 0.0f, powerHover = 0.0f;

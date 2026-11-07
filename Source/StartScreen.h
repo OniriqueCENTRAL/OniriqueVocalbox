@@ -34,6 +34,7 @@ private:
 
     OniriqueVocalBoxAudioProcessor& processor;
     juce::TextEditor search;
+    GlassTabs role;   // LEAD, BACKS, ADLIBS, DOUBLES : la place de cette voix dans le morceau, avant AUTO MIX
     juce::File reference;
     juce::String status;
 

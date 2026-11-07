@@ -150,6 +150,17 @@ namespace ids
     inline constexpr const char* preampOn = "preampOn", *preampMic = "preampMic", *preampGain = "preampGain", *preampOutput = "preampOutput";
     inline constexpr const char* cl1bOn = "cl1bOn", *cl1bThreshold = "cl1bThreshold", *cl1bRatio = "cl1bRatio", *cl1bAttack = "cl1bAttack",
                                  *cl1bRelease = "cl1bRelease", *cl1bGain = "cl1bGain", *cl1bMix = "cl1bMix";
+    // TUNER (le moteur d'ONIRIQUE TUNER), DE-CLICK, DE-BREATH, DE-REVERB
+    inline constexpr const char* tuneOn = "tuneOn", *tuneKey = "tuneKey", *tuneScale = "tuneScale", *tuneRetune = "tuneRetune",
+                                 *tuneHumanize = "tuneHumanize", *tuneFlex = "tuneFlex", *tuneVibrato = "tuneVibrato",
+                                 *tuneFormant = "tuneFormant", *tuneVoice = "tuneVoice", *tuneHard = "tuneHard",
+                                 *tuneMix = "tuneMix";
+    inline constexpr const char* dclkOn = "dclkOn", *dclkSens = "dclkSens", *dclkAmount = "dclkAmount", *dclkListen = "dclkListen";
+    inline constexpr const char* dbrOn = "dbrOn", *dbrReduction = "dbrReduction", *dbrSens = "dbrSens", *dbrListen = "dbrListen";
+    inline constexpr const char* drvOn = "drvOn", *drvAmount = "drvAmount", *drvTail = "drvTail", *drvAuto = "drvAuto", *drvListen = "drvListen";
+    // les macros (après AUTO MIX : 4 gros potards qui pilotent la chaîne, -100 .. +100), le rôle de la voix et sa place
+    inline constexpr const char* macroPresence = "macroPresence", *macroWarmth = "macroWarmth", *macroHold = "macroHold",
+                                 *macroSpace = "macroSpace", *voiceRole = "voiceRole", *outPan = "outPan";
     inline constexpr const char* slot[16] { "slot1", "slot2", "slot3", "slot4", "slot5", "slot6", "slot7", "slot8",
                                             "slot9", "slot10", "slot11", "slot12", "slot13", "slot14", "slot15", "slot16" };
     // identifiant d'un réglage pour l'exemplaire k (0 = le premier, qui garde l'identifiant d'origine)
@@ -703,6 +714,67 @@ inline void addParams (std::vector<std::unique_ptr<juce::RangedAudioParameter>>&
         NormalisableRange<float> (-24.0f, 30.0f, 0.1f), 0.0f, Attr().withLabel ("dB").withStringFromValueFunction (dbText)));
     p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::cl1bMix, 1 }, "CL1B Mix",
         NormalisableRange<float> (0.0f, 100.0f, 0.1f), 100.0f, Attr().withLabel ("%").withStringFromValueFunction (pctText)));
+
+    // ---- TUNER : tonalité, gamme, vitesse de correction (Retune), Humanize, Flex-Tune, Natural Vibrato, formants, registre,
+    //      toujours en HQ (le plus transparent), HARD TUNE (l'effet robot), MIX
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::tuneOn, 1 }, "Tuner On", false));
+    p.push_back (mkParam<AudioParameterChoice> (k, ParameterID { ids::tuneKey, 1 }, "Tuner Key",
+        StringArray { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" }, 0));
+    p.push_back (mkParam<AudioParameterChoice> (k, ParameterID { ids::tuneScale, 1 }, "Tuner Scale",
+        // les gammes d'ONIRIQUE TUNER, dans le même ordre (DSP/tune/Scales.h)
+        StringArray { "Chromatic", "Major", "Minor", "Harmonic Minor", "Melodic Minor", "Dorian", "Phrygian", "Lydian", "Mixolydian",
+                      "Locrian", "Major Pentatonic", "Minor Pentatonic", "Blues", "Whole Tone", "Diminished" }, 0));
+    { NormalisableRange<float> r (0.0f, 400.0f, 0.1f); r.setSkewForCentre (40.0f);
+      p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::tuneRetune, 1 }, "Tuner Retune Speed", r, 25.0f,
+          Attr().withLabel ("ms").withStringFromValueFunction ([] (float v, int) { return String (v, v < 10.0f ? 1 : 0) + " ms"; }))); }
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::tuneHumanize, 1 }, "Tuner Humanize",
+        NormalisableRange<float> (0.0f, 100.0f, 0.1f), 30.0f, Attr().withLabel ("%").withStringFromValueFunction (pctText)));
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::tuneFlex, 1 }, "Tuner Flex-Tune",
+        NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f, Attr().withLabel ("%").withStringFromValueFunction (pctText)));
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::tuneVibrato, 1 }, "Tuner Natural Vibrato",
+        NormalisableRange<float> (-100.0f, 100.0f, 0.1f), 0.0f, Attr().withLabel ("%").withStringFromValueFunction (pctText)));
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::tuneFormant, 1 }, "Tuner Formant", false));
+    p.push_back (mkParam<AudioParameterChoice> (k, ParameterID { ids::tuneVoice, 1 }, "Tuner Voice",
+        StringArray { "SOPRANO", "ALTO / TENOR", "BARITONE" }, 1));
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::tuneHard, 1 }, "Tuner Hard Tune", false));
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::tuneMix, 1 }, "Tuner Mix",
+        NormalisableRange<float> (0.0f, 100.0f, 0.1f), 100.0f, Attr().withLabel ("%").withStringFromValueFunction (pctText)));
+
+    // ---- DE-CLICK, DE-BREATH, DE-REVERB : deux potards et LISTEN (seulement ce qui est retiré)
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::dclkOn, 1 }, "De-Click On", false));
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::dclkSens, 1 }, "De-Click Sensitivity",
+        NormalisableRange<float> (0.0f, 100.0f, 0.1f), 50.0f, Attr().withLabel ("%").withStringFromValueFunction (pctText)));
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::dclkAmount, 1 }, "De-Click Amount",
+        NormalisableRange<float> (0.0f, 100.0f, 0.1f), 70.0f, Attr().withLabel ("%").withStringFromValueFunction (pctText)));
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::dclkListen, 1 }, "De-Click Listen", false));
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::dbrOn, 1 }, "De-Breath On", false));
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::dbrReduction, 1 }, "De-Breath Reduction",
+        NormalisableRange<float> (0.0f, 30.0f, 0.1f), 12.0f, Attr().withLabel ("dB").withStringFromValueFunction ([] (float v, int) { return "-" + String (v, 1) + " dB"; })));
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::dbrSens, 1 }, "De-Breath Sensitivity",
+        NormalisableRange<float> (0.0f, 100.0f, 0.1f), 50.0f, Attr().withLabel ("%").withStringFromValueFunction (pctText)));
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::dbrListen, 1 }, "De-Breath Listen", false));
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::drvOn, 1 }, "De-Reverb On", false));
+    p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::drvAmount, 1 }, "De-Reverb Amount",
+        NormalisableRange<float> (0.0f, 100.0f, 0.1f), 50.0f, Attr().withLabel ("%").withStringFromValueFunction (pctText)));
+    { NormalisableRange<float> r (0.1f, 3.0f, 0.01f); r.setSkewForCentre (0.6f);
+      p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::drvTail, 1 }, "De-Reverb Tail", r, 0.5f,
+          Attr().withLabel ("s").withStringFromValueFunction ([] (float v, int) { return String (v, 2) + " s"; }))); }
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::drvAuto, 1 }, "De-Reverb Auto Tail", true));
+    p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::drvListen, 1 }, "De-Reverb Listen", false));
+
+    // ---- les macros, le rôle de la voix et sa place dans le panoramique (réglages généraux : un seul exemplaire)
+    if (k == 0)
+    {
+        for (auto [id, name] : { std::pair { ids::macroPresence, "Macro Presence" }, std::pair { ids::macroWarmth, "Macro Warmth" },
+                                 std::pair { ids::macroHold, "Macro Hold" }, std::pair { ids::macroSpace, "Macro Space" } })
+            p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { id, 1 }, name, NormalisableRange<float> (-100.0f, 100.0f, 0.1f), 0.0f,
+                                                                Attr().withStringFromValueFunction ([] (float v, int) { return (v > 0.05f ? "+" : "") + String (juce::roundToInt (v)); })));
+        p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { ids::voiceRole, 1 }, "Voice Role",
+                                                             StringArray { "LEAD", "BACKS", "ADLIBS", "DOUBLES" }, 0));
+        p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { ids::outPan, 1 }, "Pan", NormalisableRange<float> (-100.0f, 100.0f, 0.1f), 0.0f,
+                                                            Attr().withStringFromValueFunction ([] (float v, int)
+                                                            { const int a = juce::roundToInt (std::abs (v)); return a == 0 ? String ("C") : String (a) + (v < 0.0f ? " L" : " R"); })));
+    }
 
     // les emplacements de la chaîne : ni automation (le DAW ne doit pas reconstruire la chaîne en lecture), ni nom de module
     // dans la liste des réglages ; un preset les emporte avec lui

@@ -155,3 +155,5 @@ public:
 
 std::unique_ptr<ModulePanel> createModulePanel (OniriqueVocalBoxAudioProcessor&, int code);   // l'écran du module (ModuleScreens.cpp)
 std::unique_ptr<ModulePanel> createGenericPanel (OniriqueVocalBoxAudioProcessor&, int code);  // tous ses réglages en potards
+// l'écran AUTO MIX (après le mix) : les 4 macros, affiner en mots, le rôle de la voix et sa place, un nouveau mix
+std::unique_ptr<ModulePanel> createMixPage (OniriqueVocalBoxAudioProcessor&, std::function<void()> onNewMix);

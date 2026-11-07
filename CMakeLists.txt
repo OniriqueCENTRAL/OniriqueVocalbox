@@ -58,7 +58,11 @@ target_sources(OniriqueVocalBox PRIVATE
     Source/MixAnalysis.cpp
     Source/StartScreen.cpp
     Source/Widgets.cpp
-    Source/dsp/cl1b/Opto.cpp)   # le CL1B : la cellule optique et la lampe de l'OptoBox
+    Source/DSP/cl1b/Opto.cpp    # le CL1B : la cellule optique et la lampe de l'OptoBox
+    Source/DSP/tune/PitchDetector.cpp    # TUNER : le moteur d'ONIRIQUE TUNER
+    Source/DSP/tune/PitchCorrector.cpp
+    Source/DSP/tune/TuneEngine.cpp
+    Source/DSP/tune/Vocoder.cpp)
 
 # logo du site (sigil blanc), intégré au binaire
 juce_add_binary_data(OniriqueAssets SOURCES Resources/logo.png Resources/vocalbox-brain.json)   # le cerveau d’AUTO MIX

@@ -1,6 +1,8 @@
 #include "MixAnalysis.h"
 #include "Modules.h"
 #include "onirique_separate.hpp"
+#include "DSP/DeClick.h"    // les détecteurs de DE-CLICK et DE-BREATH, passés sur la prise
+#include "DSP/DeBreath.h"
 #include <memory>
 #if __has_include (<BinaryData.h>)
  #include <BinaryData.h>   // le cerveau livré dans le plugin
@@ -148,7 +150,25 @@ Profile analyse (const float* x, int n, double sr)
         std::vector<float> corr ((size_t) lagMax + 2, 0.0f);
         int active = 0, held = 0, run = 0;
         float prevSt = 0.0f;
-        auto closeRun = [&] { if (run >= 15) held += run; run = 0; };
+        // les notes tenues donnent aussi la justesse (écart à la note la plus proche) et la tonalité (le poids de chaque note)
+        std::vector<float> runSt;
+        std::array<double, 12> pcWeight {};
+        double devSum = 0.0, devW = 0.0, midiSum = 0.0;
+        auto closeRun = [&]
+        {
+            if (run >= 15 && ! runSt.empty())
+            {
+                held += run;
+                const float mid = median (runSt);           // demi-tons au-dessus de la2 (110 Hz)
+                const float midi = 45.0f + mid;
+                const float frac = midi - std::round (midi);
+                devSum += std::abs (frac) * 100.0 * run; devW += run;
+                midiSum += (double) midi * run;
+                pcWeight[(size_t) (((int) std::round (midi) % 12 + 12) % 12)] += run;
+            }
+            run = 0;
+            runSt.clear();
+        };
         for (int s = 0; s + W + lagMax < (int) y.size(); s += step)
         {
             const size_t e10 = (size_t) ((double) s * d / h10);
@@ -171,9 +191,61 @@ Profile analyse (const float* x, int n, double sr)
             const float st = 12.0f * std::log2 ((float) (fs / bestLag) / 110.0f);
             if (run > 0 && std::abs (st - prevSt) > 0.5f) closeRun();
             ++run; prevSt = st;
+            runSt.push_back (st);
         }
         closeRun();
         if (active > 50) p.sung = juce::jlimit (0.0f, 1.0f, ((float) held / (float) active - 0.15f) / 0.3f);
+        if (devW > 0.0) { p.pitchDevCents = (float) (devSum / devW); p.noteMidi = (float) (midiSum / devW); }
+        // la tonalité : les profils de Krumhansl-Kessler (poids des degrés majeurs et mineurs), corrélés aux notes tenues
+        double total = 0.0;
+        for (double w : pcWeight) total += w;
+        if (total >= 60.0)   // au moins ~0,6 s de notes tenues
+        {
+            static constexpr double maj[12] { 6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88 };
+            static constexpr double mnr[12] { 6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17 };
+            auto corrOf = [&] (const double* prof, int root)
+            {
+                double mx = 0, my = 0;
+                for (int i = 0; i < 12; ++i) { mx += pcWeight[(size_t) ((i + root) % 12)]; my += prof[i]; }
+                mx /= 12.0; my /= 12.0;
+                double sxy = 0, sxx = 0, syy = 0;
+                for (int i = 0; i < 12; ++i)
+                {
+                    const double a = pcWeight[(size_t) ((i + root) % 12)] - mx, b = prof[i] - my;
+                    sxy += a * b; sxx += a * a; syy += b * b;
+                }
+                return sxx > 0.0 && syy > 0.0 ? sxy / std::sqrt (sxx * syy) : 0.0;
+            };
+            double best = -2.0, second = -2.0;
+            for (int root = 0; root < 12; ++root)
+                for (int mode = 0; mode < 2; ++mode)
+                {
+                    const double c = corrOf (mode == 0 ? maj : mnr, root);
+                    if (c > best) { second = best; best = c; p.keyRoot = root; p.keyMinor = mode == 1; }
+                    else if (c > second) second = c;
+                }
+            // confiance : la corrélation, et l'avance sur la deuxième tonalité (souvent la relative)
+            p.keyConfidence = (float) juce::jlimit (0.0, 1.0, (best - 0.5) * 2.0) * (float) juce::jlimit (0.3, 1.0, (best - second) * 8.0 + 0.3);
+        }
+    }
+
+    // ---- bruits de bouche et respirations : les détecteurs mêmes de DE-CLICK et DE-BREATH, sur toute la prise
+    {
+        std::vector<float> a (x, x + n), b (x, x + n);
+        DeClick dc; dc.prepare (sr); dc.setParams (0.5f, 0.7f, false);
+        DeBreath db; db.prepare (sr); db.setParams (12.0f, 0.5f, false);
+        for (int s = 0; s < n; s += 512)
+        {
+            const int m = juce::jmin (512, n - s);
+            float* ca[1] { a.data() + s };
+            float* cb[1] { b.data() + s };
+            dc.process (ca, 1, m);
+            db.process (cb, 1, m);
+        }
+        const float minutes = (float) (p.seconds / 60.0);
+        p.clicksPerMin = (float) dc.takeClicks() / minutes;
+        p.breathsPerMin = (float) db.breathsFound() / minutes;
+        p.breathDb = db.breathLevelDb();
     }
 
     // timbre : moyenne par tiers d'octave, la zone 200 Hz .. 5 kHz ramenée à 0
@@ -582,6 +654,8 @@ void applyArtist (Hints& h, const ArtistStyle& a)
     }
     if (h.peakComp < 0 && has ("peakComp")) h.peakComp = x["peakComp"].toString().equalsIgnoreCase ("cl1b") ? 1 : 0;
     if ((bool) x.getProperty ("fast", false)) h.fast = true;
+    // son accordage : 0,3 justesse discrète .. 1 l'effet robot (« sans autotune » dans la demande garde le dernier mot)
+    if (has ("tune") && h.tune >= 0.0f && num ("tune") > h.tune) { h.tune = juce::jlimit (0.0f, 1.0f, num ("tune")); h.tuneOf = a.name; }
     if (a.genre.containsIgnoreCase ("rap") || a.genre.containsIgnoreCase ("drill") || a.genre.containsIgnoreCase ("trap")) h.rapStyle = true;
     // sa voix mesurée (une référence, souvent séparée par IA) : la cible du timbre, de la tenue et de l'espace
     if (h.voiceOf.isEmpty() && a.voice.isObject())
@@ -650,7 +724,17 @@ Hints parseHints (const juce::String& text)
     if (has ({ "afro", "afrobeat", "dancehall", "reggaeton", "latin" })) { h.bright += 0.3f; h.delay = juce::jmax (h.delay, 0.3f); h.comp += 0.3f; note ("afro / latin"); }
     if (has ({ "ballade", "ballad", "piano voix" })) { h.reverb = juce::jmax (h.reverb, 0.4f); h.reverbSize = 0.8f; h.comp -= 0.1f; note ("ballade"); }
     if (has ({ "edm", "house", "techno", "dance", "electro" })) { h.bright += 0.4f; h.air += 0.4f; h.delay = juce::jmax (h.delay, 0.35f); h.comp += 0.4f; note ("électro"); }
-    if (has ({ "autotune", "auto tune", "tune" })) note ("(l'accordage n'est pas dans VOCALBOX)");
+    // l'accordage (TUNER) : refusé, naturel, ou l'effet robot
+    if (has ({ "sans autotune", "pas d autotune", "sans tune", "sans auto tune", "no autotune", "sans accordage" })) { h.tune = -1.0f; note ("sans autotune"); }
+    else if (has ({ "hard tune", "hardtune", "robot", "robotique", "t pain", "tpain", "autotune fort", "autotune a fond", "gros autotune", "full autotune",
+                    "effet autotune", "autotune marque", "autotune prononce" })) { h.tune = 1.0f; note ("autotune marqué"); }
+    else if (has ({ "autotune", "auto tune", "tune", "tuner", "accorde", "accordee", "justesse", "pitch", "pitch correction" }))
+    { h.tune = juce::jmax (h.tune, 0.45f); note ("autotune"); }
+    // les nettoyages demandés en toutes lettres
+    if (has ({ "clic", "clics", "click", "clicks", "bruits de bouche", "bruit de bouche", "bouche", "salive", "mouth", "declick", "de click" })) { h.cleanClicks = true; note ("bruits de bouche"); }
+    if (has ({ "respiration", "respirations", "breath", "breaths", "debreath", "de breath", "inspirations" })) { h.cleanBreath = true; note ("respirations"); }
+    if (has ({ "dereverb", "de reverb", "enlever la reverb", "retirer la reverb", "sans la piece", "chambre", "salle de bain", "cabine", "home studio", "piece qui sonne", "ca resonne" }))
+    { h.cleanRoom = true; note ("la pièce retirée"); }
 
     // couleurs
     if (has ({ "aere", "aeree", "aerien", "aerienne", "air", "airy", "brillant", "brillante", "bright", "clair", "claire", "cristal", "cristalline", "crisp" })) { h.air += 0.6f; h.bright += 0.4f; note ("aérée"); }
@@ -733,10 +817,38 @@ constexpr float kDefaultDyn = 3.0f, kDefaultLoud = -18.5f, kDefaultSib = -6.5f;
 void put (Setting& s, const char* id, float v) { s.params.emplace_back (juce::String (id), v); }
 }
 
-Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& h)
+Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
 {
     Plan plan;
     auto& rep = plan.report;
+
+    /*  LE RÔLE de la voix (choisi dans VOCALBOX) : la même demande, mais une autre place dans le morceau.
+        - BACKS : derrière le lead, plus sombres, plus tenus, plus loin (réverbe), doublés, 4 dB plus bas, accordés serré.
+        - ADLIBS : à côté (panoramique), filtrés comme un téléphone léger, plus d'écho, très tenus, 3 dB plus bas.
+        - DOUBLES : collés au lead, très compressés, moins d'espace (l'espace est celui du lead), 6 dB plus bas, accordés serré. */
+    Hints h = hIn;
+    float roleOut = 0.0f, rolePan = 0.0f;
+    static const char* roleName[4] { "LEAD", "BACKS", "ADLIBS", "DOUBLES" };
+    switch (h.role)
+    {
+        case 1: h.dark += 0.2f; h.comp += 0.3f; h.reverb = juce::jmax (h.reverb, 0.0f) + 0.15f; h.doubler = juce::jmax (h.doubler, 0.55f);
+                h.preamp = 0.0f; if (h.tune >= 0.0f && h.tune < 0.5f) h.tune = 0.5f; roleOut = -4.0f; break;
+        case 2: h.phone = juce::jmax (h.phone, 0.3f); h.delay = juce::jmax (h.delay, 0.0f) + 0.35f; h.reverb = juce::jmax (h.reverb, 0.0f) + 0.1f;
+                h.comp += 0.4f; h.preamp = 0.0f; roleOut = -3.0f; rolePan = 30.0f; break;
+        case 3: h.comp += 0.5f; h.dark += 0.1f; h.reverb = h.reverb > 0.0f ? h.reverb * 0.5f : 0.05f; h.delay = h.delay > 0.0f ? h.delay * 0.4f : 0.0f;
+                h.doubler = 0.0f; h.preamp = 0.0f; if (h.tune >= 0.0f && h.tune < 0.6f) h.tune = 0.6f; roleOut = -6.0f; break;
+        default: break;
+    }
+    h.dark = juce::jlimit (0.0f, 1.0f, h.dark); h.comp = juce::jlimit (-1.0f, 1.0f, h.comp);
+    if (h.role > 0)
+        rep.add (u8 ("Rôle : ") + roleName[juce::jlimit (0, 3, h.role)]
+                 + (h.role == 1 ? u8 (" (derrière le lead : plus sombres, plus loin, doublés, −4 dB)")
+                    : h.role == 2 ? u8 (" (à côté : filtrés, plus d'écho, panoramique à droite, −3 dB)")
+                                  : u8 (" (collés au lead : très tenus, peu d'espace, −6 dB)")));
+    // les macros repartent de zéro : la chaîne montée est le point de départ, PRÉSENCE, CHALEUR, TENUE et ESPACE l'affinent
+    for (auto* id : { ids::macroPresence, ids::macroWarmth, ids::macroHold, ids::macroSpace }) plan.globals.push_back ({ id, 0.0f });
+    plan.globals.push_back ({ ids::output, roleOut });
+    plan.globals.push_back ({ ids::outPan, rolePan });
 
     // sans référence glissée, la voix mesurée de l'artiste demandé (le cerveau) sert de référence : son timbre entre 160 Hz
     // et 8 kHz, à moitié (une part de l'écart tient au timbre naturel du chanteur, pas au mix ; et hors de cette zone, la
@@ -783,10 +895,23 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& h)
         rep.add (u8 ("Niveau : ") + dbText (plan.inputDb) + u8 (" à l'entrée, la voix travaille et sort au niveau d'une voix mixée"));
 
     // ---- 1. NETTOYAGE en tête : souffle, bruit entre les phrases, plosives
-    if (src.valid)
+    if (src.valid || h.cleanClicks || h.cleanBreath || h.cleanRoom)
     {
         const float floorIn = src.noiseFloorDb + plan.inputDb, gap = src.loudDb - src.noiseFloorDb;
-        const bool steady = src.floorSpreadDb < 6.0f;   // un vrai souffle, pas une queue de réverbe
+        const bool steady = src.valid && src.floorSpreadDb < 6.0f;   // un vrai souffle, pas une queue de réverbe
+        // DE-CLICK en tout premier (un clic fausse tout ce qui suit : compresseurs, de-esser) : seulement s'il en a entendu
+        // (6 par minute au moins, les détecteurs mêmes du module) ou si c'est demandé
+        if (h.cleanClicks || (src.valid && src.clicksPerMin >= 6.0f))
+        {
+            Setting s { modules::declick, 0, {} };
+            const float sens = src.clicksPerMin >= 25.0f ? 60.0f : 50.0f;
+            put (s, ids::dclkSens, sens);
+            put (s, ids::dclkAmount, src.clicksPerMin >= 25.0f ? 80.0f : 70.0f);
+            plan.modules.push_back (s);
+            rep.add (src.valid && src.clicksPerMin >= 1.0f
+                       ? u8 ("Bruits de bouche : ") + juce::String (juce::roundToInt (src.clicksPerMin)) + u8 (" clics par minute entendus, DE-CLICK (les consonnes ne sont pas touchées)")
+                       : u8 ("DE-CLICK demandé : les clics de bouche retirés"));
+        }
         if (steady && gap < 62.0f && src.noiseFloorDb > -78.0f)
         {
             Setting s { modules::noise, 0, {} };
@@ -794,6 +919,39 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& h)
             put (s, ids::nsAmount, std::round (amt));
             plan.modules.push_back (s);
             rep.add (u8 ("Fond à ") + juce::String (juce::roundToInt (gap)) + u8 (" dB sous la voix : noise suppressor ") + juce::String (juce::roundToInt (amt)) + " %");
+        }
+        // DE-REVERB : la pièce de l'enregistrement (chambre, salon) entendue après les phrases, ou demandé. Pas sur une voix sèche
+        // (une note relâchée doucement ressemble à une petite pièce) : une vraie queue de 0,5 à 2,5 s (au-delà, c'est un effet
+        // voulu, pas une pièce), qui a déjà baissé de 6 dB 120 ms après la phrase mais reste au-dessus de −20 dB, pas un souffle stable
+        const bool roomHeard = src.valid && ! steady && src.rt60 >= 0.5f && src.rt60 <= 2.5f && src.wetDb > -20.0f && src.wetDb < -6.0f;
+        if (h.cleanRoom || roomHeard)
+        {
+            Setting s { modules::dereverb, 0, {} };
+            const float amt = roomHeard ? juce::jlimit (30.0f, 75.0f, 35.0f + (src.rt60 - 0.35f) * 50.0f + (src.wetDb + 22.0f) * 1.5f) : 50.0f;
+            put (s, ids::drvAmount, std::round (amt));
+            put (s, ids::drvAuto, 1.0f);
+            if (src.valid && src.rt60 > 0.1f) put (s, ids::drvTail, juce::jlimit (0.1f, 3.0f, src.rt60));
+            plan.modules.push_back (s);
+            rep.add (roomHeard ? u8 ("La pièce s'entend autour de ta voix (queue de ") + juce::String (src.rt60, 2) + u8 (" s) : DE-REVERB ")
+                                   + juce::String (juce::roundToInt (amt)) + u8 (" %, l'espace viendra de la réverbe du mix")
+                               : u8 ("DE-REVERB demandé : la pièce retirée"));
+        }
+        // DE-BREATH : des respirations fortes (au-dessus de −32 dB sous les phrases), au moins 3 par minute, ou demandé. Baissées,
+        // pas coupées : moins sur une voix chantée (elles font partie du phrasé), plus sur le rap moderne
+        const float sungNow = juce::jlimit (0.0f, 1.0f, (src.valid ? src.sung : 0.0f) + h.sung);
+        if (h.cleanBreath || (src.valid && src.breathsPerMin >= 3.0f && src.breathDb > -32.0f))
+        {
+            Setting s { modules::debreath, 0, {} };
+            float red = src.valid && src.breathDb > -60.0f ? juce::jlimit (6.0f, 15.0f, (src.breathDb + 38.0f) * 0.7f) : 10.0f;
+            red *= 1.0f - 0.35f * sungNow;
+            if (h.rapStyle || h.fast) red += 2.0f;
+            red = std::round (juce::jlimit (5.0f, 16.0f, red));
+            put (s, ids::dbrReduction, red);
+            plan.modules.push_back (s);
+            rep.add (src.valid && src.breathsPerMin >= 1.0f
+                       ? u8 ("Respirations : ") + juce::String (juce::roundToInt (src.breathsPerMin)) + u8 (" par minute, à ") + dbText (src.breathDb)
+                             + u8 (" sous les phrases : DE-BREATH −") + juce::String (juce::roundToInt (red)) + u8 (" dB (baissées, pas coupées)")
+                       : u8 ("DE-BREATH demandé : respirations baissées de ") + juce::String (juce::roundToInt (red)) + " dB");
         }
         if (steady && gap < 52.0f && gap > 16.0f)
         {
@@ -831,6 +989,77 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& h)
         rep.add (u8 ("Préampli N73 en tête (") + (mic ? "MIC +" : "LINE ") + juce::String (db) + u8 (" dB) : ")
                  + (h.preamp > 0.0f ? (h.preampOf.isNotEmpty() ? u8 ("comme dans la chaîne d'enregistrement de ") + h.preampOf : u8 ("demandé"))
                                     : thin ? u8 ("de la densité pour une voix un peu fine") : u8 ("de la chaleur")));
+    }
+
+    /*  ---- 2b. TUNER, avant l'EQ et les compresseurs (on accorde la voix telle qu'elle a été chantée). Seulement :
+        - quand c'est demandé (« autotune », « robot »), ou que l'artiste demandé en a un dans son son (le cerveau : « tune ») ;
+        - sur une voix chantée qui chante à côté (plus de 18 cents d'écart moyen sur ses notes tenues) : une justesse discrète.
+        Jamais si « sans autotune ». La tonalité : celle des notes tenues de la prise si elle est sûre, sinon celle qu'une autre
+        VOCALBOX du projet a trouvée (le LEAD), sinon chromatique (toutes les notes : aucune fausse note possible).
+        Le réglage suit la quantité : 0,3 justesse naturelle (Retune lent, Humanize, Flex-Tune), 0,6..0,85 l'autotune moderne
+        (Retune 5 .. 15 ms), au-delà l'effet robot (HARD TUNE). */
+    {
+        const float sungT = juce::jlimit (0.0f, 1.0f, (src.valid ? src.sung : 0.0f) + h.sung);
+        float a = h.tune;
+        const bool offPitch = src.valid && sungT >= 0.5f && src.pitchDevCents > 18.0f;
+        if (a == 0.0f && offPitch) a = 0.3f;
+        if (a > 0.0f)
+        {
+            Setting s { modules::tuner, 0, {} };
+            int key = -1;
+            juce::String keyWhy;
+            if (src.valid && src.keyRoot >= 0 && src.keyConfidence >= 0.35f)
+            {
+                key = src.keyRoot + (src.keyMinor ? 12 : 0);
+                keyWhy = u8 ("trouvée sur tes notes tenues");
+            }
+            else if (h.sharedKey >= 0)
+            {
+                key = h.sharedKey;
+                keyWhy = u8 ("celle du lead (une autre VOCALBOX du projet)");
+            }
+            static const char* names[12] { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+            if (key >= 0)
+            {
+                put (s, ids::tuneKey, (float) (key % 12));
+                put (s, ids::tuneScale, key >= 12 ? 2.0f : 1.0f);   // MINOR ou MAJOR (l'ordre des gammes d'ONIRIQUE TUNER)
+                plan.keyFound = key;
+                plan.keyConfidence = src.valid ? src.keyConfidence : 0.0f;
+            }
+            else put (s, ids::tuneScale, 0.0f);
+            // le registre : la hauteur moyenne des notes tenues
+            if (src.valid && src.noteMidi > 0.0f) put (s, ids::tuneVoice, src.noteMidi >= 64.0f ? 0.0f : src.noteMidi < 50.0f ? 2.0f : 1.0f);
+            juce::String how;
+            if (a >= 0.9f)
+            {
+                put (s, ids::tuneHard, 1.0f); put (s, ids::tuneRetune, 0.0f); put (s, ids::tuneHumanize, 0.0f);
+                how = u8 ("l'effet robot (HARD TUNE)");
+            }
+            else if (a >= 0.6f)
+            {
+                const float rt = std::round (15.0f - 25.0f * (a - 0.6f));   // 15 .. 8 ms
+                put (s, ids::tuneRetune, rt); put (s, ids::tuneHumanize, 15.0f);
+                how = u8 ("l'autotune moderne (Retune ") + juce::String (juce::roundToInt (rt)) + " ms)";
+            }
+            else
+            {
+                const float rt = std::round (60.0f - 60.0f * a);              // 0,3 : 42 ms ; 0,45 : 33 ms
+                put (s, ids::tuneRetune, rt); put (s, ids::tuneHumanize, 50.0f); put (s, ids::tuneFlex, a < 0.4f ? 30.0f : 15.0f);
+                how = u8 ("une justesse naturelle (Retune ") + juce::String (juce::roundToInt (rt)) + u8 (" ms, Humanize, Flex-Tune : les inflexions restent)");
+            }
+            plan.modules.push_back (s);
+            const juce::String keyText = key >= 0 ? juce::String (names[key % 12]) + (key >= 12 ? u8 (" mineur") : u8 (" majeur")) + " (" + keyWhy + ")"
+                                                  : u8 ("chromatique (tonalité pas assez sûre : toutes les notes)");
+            rep.add (u8 ("TUNER en ") + keyText + " : " + how
+                     + (h.tuneOf.isNotEmpty() ? u8 (", comme ") + h.tuneOf
+                        : offPitch && h.tune == 0.0f ? u8 (" ; ta voix s'écarte de ") + juce::String (juce::roundToInt (src.pitchDevCents)) + u8 (" cents en moyenne")
+                                                     : juce::String()));
+        }
+        else if (src.valid && src.keyRoot >= 0 && src.keyConfidence >= 0.35f)
+        {
+            plan.keyFound = src.keyRoot + (src.keyMinor ? 12 : 0);   // partagée quand même (les BACKS pourront s'accorder dessus)
+            plan.keyConfidence = src.keyConfidence;
+        }
     }
 
     // ---- 3. EQ : l'écart entre la prise et la cible (±4 dB lissés), présence pour la mettre en avant
@@ -1183,5 +1412,56 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& h)
         rep.add ("Creative FX : " + fx.joinIntoString (", "));
     }
     return plan;
+}
+
+//==============================================================================
+Refine parseRefine (const juce::String& text)
+{
+    Refine r;
+    auto t = " " + text.toLowerCase() + " ";
+    const char* from[] { "é", "è", "ê", "ë", "à", "â", "î", "ï", "ô", "ù", "û", "ç", "’", "'" };
+    const char* to[] { "e", "e", "e", "e", "a", "a", "i", "i", "o", "u", "u", "c", " ", " " };
+    for (int i = 0; i < 14; ++i) t = t.replace (u8 (from[i]), to[i]);
+    // une demande, plusieurs retouches : « moins de réverbe et plus en avant, un peu plus sombre »
+    juce::StringArray parts;
+    parts.addTokens (t.replace (" et ", ",").replace (" mais ", ",").replace (" puis ", ","), ",;.", "");
+    for (auto part : parts)
+    {
+        part = " " + part.trim() + " ";
+        if (part.trim().isEmpty()) continue;
+        auto has = [&part] (std::initializer_list<const char*> keys) { for (auto* k : keys) if (part.contains (juce::String (k))) return true; return false; };
+        // le sens : « moins », « trop » baissent ; « plus », « pas assez », « encore » montent ; l'ampleur : « un peu », « beaucoup »
+        float sign = 1.0f;
+        if (has ({ " moins ", " trop ", " less ", " baisse ", " enleve ", " retire ", " reduis " })) sign = -1.0f;
+        if (has ({ " pas assez ", " encore plus " })) sign = 1.0f;
+        float amt = 1.0f;
+        if (has ({ " un peu ", " legerement ", " un poil ", " a bit ", " slightly ", " un chouia " })) amt = 0.5f;
+        if (has ({ " beaucoup ", " tres ", " vraiment ", " bien plus ", " much ", " way ", " carrement " })) amt = 1.5f;
+        const float k = sign * amt;
+        auto said = [&r] (const char* s) { r.understood.add (juce::String::fromUTF8 (s)); };
+        bool hit = false;
+        // l'espace
+        if (has ({ "reverb", "espace", "air autour", "ambiance" })) { r.space += 30.0f * k; said (k > 0 ? "plus d'espace" : "moins d'espace"); hit = true; }
+        if (has ({ " sec ", " seche ", " dry ", " proche " })) { r.space -= 35.0f * amt; said ("plus sèche"); hit = true; }
+        if (has ({ "delay", "echo" })) { r.delayMul *= k > 0 ? 1.0f + 0.4f * amt : 1.0f / (1.0f + 0.4f * amt); said (k > 0 ? "plus de delay" : "moins de delay"); hit = true; }
+        // la place
+        if (has ({ "en avant", "devant", "present", "presente", "upfront", "ressorte", "ressortir" })) { r.presence += 22.0f * k; r.hold += 18.0f * k; said (k > 0 ? "plus en avant" : "moins en avant"); hit = true; }
+        if (has ({ "en arriere", "recule", "fondue", "fondu dans" })) { r.presence -= 22.0f * amt; r.hold -= 12.0f * amt; r.space += 12.0f * amt; said ("plus en arrière"); hit = true; }
+        // la couleur
+        if (has ({ "sombre", "dark", "doux", "douce", "moins brillant", "moins agressi", "smooth" })) { r.presence -= 28.0f * k; said (k > 0 ? "plus sombre" : "moins sombre"); hit = true; }
+        else if (has ({ "brillant", "brillante", "clair", "claire", "aere", "aeree", " air ", "bright", "cristal" })) { r.presence += 28.0f * k; said (k > 0 ? "plus brillante" : "moins brillante"); hit = true; }
+        if (has ({ "chaud", "chaude", "rond", "ronde", "epais", "epaisse", "corps", "warm", "grave" })) { r.warmth += 28.0f * k; said (k > 0 ? "plus chaude" : "moins chaude"); hit = true; }
+        if (has ({ " fine ", " fin ", "maigre", "moins de basses", "boueu", "boue" })) { r.warmth -= 25.0f * amt; said ("plus légère dans le bas"); hit = true; }
+        // la tenue
+        if (has ({ "compress", "tenu", "tenue", "serre", "serree", "punch", "dense", "constant" })) { r.hold += 28.0f * k; said (k > 0 ? "plus tenue" : "moins tenue"); hit = true; }
+        if (has ({ "naturel", "naturelle", "dynamique", "respire" }) && ! has ({ "respiration" })) { r.hold -= 25.0f * amt; said ("plus naturelle"); hit = true; }
+        // l'accordage, les respirations
+        if (has ({ "autotune", "auto tune", "tune", "robot", "accord" })) { r.retuneMul *= k > 0 ? 1.0f / (1.0f + amt) : 1.0f + amt; said (k > 0 ? "plus d'autotune" : "moins d'autotune"); hit = true; }
+        if (has ({ "respiration", "breath", "souffle entre" })) { r.breathDb += (k > 0 ? -4.0f : 4.0f) * amt; said (k > 0 ? "respirations plus présentes" : "respirations plus baissées"); hit = true; }
+        juce::ignoreUnused (hit);
+    }
+    r.presence = juce::jlimit (-100.0f, 100.0f, r.presence); r.warmth = juce::jlimit (-100.0f, 100.0f, r.warmth);
+    r.hold = juce::jlimit (-100.0f, 100.0f, r.hold); r.space = juce::jlimit (-100.0f, 100.0f, r.space);
+    return r;
 }
 } // namespace onirique::mix

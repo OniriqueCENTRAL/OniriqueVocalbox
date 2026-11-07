@@ -18,6 +18,7 @@ enum Type
     gate = 0, noise, plosive, reso, deess, peq, analog, sat, fet, opto, multi, parallel,
     doubler, chorus, flanger, phone, delay, reverb, creative,
     preamp, cl1b,   // ajoutés à la fin : les codes des anciennes chaînes ne changent pas
+    tuner, declick, debreath, dereverb,
     numTypes
 };
 
@@ -58,6 +59,10 @@ inline const Info& info (int type)
         { "CREATIVE", "CREATIVE FX",      "Doubleur, chorus, flanger, phone",          3, host,        ids::creativeOn },
         { "PREAMP",   "PREAMP N73",       "Préampli micro ou ligne, grain de console", 1, oversampled, ids::preampOn },
         { "CL1B",     "CL1B OPTO",        "Optique à lampe : crêtes tenues en douceur", 2, oversampled, ids::cl1bOn },
+        { "TUNER",    "ONIRIQUE TUNER",   "Justesse naturelle ou effet robot",         1, host,        ids::tuneOn },
+        { "DE-CLICK", "DE-CLICK",         "Clics de bouche, salive, lèvres",           0, host,        ids::dclkOn },
+        { "BREATH",   "DE-BREATH",        "Respirations baissées, pas coupées",        0, host,        ids::dbrOn },
+        { "DE-VERB",  "DE-REVERB",        "La pièce retirée de la voix",               0, host,        ids::drvOn },
     };
     return table[juce::jlimit (0, (int) numTypes - 1, type)];
 }
@@ -103,6 +108,11 @@ inline const std::vector<juce::String>& paramIds (int type)
                          ids::flangerOn, ids::flangerRate, ids::flangerDepth, ids::flangerFeedback, ids::flangerMix, ids::phoneOn, ids::phoneAmount });
         add (preamp, { ids::preampOn, ids::preampMic, ids::preampGain, ids::preampOutput });
         add (cl1b, { ids::cl1bOn, ids::cl1bThreshold, ids::cl1bRatio, ids::cl1bAttack, ids::cl1bRelease, ids::cl1bGain, ids::cl1bMix });
+        add (tuner, { ids::tuneOn, ids::tuneKey, ids::tuneScale, ids::tuneRetune, ids::tuneHumanize, ids::tuneFlex, ids::tuneVibrato,
+                      ids::tuneFormant, ids::tuneVoice, ids::tuneHard, ids::tuneMix });
+        add (declick, { ids::dclkOn, ids::dclkSens, ids::dclkAmount, ids::dclkListen });
+        add (debreath, { ids::dbrOn, ids::dbrReduction, ids::dbrSens, ids::dbrListen });
+        add (dereverb, { ids::drvOn, ids::drvAmount, ids::drvTail, ids::drvAuto, ids::drvListen });
         return t;
     }();
     return table[(size_t) juce::jlimit (0, (int) numTypes - 1, type)];

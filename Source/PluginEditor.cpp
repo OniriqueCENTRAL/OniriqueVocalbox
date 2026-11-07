@@ -62,6 +62,10 @@ const char* iconPath (int type)
         "M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z",       // creative
         "M4 5h16v14H4zM8 12a4 4 0 1 0 8 0a4 4 0 1 0-8 0M12 12l2.5-2.5M7 16.5h1M16 16.5h1",                    // preamp (un bouton de gain)
         "M3 12h3M18 12h3M8 9.5h8v5H8zM10.5 9.5V7M13.5 9.5V7M12 17v2M9 19h6",                                  // cl1b (la lampe et sa cellule)
+        "M3 6h18M3 12h18M3 18h18M5 15c3-6 5-6 7-3s4 3 7-3",                                                  // tuner (la portée et la voix accordée)
+        "M2 12h6l1.5-6 1.5 12 1.5-6h9.5M17 5l3 3M20 5l-3 3",                                                  // de-click (le clic barré)
+        "M3 9c3 0 4-2 7-2s4 2 7 2h4M3 15c3 0 4-2 7-2s3 1 5 1",                                                // de-breath (le souffle)
+        "M3 19a9 9 0 0 1 18 0M8 19a4 4 0 0 1 8 0M4 4l16 16",                                                  // de-reverb (la réverbe barrée)
     };
     return p[juce::jlimit (0, (int) modules::numTypes - 1, type)];
 }
@@ -764,6 +768,30 @@ void AutoGainSwitch::mouseDown (const juce::MouseEvent&)
 }
 
 //==============================================================================
+void MixPageButton::paint (juce::Graphics& g)
+{
+    const float u = ui::unitOf (*this);
+    const auto r = getLocalBounds().toFloat().reduced (1.0f);
+    drawLitButton (g, r, active ? 1.0f : 0.0f, hover ? 1.0f : 0.0f, u);
+    if (! active)
+    {
+        g.setColour (juce::Colour (255, 220, 225).withAlpha (hover ? 0.24f : 0.14f));
+        g.drawRoundedRectangle (r, 12.0f * u, 1.0f * u);
+    }
+    // l'étoile d'AUTO MIX
+    juce::Path star;
+    const juce::Point<float> c (r.getX() + 20.0f * u, r.getCentreY());
+    const float s = 6.5f * u;
+    star.startNewSubPath (c.x, c.y - s);
+    star.quadraticTo (c.x, c.y, c.x + s, c.y); star.quadraticTo (c.x, c.y, c.x, c.y + s);
+    star.quadraticTo (c.x, c.y, c.x - s, c.y); star.quadraticTo (c.x, c.y, c.x, c.y - s);
+    g.setColour (active ? juce::Colours::white : ui::ember);
+    g.fillPath (star);
+    g.setColour (active || hover ? juce::Colours::white : cBtn);
+    g.setFont (ui::css (ui::Face::mono, 11.0f * u, 0.14f));
+    g.drawText ("AUTO MIX", r.withTrimmedLeft (34.0f * u), juce::Justification::centredLeft, false);
+}
+
 VocalBoxView::VocalBoxView (OniriqueVocalBoxAudioProcessor& p)
     : processor (p), strip (p),
       inStrip (p, ids::input, "IN", [&p] (int c) { return p.consumeInputLevel (c); }),
@@ -784,7 +812,9 @@ VocalBoxView::VocalBoxView (OniriqueVocalBoxAudioProcessor& p)
     addAndMakeVisible (oversampling);
     oversampling.round = true;
     addChildComponent (start);
+    addChildComponent (mixButton);
     addChildComponent (picker);
+    mixButton.onClick = [this] { if (mixPage) select (processor.getChain()[0]); else openMixPage(); };
 
     strip.onSelect = [this] (int code) { select (code); };
     strip.onAdd = [this] { picker.open(); };
@@ -801,6 +831,7 @@ VocalBoxView::VocalBoxView (OniriqueVocalBoxAudioProcessor& p)
     // essais locaux : ONIRIQUE_UI_MODULE=<code> ouvre ce module, ONIRIQUE_UI_PICKER=1 ouvre le +
     if (const auto m = juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_MODULE", {}); m.isNotEmpty()) select (m.getIntValue());
     if (juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_PICKER", {}).isNotEmpty()) picker.open();
+    if (juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_MIXPAGE", {}).isNotEmpty()) openMixPage();
    #endif
     startTimerHz (60);
 }
@@ -826,10 +857,32 @@ void VocalBoxView::themeChanged()
     repaint();
 }
 
+// l'écran AUTO MIX : les macros, affiner en mots, le rôle ; NOUVEAU MIX vide la chaîne (l'écran de départ revient)
+void VocalBoxView::openMixPage()
+{
+    if (! modules::valid (processor.getChain()[0])) return;
+    mixPage = true;
+    mixButton.active = true;
+    mixButton.repaint();
+    strip.setSelected (0);
+    if (panel != nullptr) removeChildComponent (panel.get());
+    panel = createMixPage (processor, [this]
+    {
+        juce::Component::SafePointer<VocalBoxView> safe (this);
+        juce::MessageManager::callAsync ([safe] { if (safe != nullptr) { safe->mixPage = false; safe->processor.setChain ({}); } });
+    });
+    addAndMakeVisible (*panel);
+    panel->toBehind (&picker);
+    panelFade = 0.0f;
+    resized();
+    repaint();
+}
+
 void VocalBoxView::select (int code)
 {
     const auto chain = processor.getChain();
     if (std::find (chain.begin(), chain.end(), code) == chain.end()) code = chain[0];
+    if (mixPage) { mixPage = false; mixButton.active = false; mixButton.repaint(); panel.reset(); selected = -1; }
     if (code == selected && (panel != nullptr || code == 0)) return;
     selected = code;
     processor.apvts.state.setProperty ("selectedModule", code, nullptr);
@@ -849,6 +902,12 @@ void VocalBoxView::select (int code)
 void VocalBoxView::syncSelection()
 {
     const auto chain = processor.getChain();
+    if (mixPage)
+    {
+        // l'écran AUTO MIX reste tant que la chaîne a des modules ; il retient le premier pour l'en-tête
+        if (modules::valid (chain[0])) { selected = std::find (chain.begin(), chain.end(), selected) != chain.end() ? selected : chain[0]; return; }
+        mixPage = false; mixButton.active = false; panel.reset(); selected = -1;
+    }
     if (std::find (chain.begin(), chain.end(), selected) == chain.end() || selected == 0)
     {
         panel.reset();
@@ -892,7 +951,8 @@ void VocalBoxView::resized()
     autoGain.setBounds (juce::Rectangle<float> (24.0f * u + side + 18.0f * u, fy, 230.0f * u, fh).toNearestInt());
     outStrip.setBounds (juce::Rectangle<float> (w - 24.0f * u - side, fy, side, fh).toNearestInt());
     start.setBounds (a.toNearestInt());
-    rate.setBounds (juce::Rectangle<float> (0.0f, 6.0f * u, 300.0f * u, 36.0f * u).withRightX ((float) oversampling.getX() - 14.0f * u).toNearestInt());
+    mixButton.setBounds (juce::Rectangle<float> (0.0f, 6.0f * u, 132.0f * u, 36.0f * u).withRightX ((float) oversampling.getX() - 14.0f * u).toNearestInt());
+    rate.setBounds (juce::Rectangle<float> (0.0f, 6.0f * u, 300.0f * u, 36.0f * u).withRightX ((float) mixButton.getX() - 14.0f * u).toNearestInt());
     picker.setBounds (getLocalBounds());
     backdrop = {};
 }
@@ -912,6 +972,12 @@ void VocalBoxView::timerCallback()
     oversampling.tick();
     picker.tick();
     syncSelection();
+    // AUTO MIX vient de monter la chaîne : son écran s'ouvre ; le bouton n'existe qu'avec une chaîne
+    if (processor.showMixPage.exchange (false)) openMixPage();
+    {
+        const bool hasChain = modules::valid (processor.getChain()[0]);
+        if (mixButton.isVisible() != hasChain) mixButton.setVisible (hasChain);
+    }
     if (panel != nullptr) panel->tick();
     {
         const bool ask = modules::valid (selected) && processor.learnPending() && onirique::learning::enabled();
@@ -933,14 +999,14 @@ void VocalBoxView::timerCallback()
 
 void VocalBoxView::mouseDown (const juce::MouseEvent& e)
 {
-    if (headerPower().contains (e.position) && modules::valid (selected))
+    if (! mixPage && headerPower().contains (e.position) && modules::valid (selected))
         if (auto* p = processor.param (modules::info (modules::typeOf (selected)).onId, modules::instanceOf (selected)))
             p->setValueNotifyingHost (p->getValue() > 0.5f ? 0.0f : 1.0f);
 }
 
 void VocalBoxView::mouseMove (const juce::MouseEvent& e)
 {
-    const bool over = headerPower().contains (e.position);
+    const bool over = ! mixPage && headerPower().contains (e.position);
     if (over != overPower) { overPower = over; setMouseCursor (over ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor); }
 }
 
@@ -987,6 +1053,26 @@ void VocalBoxView::paint (juce::Graphics& g)
     if (! modules::valid (selected))
     {
         return;   // l'écran de départ (StartScreen) occupe le panneau
+    }
+
+    if (mixPage)
+    {
+        // l'écran AUTO MIX : son étoile, son nom, ce qu'il fait (pas d'interrupteur)
+        const float cy = a.getY() + (22.0f + 18.0f) * u;
+        const auto dot = juce::Rectangle<float> (10.0f * u, 10.0f * u).withCentre ({ a.getX() + 26.0f * u + 5.0f * u, cy });
+        ui::softGlowEllipse (g, dot, onirique::look::ember.withAlpha (0.9f), 12.0f * u);
+        g.setColour (ui::ember);
+        g.fillEllipse (dot);
+        const auto nf = ui::css (ui::Face::display, 22.0f * u, 0.05f);
+        const float nx = dot.getRight() + 14.0f * u, nw = ui::textWidth (nf, "AUTO MIX") + 2.0f;
+        g.setColour (cBone);
+        g.setFont (nf);
+        g.drawText ("AUTO MIX", juce::Rectangle<float> (nx, cy - 18.0f * u, nw + 10.0f, 36.0f * u), juce::Justification::centredLeft, false);
+        g.setColour (cHaze);
+        g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.12f));
+        g.drawText (juce::String::fromUTF8 ("LES MACROS · AFFINER EN MOTS · LE RÔLE DE LA VOIX"), juce::Rectangle<float> (nx + nw + 14.0f * u, cy - 18.0f * u, 800.0f * u, 36.0f * u),
+                    juce::Justification::centredLeft, false);
+        return;
     }
 
     // en-tête : point de 10 (lueur 14), nom (Unbounded 22, 0.05 em), ce qu'il fait (JetBrains Mono 10), ON

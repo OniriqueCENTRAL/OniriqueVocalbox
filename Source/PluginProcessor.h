@@ -90,6 +90,16 @@ public:
     void learnArm (juce::var payload, std::vector<std::pair<juce::String, float>> applied);
     bool learnPending() const noexcept { return learnPayload.isObject(); }
     void learnSend (int rating);   // -1, 0 (pas de note), +1 : avec les retouches, puis oublié
+    // une retouche dite en mots après le mix (« moins de réverbe ») : jointe au retour, c'est ce qui apprend le plus au cerveau
+    void learnRefine (const juce::String& text)
+    {
+        if (! learnPayload.isObject()) return;
+        auto arr = learnPayload["refine"];
+        if (! arr.isArray()) { learnPayload.getDynamicObject()->setProperty ("refine", juce::Array<juce::var>()); arr = learnPayload["refine"]; }
+        if (auto* a = arr.getArray(); a != nullptr && a->size() < 12) a->add (text.substring (0, 200));
+    }
+    // AUTO MIX vient de monter la chaîne : l'interface ouvre l'écran AUTO MIX (les macros, affiner en mots)
+    std::atomic<bool> showMixPage { false };
 
 private:
     std::atomic<float>* pBypass = nullptr;

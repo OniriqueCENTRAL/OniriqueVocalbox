@@ -26,17 +26,27 @@ namespace onirique
 class ModuleSwitch
 {
 public:
-    void prepare (double fs, int latencySamples, int maxBlock)
+    // maxLatency : la plus grande latence que le module pourra prendre en route (TUNER : LIVE / HQ, registre)
+    void prepare (double fs, int latencySamples, int maxBlock, int maxLatency = -1)
     {
         latency = latencySamples;
         for (int c = 0; c < 2; ++c)
         {
-            delay[c].prepare (latencySamples);
+            delay[c].prepare (std::max (latencySamples, maxLatency));
+            delay[c].setLength (latencySamples);
             dry[c].assign ((size_t) maxBlock, 0.0f);
         }
         mix.reset (fs, 0.02);
         asleep = false;
         warm = 0;
+    }
+
+    // la latence du module a changé (dans la capacité préparée) : le signal sec suit
+    void setLatency (int l) noexcept
+    {
+        if (l == latency) return;
+        latency = l;
+        for (auto& d : delay) d.setLength (l);
     }
 
     void set (bool on, bool snap) noexcept

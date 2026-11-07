@@ -2,6 +2,7 @@
 #include "PluginProcessor.h"
 #include "Modules.h"
 #include "Learning.h"
+#include "Registry.h"
 
 using namespace onirique;
 
@@ -15,8 +16,11 @@ juce::String utf8 (const char* s) { return juce::String::fromUTF8 (s); }
 constexpr int kDots = 1500;
 }
 
-StartScreen::StartScreen (OniriqueVocalBoxAudioProcessor& p) : processor (p)
+StartScreen::StartScreen (OniriqueVocalBoxAudioProcessor& p)
+    : processor (p), role (p.apvts, onirique::ids::voiceRole, juce::StringArray { "LEAD", "BACKS", "ADLIBS", "DOUBLES" })
 {
+    role.round = true;
+    addAndMakeVisible (role);
     // les points répartis régulièrement sur la sphère (spirale de Fibonacci)
     dots.reserve (kDots);
     const float golden = kPi * (3.0f - std::sqrt (5.0f));
@@ -98,6 +102,9 @@ void StartScreen::resized()
     search.setFont (ui::css (ui::Face::body, 16.0f * u));
     search.applyFontToAllText (ui::css (ui::Face::body, 16.0f * u));
     search.setIndents (0, juce::roundToInt (std::max (0.0f, ((float) search.getHeight() - 16.0f * u * 1.25f) * 0.5f)));
+    // le rôle de la voix, en haut à droite (son libellé est dessiné à sa gauche)
+    const float rw = role.idealWidth (36.0f * u);
+    role.setBounds (juce::Rectangle<float> ((float) getWidth() - 26.0f * u - rw, 22.0f * u, rw, 36.0f * u).toNearestInt());
     halo = {};
 }
 
@@ -111,6 +118,7 @@ void StartScreen::tick()
     const float db = pk > 1.0e-6f ? 20.0f * std::log10 (pk) : -120.0f;
     const float target = juce::jlimit (0.0f, 1.0f, (db + 50.0f) / 44.0f);
     level += (target > level ? 0.35f : 0.06f) * (target - level);
+    role.tick();
     const double now = juce::Time::getMillisecondCounterHiRes() * 0.001;
     ui::approach (listen, stage == Stage::listening ? 1.0f : 0.0f, 0.05f);
     ui::approach (dropGlow, dragging ? 1.0f : 0.0f, 0.15f);
@@ -150,6 +158,22 @@ void StartScreen::paint (juce::Graphics& g)
     g.setFont (ui::css (ui::Face::mono, 11.0f * u, 0.14f));
     g.drawText (utf8 ("DÉCRIS LE MIX D'UN ARTISTE OU D'UN STYLE, OU GLISSE UN DE SES MORCEAUX SUR LA SPHÈRE"),
                 juce::Rectangle<float> (0.0f, 98.0f * u, b.getWidth(), 16.0f * u), juce::Justification::centred, false);
+    // le libellé du rôle, et les autres VOCALBOX du projet (elles se reconnaissent)
+    {
+        g.setColour (cHaze);
+        g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.14f));
+        const auto rb = role.getBounds().toFloat();
+        g.drawText (utf8 ("CETTE VOIX"), juce::Rectangle<float> (rb.getX() - 110.0f * u, rb.getY(), 100.0f * u, rb.getHeight()), juce::Justification::centredRight, false);
+        const auto others = onirique::registry::others (&processor);
+        if (! others.empty())
+        {
+            static const char* rn[4] { "LEAD", "BACKS", "ADLIBS", "DOUBLES" };
+            juce::StringArray s;
+            for (const auto& e : others) s.add (rn[juce::jlimit (0, 3, e.role)]);
+            g.drawText (utf8 ("AUSSI DANS LE PROJET : ") + s.joinIntoString (utf8 (" · ")),
+                        juce::Rectangle<float> (rb.getX() - 400.0f * u, rb.getBottom() + 6.0f * u, 400.0f * u + rb.getWidth(), 14.0f * u), juce::Justification::centredRight, false);
+        }
+    }
 
     // la sphère
     const auto sa = sphereArea();
@@ -404,7 +428,11 @@ void StartScreen::finish()
     if (lookup.joinable()) lookup.join();
     if (lookupFound.load()) hints = mix::parseHints (requestText);
     lastProfile = src;
+    // le rôle choisi, et la tonalité qu'une autre VOCALBOX du projet a trouvée (le lead)
+    hints.role = juce::roundToInt (processor.apvts.getRawParameterValue (onirique::ids::voiceRole)->load());
+    hints.sharedKey = onirique::registry::sharedKey (&processor);
     plan = mix::buildPlan (src, tgt, hints);
+    if (plan.keyFound >= 0) onirique::registry::publishKey (&processor, plan.keyFound, plan.keyConfidence);
     juce::StringArray head;
     head.add (src.valid ? utf8 ("Ta voix : 10 s écoutées") : utf8 ("Ta voix n'a pas été écoutée : réglages d'après la demande seule"));
     if (refState.load() == 2)
@@ -447,7 +475,9 @@ void StartScreen::apply()
     set (ids::input, plan.inputDb);
     set (ids::output, 0.0f);
     set (ids::autoGain, 0.0f);
+    for (const auto& [id, v] : plan.globals) set (id, v);   // macros à zéro, OUTPUT et panoramique du rôle
     processor.setChain (chain);
+    processor.showMixPage.store (true);   // l'écran AUTO MIX s'ouvre : les macros et « affiner en mots »
     armLearning();   // l'apprentissage (s'il est allumé) : ce qui vient d'être décidé attend sa note
 }
 
@@ -473,6 +503,7 @@ void StartScreen::armLearning()
     hv->setProperty ("satType", hints.satType); hv->setProperty ("doubler", hints.doubler); hv->setProperty ("controlled", hints.controlled);
     hv->setProperty ("parallel", hints.parallel); hv->setProperty ("dreamy", hints.dreamy);
     hv->setProperty ("reference", refState.load() == 2);
+    hv->setProperty ("tune", hints.tune); hv->setProperty ("role", hints.role);
     o->setProperty ("hints", juce::var (hv));
 
     if (lastProfile.valid)
@@ -483,6 +514,9 @@ void StartScreen::armLearning()
         pv->setProperty ("noiseFloorDb", lastProfile.noiseFloorDb); pv->setProperty ("sibilance", lastProfile.sibilance);
         pv->setProperty ("sibFreq", lastProfile.sibFreq); pv->setProperty ("plosivesPerMin", lastProfile.plosivesPerMin); pv->setProperty ("sung", lastProfile.sung);
         pv->setProperty ("rt60", lastProfile.rt60);
+        pv->setProperty ("clicksPerMin", lastProfile.clicksPerMin); pv->setProperty ("breathsPerMin", lastProfile.breathsPerMin);
+        pv->setProperty ("breathDb", lastProfile.breathDb); pv->setProperty ("pitchDevCents", lastProfile.pitchDevCents);
+        pv->setProperty ("key", lastProfile.keyRoot < 0 ? -1 : lastProfile.keyRoot + (lastProfile.keyMinor ? 12 : 0));
         juce::Array<juce::var> bands;
         for (float b : lastProfile.bands) bands.add (std::round (b * 10.0f) / 10.0f);
         pv->setProperty ("bands", bands);
@@ -506,6 +540,7 @@ void StartScreen::armLearning()
         mods.add (juce::var (mv));
     }
     applied.push_back ({ ids::input, plan.inputDb });
+    for (const auto& gv : plan.globals) applied.push_back (gv);   // les macros : leurs retouches comptent aussi
     auto* planv = obj();
     planv->setProperty ("modules", mods);
     planv->setProperty ("inputDb", plan.inputDb);

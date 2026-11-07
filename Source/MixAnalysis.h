@@ -47,6 +47,15 @@ struct Profile
     // les résonances : des pics étroits qui dépassent le spectre lissé de la voix (dureté, nasalité, pièce, micro)
     int numRes = 0;
     std::array<float, 4> resFreq {}, resDb {}, resQ {};
+    // les bruits de bouche et les respirations (les détecteurs mêmes de DE-CLICK et DE-BREATH, passés sur la prise)
+    float clicksPerMin = 0.0f;
+    float breathsPerMin = 0.0f, breathDb = -60.0f;   // leur niveau par rapport aux phrases
+    // la justesse et la tonalité (notes tenues) : écart moyen à la note la plus proche, tonique 0..11 (do = 0), mineur ou majeur
+    float pitchDevCents = 0.0f;
+    float noteMidi = 0.0f;        // la hauteur moyenne des notes tenues (le registre : soprano, alto / ténor, baryton)
+    int keyRoot = -1;
+    bool keyMinor = false;
+    float keyConfidence = 0.0f;   // 0 .. 1
 };
 
 // le portrait d'une voix mono
@@ -86,6 +95,11 @@ struct Hints
     int peakComp = -1;           // le compresseur des crêtes : -1 au choix, 0 le 1176, 1 le CL1B
     bool fast = false;           // rap moderne : attaques et relâchements plus rapides
     bool rapStyle = false;       // rap, drill, trap (demandé, ou le genre de l'artiste) : le 1176 tient les crêtes, même sur une voix mélodique
+    float tune = 0.0f;           // TUNER : -1 refusé (« sans autotune »), 0 au choix, 0..1 de la justesse naturelle (0,3) à l'effet robot (1)
+    juce::String tuneOf;         // l'artiste d'où vient l'accordage (compte rendu)
+    bool cleanClicks = false, cleanBreath = false, cleanRoom = false;   // demandés en toutes lettres
+    int role = 0;                // LEAD, BACKS, ADLIBS, DOUBLES (le rôle choisi dans VOCALBOX)
+    int sharedKey = -1;          // la tonalité trouvée par une autre instance de VOCALBOX du projet (0..23 : majeur, +12 mineur)
     juce::StringArray understood;   // ce qui a été compris (pour le compte rendu)
     juce::StringArray unknown;      // les mots non compris (des noms d'artistes, souvent)
     juce::StringArray artists;      // les artistes reconnus par le cerveau (leur fiche est appliquée)
@@ -128,9 +142,25 @@ struct Plan
 {
     std::vector<Setting> modules;     // dans l'ordre de la chaîne
     float inputDb = 0.0f;             // gain d'entrée : la voix amenée au niveau d'une voix mixée
+    std::vector<std::pair<juce::String, float>> globals;   // réglages généraux : macros remises à zéro, OUTPUT et panoramique du rôle
+    int keyFound = -1;                // la tonalité retenue pour le TUNER (0..11 majeur, 12..23 mineur), partagée aux autres VOCALBOX
+    float keyConfidence = 0.0f;
     juce::StringArray report;         // ce qui a été entendu et décidé, en clair
 };
 
 // source : la prise (peut être invalide : pas de lecture) ; target : la voix de référence (peut être invalide)
 Plan buildPlan (const Profile& source, const Profile& target, const Hints& hints);
+
+/*  AFFINER EN MOTS, après le mix : « un peu moins de réverbe », « plus en avant », « plus sombre », « moins d'autotune ».
+    Rien n'est reconstruit : les macros bougent (PRÉSENCE, CHALEUR, TENUE, ESPACE, en points de -100 .. +100), et deux réglages
+    précis (le retour du DELAY, la vitesse du TUNER) sont multipliés. « un peu » divise par deux, « beaucoup » / « très » x 1,5 ;
+    « moins », « trop » ou « pas assez » donnent le sens. */
+struct Refine
+{
+    float presence = 0.0f, warmth = 0.0f, hold = 0.0f, space = 0.0f;
+    float delayMul = 1.0f, retuneMul = 1.0f, breathDb = 0.0f;
+    juce::StringArray understood;
+    bool any() const noexcept { return ! understood.isEmpty(); }
+};
+Refine parseRefine (const juce::String& text);
 } // namespace onirique::mix

@@ -7,6 +7,11 @@
 #include "SpectrumTap.h"
 #include "PreampN73.h"     // PREAMP : l'étage préampli du N73
 #include "cl1b/Opto.h"      // CL1B : la cellule optique et la lampe de l'OptoBox
+#include "tune/TuneEngine.h"   // TUNER : le moteur d'ONIRIQUE TUNER
+#include "tune/Scales.h"
+#include "DeClick.h"
+#include "DeBreath.h"
+#include "DeReverb.h"
 
 namespace onirique
 {
@@ -57,7 +62,9 @@ public:
     ChainModule (juce::AudioProcessorValueTreeState& s, int moduleType, int instance) : apvts (s), type (moduleType), inst (instance)
     {
         pOn = raw (modules::info (type).onId);
-        if (type == modules::gate || type == modules::noise || type == modules::plosive || type == modules::deess)
+        mHold = s.getRawParameterValue (ids::macroHold); mSpace = s.getRawParameterValue (ids::macroSpace); mWarm = s.getRawParameterValue (ids::macroWarmth);
+        if (type == modules::gate || type == modules::noise || type == modules::plosive || type == modules::deess
+            || type == modules::declick || type == modules::debreath || type == modules::dereverb)
         { tapIn = std::make_unique<SpectrumTap>(); tapOut = std::make_unique<SpectrumTap>(); }
     }
     virtual ~ChainModule() = default;
@@ -67,7 +74,7 @@ public:
     {
         fs = rate;
         prepareEngine (rate, factor, maxBlock);
-        sw.prepare (rate, getLatencySamples(), maxBlock);
+        sw.prepare (rate, getLatencySamples(), maxBlock, getMaxLatencySamples());
         scope.prepare (rate);
         update (true);
     }
@@ -82,6 +89,7 @@ public:
 
     void process (float* const* ch, int numCh, int n) noexcept
     {
+        if (variableLatency) sw.setLatency (getLatencySamples());
         sw.process (ch, numCh, n, [this] (float* const* s, int nc, int q) { processEngine (s, nc, q); }, [this] { resetEngine(); });
         scope.noteReduction (getReductionDb());
         const float* dry[2] { sw.getDry (0), sw.getDry (numCh > 1 ? 1 : 0) };
@@ -94,6 +102,7 @@ public:
 
     bool isOn() const noexcept { return pOn != nullptr && pOn->load (std::memory_order_relaxed) > 0.5f; }
     virtual int getLatencySamples() const noexcept { return 0; }   // à la cadence du module
+    virtual int getMaxLatencySamples() const noexcept { return getLatencySamples(); }   // la plus grande qu'il pourra prendre
     // les effets qui gardent leur queue quand on les coupe (reverb, delay...) gèrent eux-mêmes leur interrupteur
     virtual bool selfSwitch() const noexcept { return false; }
     // retour d'effet (DELAY, REVERB) : ajoute son retour dans wet à partir de la voix (in) au lieu de traiter en place
@@ -129,6 +138,10 @@ protected:
     double fs = 48000.0;
     ModuleSwitch sw;
     std::atomic<float>* pOn = nullptr;
+    // les macros (-1 .. +1) : TENUE pousse les compresseurs, ESPACE les retours, CHALEUR le préampli
+    std::atomic<float> *mHold = nullptr, *mSpace = nullptr, *mWarm = nullptr;
+    bool variableLatency = false;   // TUNER : sa latence suit le registre
+    static float macro (std::atomic<float>* p) noexcept { return p != nullptr ? juce::jlimit (-1.0f, 1.0f, p->load (std::memory_order_relaxed) * 0.01f) : 0.0f; }
 
     friend class ModularChain;
 };
@@ -506,7 +519,7 @@ public:
 
 private:
     void prepareEngine (double rate, int, int maxBlock) override { engine.prepare (rate, maxBlock); }
-    void updateEngine (bool, bool snap) noexcept override { engine.set (i (mic) == 1, f (gain), f (out), snap); }
+    void updateEngine (bool, bool snap) noexcept override { engine.set (i (mic) == 1, f (gain) + 8.0f * macro (mWarm), f (out), snap); }
     void processEngine (float* const* ch, int numCh, int n) noexcept override { engine.process (ch, numCh, n); }
     void resetEngine() noexcept override { engine.reset(); }
     PreampN73 engine;
@@ -539,13 +552,120 @@ private:
     obx::Settings settings() const noexcept
     {
         obx::Settings s;
-        s.thresholdDb = f (thr); s.ratio = f (ratio); s.attackMs = f (atk); s.releaseMs = f (rel);
+        s.thresholdDb = f (thr) - 8.0f * macro (mHold); s.ratio = f (ratio); s.attackMs = f (atk); s.releaseMs = f (rel);
         s.outputDb = f (gain); s.parallel = f (mix) * 0.01f;
         s.timing = obx::Timing::manual; s.generation = obx::Generation::modern;
         return s;
     }
     obx::Compressor engine;
     std::atomic<float> *thr = nullptr, *ratio = nullptr, *atk = nullptr, *rel = nullptr, *gain = nullptr, *mix = nullptr;
+};
+
+//------------------------------------------------------------------------------ TUNER
+/*  TUNER : le moteur d'ONIRIQUE TUNER (détection de hauteur, correction façon Auto-Tune, PSOLA), toujours en HQ : la voix
+    est retardée et la hauteur lissée avec de l'avance, le plus transparent. La latence suit le registre : la chaîne se reconstruit (10 ms de fondu) et le DAW est prévenu. */
+class Tuner final : public ChainModule
+{
+public:
+    Tuner (juce::AudioProcessorValueTreeState& s, int k) : ChainModule (s, modules::tuner, k)
+    {
+        key = raw (ids::tuneKey); scale = raw (ids::tuneScale); retune = raw (ids::tuneRetune); hum = raw (ids::tuneHumanize);
+        flex = raw (ids::tuneFlex); vib = raw (ids::tuneVibrato); formant = raw (ids::tuneFormant); voice = raw (ids::tuneVoice);
+        hard = raw (ids::tuneHard); mix = raw (ids::tuneMix);
+        variableLatency = true;
+    }
+    // la latence que donnent les réglages (le moteur la prend à son prochain passage, en fondu)
+    int getLatencySamples() const noexcept override { return tune::TuneEngine::latencyFor (fs, true, juce::jlimit (0, 2, i (voice))); }
+    int getMaxLatencySamples() const noexcept override { return tune::TuneEngine::latencyFor (fs, true, 2); }
+    bool popFrame (tune::DisplayFrame& f) noexcept { return engine.popDisplayFrame (f); }
+
+private:
+    tune::EngineParams params() const noexcept
+    {
+        tune::EngineParams p;
+        p.hq = true;   // toujours HQ : le plus transparent (la latence est compensée par le DAW)
+        p.inputType = juce::jlimit (0, 2, i (voice));
+        const int sc = juce::jlimit (0, tune::numScales - 1, i (scale));
+        p.noteMask = tune::pitchClassMask (tune::scales[sc].mask, juce::jlimit (0, 11, i (key)));
+        p.retuneMs = f (retune);
+        p.hardTune = b (hard);
+        p.humanize = f (hum) * 0.01f;
+        p.flex = f (flex) * 0.01f;
+        p.vibrato = f (vib) * 0.01f;
+        p.formant = b (formant);
+        p.mix = f (mix) * 0.01f;
+        return p;
+    }
+    void prepareEngine (double rate, int, int) override { fs = rate; engine.setParams (params()); engine.prepare (rate); }
+    void updateEngine (bool, bool) noexcept override { engine.setParams (params()); }
+    void processEngine (float* const* ch, int numCh, int n) noexcept override
+    {
+        // une voix mono sur une piste stéréo : un seul canal accordé, recopié (moitié moins de calcul) ; si la stéréo revient,
+        // le moteur repart à zéro (il n'a pas suivi le canal droit)
+        bool same = numCh == 2;
+        for (int i = 0; i < n && same; ++i) same = ch[0][i] == ch[1][i];
+        if (! same && monoRun) engine.reset();
+        monoRun = same;
+        engine.process (ch, same ? 1 : numCh, n);
+        if (same) std::copy (ch[0], ch[0] + n, ch[1]);
+    }
+    void resetEngine() noexcept override { engine.reset(); }
+    bool monoRun = false;
+    tune::TuneEngine engine;
+    std::atomic<float> *key = nullptr, *scale = nullptr, *retune = nullptr, *hum = nullptr, *flex = nullptr, *vib = nullptr,
+                       *formant = nullptr, *voice = nullptr, *hard = nullptr, *mix = nullptr;
+};
+
+//------------------------------------------------------------------------------ DE-CLICK, DE-BREATH, DE-REVERB (cadence de l'hôte)
+class DeClickM final : public ChainModule
+{
+public:
+    DeClickM (juce::AudioProcessorValueTreeState& s, int k) : ChainModule (s, modules::declick, k)
+    { sens = raw (ids::dclkSens); amt = raw (ids::dclkAmount); listen = raw (ids::dclkListen); }
+    int getLatencySamples() const noexcept override { return engine.getLatencySamples(); }
+    int takeClicks() noexcept { return engine.takeClicks(); }
+    float lastClickDb() const noexcept { return engine.lastClickDb(); }
+private:
+    void prepareEngine (double rate, int, int) override { engine.prepare (rate); }
+    void updateEngine (bool, bool) noexcept override { engine.setParams (f (sens) * 0.01f, f (amt) * 0.01f, b (listen)); }
+    void processEngine (float* const* ch, int numCh, int n) noexcept override { engine.process (ch, numCh, n); }
+    void resetEngine() noexcept override { engine.reset(); }
+    DeClick engine;
+    std::atomic<float> *sens = nullptr, *amt = nullptr, *listen = nullptr;
+};
+
+class DeBreathM final : public ChainModule
+{
+public:
+    DeBreathM (juce::AudioProcessorValueTreeState& s, int k) : ChainModule (s, modules::debreath, k)
+    { red = raw (ids::dbrReduction); sens = raw (ids::dbrSens); listen = raw (ids::dbrListen); }
+    int getLatencySamples() const noexcept override { return engine.getLatencySamples(); }
+    float getReductionDb() const noexcept override { return engine.getReductionDb(); }
+private:
+    void prepareEngine (double rate, int, int) override { engine.prepare (rate); }
+    void updateEngine (bool, bool) noexcept override { engine.setParams (f (red), f (sens) * 0.01f, b (listen)); }
+    void processEngine (float* const* ch, int numCh, int n) noexcept override { engine.process (ch, numCh, n); }
+    void resetEngine() noexcept override { engine.reset(); }
+    DeBreath engine;
+    std::atomic<float> *red = nullptr, *sens = nullptr, *listen = nullptr;
+};
+
+class DeReverbM final : public ChainModule
+{
+public:
+    DeReverbM (juce::AudioProcessorValueTreeState& s, int k) : ChainModule (s, modules::dereverb, k)
+    { amt = raw (ids::drvAmount); tail = raw (ids::drvTail); autoT = raw (ids::drvAuto); listen = raw (ids::drvListen); }
+    int getLatencySamples() const noexcept override { return engine.getLatencySamples(); }
+    float getReductionDb() const noexcept override { return -engine.getReductionDb(); }
+    float tailSeconds() const noexcept { return engine.getTailSeconds(); }
+    bool tailMeasured() const noexcept { return engine.tailMeasured(); }
+private:
+    void prepareEngine (double rate, int, int) override { engine.prepare (rate); }
+    void updateEngine (bool, bool) noexcept override { engine.setParams (f (amt) * 0.01f, f (tail), b (autoT), b (listen)); }
+    void processEngine (float* const* ch, int numCh, int n) noexcept override { engine.process (ch, numCh, n); }
+    void resetEngine() noexcept override { engine.reset(); }
+    DeReverb engine;
+    std::atomic<float> *amt = nullptr, *tail = nullptr, *autoT = nullptr, *listen = nullptr;
 };
 
 //------------------------------------------------------------------------------ DYNAMIQUE
@@ -560,7 +680,7 @@ public:
 
 private:
     void prepareEngine (double rate, int, int) override { engine.prepare (rate); }
-    void updateEngine (bool, bool snap) noexcept override { engine.setParams (f (in), f (out), f (atk), f (rel), i (ratio), snap); }
+    void updateEngine (bool, bool snap) noexcept override { engine.setParams (juce::jlimit (-12.0f, 36.0f, f (in) + 6.0f * macro (mHold)), f (out), f (atk), f (rel), i (ratio), snap); }
     void processEngine (float* const* ch, int numCh, int n) noexcept override { engine.process (ch, numCh, n); }
     void resetEngine() noexcept override { engine.reset(); }
     FetCompressor engine;
@@ -575,7 +695,7 @@ public:
 
 private:
     void prepareEngine (double rate, int, int) override { engine.prepare (rate); }
-    void updateEngine (bool, bool snap) noexcept override { engine.setParams (f (gain), f (peak), b (limit), snap); }
+    void updateEngine (bool, bool snap) noexcept override { engine.setParams (f (gain), juce::jlimit (0.0f, 100.0f, f (peak) + 20.0f * macro (mHold)), b (limit), snap); }
     void processEngine (float* const* ch, int numCh, int n) noexcept override { engine.process (ch, numCh, n); }
     void resetEngine() noexcept override { engine.reset(); }
     OptoCompressor engine;
@@ -632,7 +752,7 @@ private:
     void prepareEngine (double rate, int, int maxBlock) override { engine.prepare (rate, maxBlock); }
     void updateEngine (bool, bool snap) noexcept override
     {
-        engine.setAmount (f (amount) * 0.01f, snap);
+        engine.setAmount (juce::jlimit (0.0f, 1.0f, f (amount) * 0.01f * (1.0f + macro (mHold))), snap);
         engine.setControl (b (autoM), f (thr), f (atk), f (rel), snap);
         engine.setDeEsser (f (dsFreq), f (dsAmt) * 0.01f, snap);
     }
@@ -726,7 +846,7 @@ private:
     {
         const double t = juce::jlimit (30.0, 300.0, bpm.load (std::memory_order_relaxed));
         const float sec = b (sync) ? (float) (60.0 / t * delayNoteBeats (i (note))) : f (time) * 0.001f;
-        engine.set (on, sec, f (fbk) * 0.01f, f (mix) * 0.01f, b (pp), f (lc), f (hc), f (duck) * 0.01f);
+        engine.set (on, sec, f (fbk) * 0.01f, juce::jlimit (0.0f, 1.0f, f (mix) * 0.01f * dbToGain (6.0f * macro (mSpace))), b (pp), f (lc), f (hc), f (duck) * 0.01f);
     }
     void processEngine (float* const*, int, int) noexcept override {}
     fx::StereoDelay engine;
@@ -755,7 +875,7 @@ private:
     {
         fx::VocalReverb::Params q;
         q.on = on; q.mode = i (p[0]); q.preDelayMs = f (p[1]); q.decay = f (p[2]); q.size = f (p[3]) * 0.01f; q.diffusion = f (p[4]) * 0.01f;
-        q.modRate = f (p[5]); q.modDepth = f (p[6]) * 0.01f; q.mix = f (p[7]) * 0.01f; q.lowCut = f (p[8]); q.highCut = f (p[9]);
+        q.modRate = f (p[5]); q.modDepth = f (p[6]) * 0.01f; q.mix = juce::jlimit (0.0f, 1.0f, f (p[7]) * 0.01f * dbToGain (6.0f * macro (mSpace))); q.lowCut = f (p[8]); q.highCut = f (p[9]);
         q.ducking = f (p[10]) * 0.01f; q.width = f (p[11]) * 0.01f; q.clean = f (p[12]) * 0.01f;
         engine.set (q);
     }
@@ -810,6 +930,10 @@ public:
             put (modules::creative, new CreativeFx (s, k));
             put (modules::preamp, new Preamp (s, k));
             put (modules::cl1b, new Cl1b (s, k));
+            put (modules::tuner, new Tuner (s, k));
+            put (modules::declick, new DeClickM (s, k));
+            put (modules::debreath, new DeBreathM (s, k));
+            put (modules::dereverb, new DeReverbM (s, k));
             static_cast<CreativeFx*> (module (modules::creative, k))->setParts (module (modules::doubler, k), module (modules::chorus, k),
                                                                               module (modules::flanger, k), module (modules::phone, k));
         }
@@ -818,6 +942,9 @@ public:
         pOutput = s.getRawParameterValue (ids::output);
         pAutoGain = s.getRawParameterValue (ids::autoGain);
         pBypass = s.getRawParameterValue (ids::bypass);
+        pPres = s.getRawParameterValue (ids::macroPresence);
+        pWarm = s.getRawParameterValue (ids::macroWarmth);
+        pPan = s.getRawParameterValue (ids::outPan);
     }
 
     ChainModule* module (int type, int instance) const noexcept
@@ -877,6 +1004,13 @@ public:
         readSlots (now);
         if (now != pending) pending = now;
         updateParams (false);
+        // un module dont la latence a changé (TUNER : le registre) : la chaîne se reconstruit pour rester alignée
+        if (planVariable && ! relatch)
+        {
+            Plan probe;
+            build (plan.codes, probe);
+            relatch = probe.latency != plan.latency;
+        }
         for (int pos = 0; pos < n; pos += kChunk)
         {
             const int m = std::min (kChunk, n - pos);
@@ -957,6 +1091,8 @@ private:
             if (! was) next.steps[(size_t) j].m->arrive();
         }
         plan = next;
+        planVariable = false;
+        for (int j = 0; j < plan.count; ++j) planVariable = planVariable || plan.steps[(size_t) j].m->variableLatency;
         for (auto& d : dryDelay) d.setLength (plan.latency);
         int seg = 0;
         for (int j = 0; j < plan.count;)
@@ -1043,13 +1179,15 @@ private:
             ++seg;
         }
 
+        macroStage (ch, numCh, n);
+
         // OUTPUT + BYPASS (signal sec aligné) ; chaîne modifiée : on descend, on reconstruit, on remonte (10 ms)
         for (int s = 0; s < n; ++s)
         {
-            if (pending != plan.codes)
+            if (pending != plan.codes || relatch)
             {
                 planGain -= planStep;
-                if (planGain <= 0.0f) { planGain = 0.0f; applyPlan (pending); }
+                if (planGain <= 0.0f) { planGain = 0.0f; applyPlan (pending); relatch = false; }
             }
             else if (planGain < 1.0f) planGain = std::min (1.0f, planGain + planStep);
 
@@ -1058,6 +1196,47 @@ private:
                 ch[c][s] = sanitize ((dry[c][s] * (1.0f - m) + ch[c][s] * g * m) * pg);
         }
         storePeaks (outLevel, ch, numCh, n);
+    }
+
+    /*  PRÉSENCE et CHALEUR (les macros), puis le panoramique (rôles BACKS, ADLIBS) : une courbe douce en fin de chaîne.
+        PRÉSENCE : cloche large à 3,8 kHz (±3,5 dB) et plateau d'air à 11 kHz (±2,5 dB). CHALEUR : plateau à 200 Hz (±3 dB) et
+        un léger creux de dureté à 2,8 kHz. Rien n'est calculé tant que les deux sont à zéro. */
+    void macroStage (float* const* ch, int numCh, int n) noexcept
+    {
+        const float tp = juce::jlimit (-1.0f, 1.0f, pPres->load (std::memory_order_relaxed) * 0.01f);
+        const float tw = juce::jlimit (-1.0f, 1.0f, pWarm->load (std::memory_order_relaxed) * 0.01f);
+        const float pres = std::abs (tp - mPres) < 0.002f ? tp : mPres + 0.35f * (tp - mPres);
+        const float warm = std::abs (tw - mWarm) < 0.002f ? tw : mWarm + 0.35f * (tw - mWarm);
+        const bool eqOn = std::abs (pres) > 0.001f || std::abs (warm) > 0.001f;
+        if (eqOn && (! eqWasOn || pres != mPres || warm != mWarm))
+        {
+            if (! eqWasOn) for (auto& b : mEq) b.reset();
+            mEq[0].setCoeffs (BiquadCoeffs::lowShelf (fs, 200.0, 0.7, 3.0 * warm));
+            mEq[1].setCoeffs (BiquadCoeffs::peaking (fs, 2800.0, 1.1, -1.2 * std::max (0.0f, warm)));
+            mEq[2].setCoeffs (BiquadCoeffs::peaking (fs, 3800.0, 0.8, 3.5 * pres));
+            mEq[3].setCoeffs (BiquadCoeffs::highShelf (fs, std::min (11000.0, 0.4 * fs), 0.7, 2.5 * pres));
+        }
+        mPres = pres; mWarm = warm; eqWasOn = eqOn;
+        if (eqOn)
+            for (int c = 0; c < numCh; ++c)
+                for (int s = 0; s < n; ++s)
+                {
+                    float x = ch[c][s];
+                    for (auto& b : mEq) x = b.process (x, c);
+                    ch[c][s] = x;
+                }
+
+        const float tpan = juce::jlimit (-1.0f, 1.0f, pPan->load (std::memory_order_relaxed) * 0.01f);
+        if (numCh < 2 || (std::abs (tpan) < 0.001f && std::abs (pan) < 0.001f)) { pan = numCh < 2 ? 0.0f : tpan; return; }
+        const float step = (tpan - pan) / (float) n;
+        for (int s = 0; s < n; ++s)
+        {
+            pan += step;
+            const float a = (pan + 1.0f) * 0.25f * juce::MathConstants<float>::pi;
+            ch[0][s] *= std::cos (a) * juce::MathConstants<float>::sqrt2;
+            ch[1][s] *= std::sin (a) * juce::MathConstants<float>::sqrt2;
+        }
+        pan = tpan;
     }
 
     static void storePeaks (std::atomic<float> (&dest)[2], float* const* ch, int numCh, int n) noexcept
@@ -1081,6 +1260,11 @@ private:
     std::array<std::unique_ptr<juce::dsp::Oversampling<float>>, kMaxSegments> os;
     DelayLine segPad[kMaxSegments][2];
     Plan plan;
+    bool planVariable = false, relatch = false;
+    std::atomic<float> *pPres = nullptr, *pWarm = nullptr, *pPan = nullptr;
+    Biquad mEq[4];
+    float mPres = 0.0f, mWarm = 0.0f, pan = 0.0f;
+    bool eqWasOn = false;
     modules::Chain pending {};
     float planGain = 1.0f, planStep = 0.001f;
     std::atomic<int> latency { 0 };

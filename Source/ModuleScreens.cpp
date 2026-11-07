@@ -1,4 +1,6 @@
 #include "ModulePanels.h"
+#include "Registry.h"
+#include "MixAnalysis.h"
 
 using namespace onirique;
 
@@ -298,7 +300,7 @@ class WaveViz : public Viz
 public:
     WaveViz (OniriqueVocalBoxAudioProcessor& p, int code) : processor (p), module (p.module (code)), type (modules::typeOf (code)), k (modules::instanceOf (code))
     {
-        const float fa = type == modules::deess ? 1000.0f : 20.0f, fb = type == modules::deess ? 16000.0f : (type == modules::plosive ? 1000.0f : 20000.0f);
+        const float fa = type == modules::deess || type == modules::declick ? 1000.0f : 20.0f, fb = type == modules::deess ? 16000.0f : (type == modules::plosive ? 1000.0f : 20000.0f);
         specIn.setRange (fa, fb, 120);
         specOut.setRange (fa, fb, 120);
         if (type == modules::gate) setMouseCursor (juce::MouseCursor::UpDownResizeCursor);
@@ -387,6 +389,33 @@ private:
                 legend = { { utf8 ("GARDÉ"), cMist }, { utf8 ("RETIRÉ"), cEmber } };
                 stat = utf8 ("BRUIT DE FOND −") + juce::String (red, 1) + " dB" + dot + "AMOUNT " + juce::String (juce::roundToInt (get (ids::nsAmount))) + " %";
                 break;
+            case modules::declick:
+            {
+                if (auto* m = dynamic_cast<chainmods::DeClickM*> (module)) clickTotal += m->takeClicks();
+                title = utf8 ("DE-CLICK · LES BRUITS DE BOUCHE RETIRÉS EN BRAISE");
+                legend = { { utf8 ("GARDÉ"), cMist }, { utf8 ("RETIRÉ"), cEmber } };
+                stat = juce::String (clickTotal) + (clickTotal > 1 ? utf8 (" CLICS RETIRÉS") : utf8 (" CLIC RETIRÉ")) + dot + "SENSITIVITY "
+                     + juce::String (juce::roundToInt (get (ids::dclkSens))) + " %" + (get (ids::dclkListen) > 0.5f ? dot + "LISTEN" : juce::String());
+                break;
+            }
+            case modules::debreath:
+                title = utf8 ("DE-BREATH · LES RESPIRATIONS BAISSÉES EN BRAISE");
+                legend = { { utf8 ("GARDÉ"), cMist }, { utf8 ("BAISSÉ"), cEmber } };
+                stat = (red > 1.0f ? utf8 ("RESPIRATION −") + juce::String (red, 1) + " dB" : juce::String ("VOIX"))
+                     + dot + utf8 ("RÉDUCTION −") + juce::String (get (ids::dbrReduction), 0) + " dB" + (get (ids::dbrListen) > 0.5f ? dot + "LISTEN" : juce::String());
+                break;
+            case modules::dereverb:
+            {
+                float tail = get (ids::drvTail);
+                bool measured = false;
+                if (auto* m = dynamic_cast<chainmods::DeReverbM*> (module)) { tail = m->tailSeconds(); measured = m->tailMeasured(); }
+                title = utf8 ("DE-REVERB · LA PIÈCE RETIRÉE EN BRAISE");
+                legend = { { utf8 ("GARDÉ"), cMist }, { utf8 ("RETIRÉ"), cEmber } };
+                stat = utf8 ("PIÈCE ") + juce::String (tail, 2) + " s"
+                     + (get (ids::drvAuto) > 0.5f ? (measured ? utf8 (" (MESURÉE)") : utf8 (" (À MESURER : JOUE LA VOIX)")) : juce::String()) + dot + "−"
+                     + juce::String (red, 1) + " dB" + dot + "AMOUNT " + juce::String (juce::roundToInt (get (ids::drvAmount))) + " %";
+                break;
+            }
             default:
                 title = utf8 ("PLOSIVES · LES P ET LES B RETIRÉS EN BRAISE");
                 legend = { { utf8 ("GARDÉ"), cMist }, { utf8 ("RETIRÉ"), cEmber } };
@@ -469,7 +498,7 @@ private:
 
     OniriqueVocalBoxAudioProcessor& processor;
     ChainModule* module;
-    int type, k, frame = 0;
+    int type, k, frame = 0, clickTotal = 0;
     float red = 0.0f;
     bool moving = false;
     float startThr = 0.0f, startY = 0.0f, side = 1.0f;
@@ -2227,7 +2256,607 @@ private:
     std::unique_ptr<ModulePanel> sub;
 };
 
+//==============================================================================
+/*  TUNER : une façade à lui. En haut à gauche l'écran de hauteur (comme le mode graphique d'un accordeur de studio) : les
+    lignes des notes, celles de la gamme éclairées ; la voix entendue en pointillé clair, la voix accordée en braise.
+    À droite, la note chantée en grand et l'écart en cents (entendu / corrigé). Dessous, le clavier de la tonalité (un clic
+    choisit la tonique, les touches de la gamme s'allument) et la gamme, puis le registre, HARD TUNE et FORMANT, et
+    les cinq potards. */
+class TuneKeyboard : public juce::Component
+{
+public:
+    TuneKeyboard (OniriqueVocalBoxAudioProcessor& p, int k) : processor (p), inst (k) { setMouseCursor (juce::MouseCursor::PointingHandCursor); }
+    void paint (juce::Graphics& g) override
+    {
+        const float u = ui::unitOf (*this);
+        const auto r = getLocalBounds().toFloat();
+        const int key = juce::roundToInt (get (ids::tuneKey)), sc = juce::roundToInt (get (ids::tuneScale));
+        const std::uint16_t m = tune::pitchClassMask (tune::scales[juce::jlimit (0, tune::numScales - 1, sc)].mask, key);
+        static const bool black[12] { false, true, false, true, false, false, true, false, true, false, true, false };
+        static const char* names[12] { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+        const float w = r.getWidth() / 7.0f;
+        int white = 0;
+        // touches blanches puis noires par-dessus
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            white = 0;
+            for (int n = 0; n < 12; ++n)
+            {
+                juce::Rectangle<float> kr;
+                if (! black[n]) { kr = { r.getX() + (float) white * w, r.getY(), w, r.getHeight() }; ++white; }
+                else kr = { r.getX() + (float) white * w - w * 0.3f, r.getY(), w * 0.6f, r.getHeight() * 0.58f };
+                if ((pass == 0) == black[n]) continue;
+                keyRect[n] = kr;
+                const bool inScale = (m >> n) & 1, tonic = n == key;
+                const auto body = kr.reduced (1.5f * u, 0.0f);
+                g.setColour (black[n] ? juce::Colour (0xff0d0a0b) : juce::Colour (0xff1c1517));
+                g.fillRoundedRectangle (body, 5.0f * u);
+                if (inScale)
+                {
+                    g.setColour (cEmber.withAlpha (tonic ? 0.85f : 0.28f));
+                    g.fillRoundedRectangle (body.withTrimmedTop (body.getHeight() * 0.55f).reduced (3.0f * u, 3.0f * u), 4.0f * u);
+                }
+                g.setColour (juce::Colour (255, 220, 225).withAlpha (tonic ? 0.5f : 0.12f));
+                g.drawRoundedRectangle (body, 5.0f * u, (tonic ? 1.6f : 1.0f) * u);
+                if (! black[n] || tonic)
+                {
+                    g.setColour (tonic ? juce::Colours::white : juce::Colour (0xff9a8c8f));
+                    g.setFont (ui::css (ui::Face::mono, 9.5f * u, 0.08f));
+                    g.drawText (names[n], body.withTrimmedTop (body.getHeight() * 0.18f).withHeight (14.0f * u), juce::Justification::centred, false);
+                }
+            }
+        }
+    }
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        static const bool black[12] { false, true, false, true, false, false, true, false, true, false, true, false };
+        int hit = -1;
+        for (int n = 0; n < 12; ++n) if (black[n] && keyRect[n].contains (e.position)) hit = n;
+        if (hit < 0) for (int n = 0; n < 12; ++n) if (! black[n] && keyRect[n].contains (e.position)) hit = n;
+        if (hit < 0) return;
+        if (auto* prm = processor.apvts.getParameter (ids::inst (ids::tuneKey, inst)))
+        {
+            prm->beginChangeGesture();
+            prm->setValueNotifyingHost (prm->convertTo0to1 ((float) hit));
+            prm->endChangeGesture();
+        }
+        repaint();
+    }
+    float get (const char* id) const { return processor.apvts.getRawParameterValue (ids::inst (id, inst))->load(); }
+
+private:
+    OniriqueVocalBoxAudioProcessor& processor;
+    int inst;
+    juce::Rectangle<float> keyRect[12];
+};
+
+// les sélecteurs de la tonalité, comme dans ONIRIQUE TUNER : KEY (les 12 toniques) et SCALE (les 15 gammes) ; une gélule de
+// verre, un clic ouvre le menu. Le clavier dessous choisit aussi la tonique.
+class ScaleSelector : public juce::Component
+{
+public:
+    ScaleSelector (OniriqueVocalBoxAudioProcessor& p, int k, bool keyMode) : processor (p), inst (k), isKey (keyMode)
+    { setMouseCursor (juce::MouseCursor::PointingHandCursor); }
+    void paint (juce::Graphics& g) override
+    {
+        const float u = ui::unitOf (*this);
+        const auto r = getLocalBounds().toFloat().reduced (1.0f);
+        const float rad = r.getHeight() * 0.5f;
+        g.setColour (juce::Colour (0xff120d0f).withAlpha (0.92f));
+        g.fillRoundedRectangle (r, rad);
+        g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (hover ? 0.08f : 0.05f), 0.0f, r.getY(), juce::Colours::white.withAlpha (0.0f), 0.0f, r.getBottom(), false));
+        g.fillRoundedRectangle (r, rad);
+        g.setColour (juce::Colour (255, 220, 225).withAlpha (hover ? 0.22f : 0.12f));
+        g.drawRoundedRectangle (r, rad, 1.0f * u);
+        auto t = r.reduced (18.0f * u, 0.0f);
+        g.setFont (ui::css (ui::Face::mono, 9.0f * u, 0.16f));
+        g.setColour (juce::Colour (0xff9a8c8f));
+        g.drawText (isKey ? "KEY" : "SCALE", t.removeFromLeft ((isKey ? 36.0f : 52.0f) * u), juce::Justification::centredLeft, false);
+        g.setFont (ui::css (ui::Face::mono, 11.0f * u, 0.14f));
+        g.setColour (juce::Colours::white);
+        const int v = juce::roundToInt (value());
+        g.drawText (isKey ? juce::String (tune::noteNames[juce::jlimit (0, 11, v)])
+                          : juce::String (tune::scales[juce::jlimit (0, tune::numScales - 1, v)].name).toUpperCase(),
+                    t.withTrimmedRight (20.0f * u), juce::Justification::centredLeft, true);
+        juce::Path chev;
+        const float cx = t.getRight() - 6.0f * u, cy = t.getCentreY();
+        chev.startNewSubPath (cx - 5.0f * u, cy - 2.5f * u); chev.lineTo (cx, cy + 2.5f * u); chev.lineTo (cx + 5.0f * u, cy - 2.5f * u);
+        g.setColour (cEmber);
+        g.strokePath (chev, juce::PathStrokeType (1.6f * u, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    }
+    void mouseEnter (const juce::MouseEvent&) override { hover = true; repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { hover = false; repaint(); }
+    void mouseDown (const juce::MouseEvent&) override
+    {
+        juce::PopupMenu m;
+        m.setLookAndFeel (&getLookAndFeel());   // le menu de VOCALBOX (verre sombre, braise), pas celui du système
+        const int now = juce::roundToInt (value());
+        if (isKey)
+            for (int i = 0; i < 12; ++i) m.addItem (i + 1, tune::noteNames[i], true, i == now);
+        else
+        {
+            auto add = [&] (int i) { m.addItem (i + 1, juce::String (tune::scales[i].name).toUpperCase(), true, i == now); };
+            add (0);
+            m.addSectionHeader (utf8 ("MAJEURES ET MINEURES"));
+            for (int i : { 1, 2, 3, 4 }) add (i);
+            m.addSectionHeader ("MODES");
+            for (int i : { 5, 6, 7, 8, 9 }) add (i);
+            m.addSectionHeader (utf8 ("PENTATONIQUES ET AUTRES"));
+            for (int i : { 10, 11, 12, 13, 14 }) add (i);
+        }
+        juce::Component::SafePointer<ScaleSelector> safe (this);
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withMinimumWidth (getWidth()), [safe] (int r)
+        {
+            if (safe == nullptr || r <= 0) return;
+            if (auto* prm = safe->processor.apvts.getParameter (ids::inst (safe->isKey ? ids::tuneKey : ids::tuneScale, safe->inst)))
+            {
+                prm->beginChangeGesture();
+                prm->setValueNotifyingHost (prm->convertTo0to1 ((float) (r - 1)));
+                prm->endChangeGesture();
+            }
+            safe->repaint();
+        });
+    }
+    float value() const { return processor.apvts.getRawParameterValue (ids::inst (isKey ? ids::tuneKey : ids::tuneScale, inst))->load(); }
+
+private:
+    OniriqueVocalBoxAudioProcessor& processor;
+    int inst;
+    bool isKey, hover = false;
+};
+
+class TunerPanel final : public ModulePanel
+{
+public:
+    TunerPanel (OniriqueVocalBoxAudioProcessor& p, int c) : ModulePanel (p, c), keys (p, inst), keySel (p, inst, true), scale (p, inst, false)
+    {
+        addAndMakeVisible (keys);
+        addAndMakeVisible (keySel);
+        addAndMakeVisible (scale);
+        voice = &tabs (ids::tuneVoice, juce::StringArray { "SOPRANO", "ALTO / TENOR", "BARITONE" });
+        hard = &toggle (ids::tuneHard, "HARD TUNE");
+        formant = &toggle (ids::tuneFormant, "FORMANT");
+        knobs = { &knob (ids::tuneRetune, "RETUNE SPEED"), &knob (ids::tuneHumanize, "HUMANIZE"), &knob (ids::tuneFlex, "FLEX-TUNE"),
+                  &knob (ids::tuneVibrato, "NATURAL VIBRATO"), &knob (ids::tuneMix, "MIX") };
+        hist.resize (kHist);
+    }
+
+    void tick() override
+    {
+        ModulePanel::tick();
+        bool got = false;
+        if (auto* t = dynamic_cast<chainmods::Tuner*> (engine))
+        {
+            tune::DisplayFrame f;
+            while (t->popFrame (f))
+            {
+                hist[(size_t) hpos] = { f.inMidi, f.outMidi, f.voiced && f.level > 3.0e-4f };
+                hpos = (hpos + 1) % kHist;
+                got = true;
+                if (f.voiced && f.level > 1.0e-4f) { lastIn = f.inMidi; lastOut = f.outMidi; lastNote = f.noteMidi; quiet = 0; }
+            }
+        }
+        if (! got && ++quiet > 30) { lastIn = 0.0f; }
+        // le centre de l'écran suit la voix en douceur
+        if (lastIn > 0.0f) centre += 0.05f * (lastNote - centre);
+        if (got || keys.isMouseOverOrDragging()) { repaint (screen.toNearestInt().expanded (4)); repaint (readout.toNearestInt().expanded (4)); }
+        if (keyStamp != stamp()) { keyStamp = stamp(); keys.repaint(); keySel.repaint(); scale.repaint(); repaint (screen.toNearestInt()); }
+    }
+
+    void resized() override
+    {
+        const float u = ui::unitOf (*this);
+        auto r = getLocalBounds().toFloat().reduced (40.0f * u, 30.0f * u);
+        head = r.removeFromTop (40.0f * u);
+        r.removeFromTop (14.0f * u);
+        const float cellH = (104.0f + 53.0f) * u;
+        auto knobRow = r.removeFromBottom (cellH);
+        r.removeFromBottom (14.0f * u);
+        auto row2 = r.removeFromBottom (42.0f * u);
+        r.removeFromBottom (12.0f * u);
+        auto row1 = r.removeFromBottom (54.0f * u);
+        r.removeFromBottom (16.0f * u);
+        readout = r.removeFromRight (std::min (330.0f * u, r.getWidth() * 0.3f));
+        r.removeFromRight (20.0f * u);
+        screen = r;
+        keys.setBounds (row1.removeFromLeft (std::min (420.0f * u, row1.getWidth() * 0.45f)).toNearestInt());
+        row1.removeFromLeft (18.0f * u);
+        keySel.setBounds (row1.removeFromLeft (std::min (row1.getWidth(), 130.0f * u)).withSizeKeepingCentre (std::min (row1.getWidth(), 130.0f * u), 42.0f * u).toNearestInt());
+        row1.removeFromLeft (12.0f * u);
+        scale.setBounds (row1.removeFromLeft (std::min (row1.getWidth(), 280.0f * u)).withSizeKeepingCentre (std::min (row1.getWidth(), 280.0f * u), 42.0f * u).toNearestInt());
+        auto place = [&] (juce::Component& c, float w) { c.setBounds (row2.removeFromLeft (std::min (w, row2.getWidth())).toNearestInt()); row2.removeFromLeft (14.0f * u); };
+        place (*voice, voice->idealWidth (0.0f));
+        place (*hard, hard->idealWidth());
+        place (*formant, formant->idealWidth());
+        const float gap = 10.0f * u, cw = (knobRow.getWidth() - 4.0f * gap) / 5.0f;
+        for (int i = 0; i < 5; ++i)
+            knobs[(size_t) i]->setBounds (juce::Rectangle<float> (knobRow.getX() + (float) i * (cw + gap), knobRow.getY(), cw, cellH).toNearestInt());
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        const float u = ui::unitOf (*this);
+        const auto r = getLocalBounds().toFloat();
+        const float rad = 20.0f * u;
+        // la façade : nuit profonde, une ligne de portée qui traverse le haut
+        juce::ColourGradient bg (juce::Colour (0xff160f12), r.getX(), r.getY(), juce::Colour (0xff060506), r.getRight(), r.getBottom(), false);
+        bg.addColour (0.55, juce::Colour (0xff0d090b));
+        g.setGradientFill (bg);
+        g.fillRoundedRectangle (r, rad);
+        g.setColour (juce::Colour (255, 220, 225).withAlpha (0.09f));
+        g.drawRoundedRectangle (r.reduced (1.0f * u), rad, 1.5f * u);
+        g.setColour (juce::Colour (0xffeee6e6));
+        g.setFont (ui::css (ui::Face::display, 22.0f * u, 0.4f));
+        g.drawText ("TUNER", head.withWidth (150.0f * u), juce::Justification::centredLeft, false);
+        g.setColour (juce::Colour (0xff9a8c8f));
+        g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.16f));
+        g.drawText (utf8 ("ONIRIQUE PITCH CORRECTION · HQ, LE PLUS TRANSPARENT"),
+                    head.withTrimmedLeft (140.0f * u), juce::Justification::centredLeft, false);
+        // cinq lignes de portée en braise, comme une partition qui file sous le titre
+        for (int i = 0; i < 5; ++i)
+        {
+            juce::ColourGradient band (cEmber.withAlpha (0.0f), head.getX(), 0.0f, cEmber.withAlpha (0.0f), head.getRight(), 0.0f, false);
+            band.addColour (0.25, cEmber.withAlpha (i == 2 ? 0.7f : 0.18f));
+            g.setGradientFill (band);
+            g.fillRect (head.getX(), head.getBottom() + (2.0f + 3.0f * (float) i) * u, head.getWidth(), 0.8f * u);
+        }
+        paintScreen (g, u);
+        paintReadout (g, u);
+    }
+
+private:
+    struct Pt { float in = 0.0f, out = 0.0f; bool voiced = false; };
+    static constexpr int kHist = 1400;   // ~3,8 s de mesures
+
+    juce::int64 stamp() const { return (juce::int64) value (ids::tuneKey) * 16 + (juce::int64) value (ids::tuneScale); }
+    std::uint16_t scaleMask() const
+    {
+        return tune::pitchClassMask (tune::scales[juce::jlimit (0, tune::numScales - 1, juce::roundToInt (value (ids::tuneScale)))].mask, juce::roundToInt (value (ids::tuneKey)));
+    }
+
+    void paintScreen (juce::Graphics& g, float u)
+    {
+        const auto s = screen;
+        g.setColour (juce::Colours::black.withAlpha (0.42f));
+        g.fillRoundedRectangle (s, 16.0f * u);
+        g.setColour (juce::Colour (255, 220, 225).withAlpha (0.08f));
+        g.drawRoundedRectangle (s.reduced (0.5f), 16.0f * u, 1.0f * u);
+        juce::Graphics::ScopedSaveState save (g);
+        juce::Path clip; clip.addRoundedRectangle (s, 16.0f * u);
+        g.reduceClipRegion (clip);
+        const float span = 14.0f;   // demi-tons affichés
+        const float c = centre > 0.0f ? centre : 60.0f;
+        auto Y = [&] (float midi) { return s.getCentreY() - (midi - c) / span * s.getHeight(); };
+        const auto m = scaleMask();
+        static const char* names[12] { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+        g.setFont (ui::css (ui::Face::mono, 9.0f * u, 0.06f));
+        // les noms : toutes les notes de la gamme s'il y a la place, sinon une sur deux (la tonique toujours)
+        const float step = s.getHeight() / span;
+        const int key = juce::roundToInt (value (ids::tuneKey));
+        int shownCount = 0;
+        for (int n = (int) std::floor (c - span * 0.5f) - 1; n <= (int) std::ceil (c + span * 0.5f) + 1; ++n)
+        {
+            const int pc = ((n % 12) + 12) % 12;
+            const bool on = (m >> pc) & 1;
+            const float y = Y ((float) n);
+            g.setColour (on ? juce::Colour (255, 220, 225).withAlpha (pc == key ? 0.16f : 0.08f)
+                            : juce::Colours::white.withAlpha (0.02f));
+            g.fillRect (s.getX() + 40.0f * u, y - 0.5f * u, s.getWidth() - 40.0f * u, 1.0f * u);
+            const bool label = on && (pc == key || step >= 13.0f * u || (step >= 7.0f * u && shownCount++ % 2 == 0));
+            if (label)
+            {
+                g.setColour (juce::Colour (0xff9a8c8f));
+                g.drawText (juce::String (names[pc]) + juce::String (n / 12 - 1), juce::Rectangle<float> (s.getX() + 8.0f * u, y - 7.0f * u, 32.0f * u, 14.0f * u),
+                            juce::Justification::centredLeft, false);
+            }
+        }
+        // la voix entendue (pointillé clair) et la voix accordée (braise), de la plus ancienne à la plus récente
+        juce::Path pin, pout;
+        bool inOpen = false, outOpen = false;
+        const float x0 = s.getX() + 44.0f * u, w = s.getWidth() - 56.0f * u;
+        // une mesure isolée (moins de 20 ms de voix) n'est pas tracée : un bruit, pas une note
+        std::vector<char> keep ((size_t) kHist, 0);
+        for (int i = 0; i < kHist;)
+        {
+            auto ok = [&] (int j) { const auto& q = hist[(size_t) ((hpos + j) % kHist)]; return q.voiced && q.in > 20.0f && q.out > 20.0f; };
+            if (! ok (i)) { ++i; continue; }
+            int e = i;
+            while (e < kHist && ok (e)) ++e;
+            if (e - i >= 8) std::fill (keep.begin() + i, keep.begin() + e, (char) 1);
+            i = e;
+        }
+        for (int i = 0; i < kHist; ++i)
+        {
+            const auto& pt = hist[(size_t) ((hpos + i) % kHist)];
+            const float x = x0 + w * (float) i / (float) (kHist - 1);
+            if (! keep[(size_t) i]) { inOpen = outOpen = false; continue; }
+            const float yi = Y (pt.in), yo = Y (pt.out);
+            if (inOpen) pin.lineTo (x, yi); else { pin.startNewSubPath (x, yi); inOpen = true; }
+            if (outOpen) pout.lineTo (x, yo); else { pout.startNewSubPath (x, yo); outOpen = true; }
+        }
+        g.setColour (juce::Colour (244, 236, 236).withAlpha (0.42f));
+        dashed (g, pin, 1.4f * u, 3.0f * u, 4.0f * u);
+        glowPath (g, pout, cEmber.withAlpha (0.8f), 8.0f * u, false);
+        g.setColour (cEmber);
+        g.strokePath (pout, juce::PathStrokeType (2.6f * u, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        // la tête de lecture
+        g.setColour (juce::Colours::white.withAlpha (0.10f));
+        g.fillRect (x0 + w, s.getY(), 1.0f * u, s.getHeight());
+    }
+
+    void paintReadout (juce::Graphics& g, float u)
+    {
+        const auto r = readout;
+        g.setColour (juce::Colours::black.withAlpha (0.42f));
+        g.fillRoundedRectangle (r, 16.0f * u);
+        g.setColour (juce::Colour (255, 220, 225).withAlpha (0.08f));
+        g.drawRoundedRectangle (r.reduced (0.5f), 16.0f * u, 1.0f * u);
+        static const char* names[12] { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+        const bool live = lastIn > 0.0f;
+        const int note = juce::roundToInt (lastNote);
+        const auto top = r.withHeight (r.getHeight() * 0.58f);
+        g.setColour (live ? juce::Colours::white : juce::Colour (0xff5a4f52));
+        g.setFont (live ? ui::css (ui::Face::display, std::min (64.0f * u, top.getHeight() * 0.5f), 0.1f)
+                        : ui::css (ui::Face::mono, std::min (40.0f * u, top.getHeight() * 0.35f), 0.1f));
+        g.drawText (live ? juce::String (names[((note % 12) + 12) % 12]) + juce::String (note / 12 - 1) : juce::String ("--"), top, juce::Justification::centred, false);
+        // l'écart en cents : la voix entendue (trait clair) et accordée (braise) sur une échelle de -50 à +50
+        const auto bar = juce::Rectangle<float> (r.getX() + 26.0f * u, r.getY() + r.getHeight() * 0.68f, r.getWidth() - 52.0f * u, 10.0f * u);
+        g.setColour (juce::Colours::white.withAlpha (0.06f));
+        g.fillRoundedRectangle (bar, 5.0f * u);
+        g.setColour (juce::Colours::white.withAlpha (0.25f));
+        g.fillRect (bar.getCentreX() - 0.5f * u, bar.getY() - 6.0f * u, 1.0f * u, bar.getHeight() + 12.0f * u);
+        auto X = [&] (float cents) { return bar.getCentreX() + juce::jlimit (-50.0f, 50.0f, cents) / 50.0f * bar.getWidth() * 0.5f; };
+        const float cin = live ? (lastIn - lastNote) * 100.0f : 0.0f, cout = live ? (lastOut - lastNote) * 100.0f : 0.0f;
+        if (live)
+        {
+            g.setColour (juce::Colour (244, 236, 236).withAlpha (0.6f));
+            g.fillRoundedRectangle (juce::Rectangle<float> (3.0f * u, 22.0f * u).withCentre ({ X (cin), bar.getCentreY() }), 1.5f * u);
+            g.setColour (cEmber.withAlpha (0.35f));
+            g.fillEllipse (juce::Rectangle<float> (22.0f * u, 22.0f * u).withCentre ({ X (cout), bar.getCentreY() }));
+            g.setColour (cEmber);
+            g.fillEllipse (juce::Rectangle<float> (12.0f * u, 12.0f * u).withCentre ({ X (cout), bar.getCentreY() }));
+        }
+        g.setColour (juce::Colour (0xff9a8c8f));
+        g.setFont (ui::css (ui::Face::mono, 9.5f * u, 0.12f));
+        g.drawText (live ? utf8 ("ENTENDU ") + juce::String (juce::roundToInt (cin)) + utf8 (" ¢ · ACCORDÉ ") + juce::String (juce::roundToInt (cout)) + utf8 (" ¢")
+                         : utf8 ("CHANTE : LA NOTE S'AFFICHE ICI"),
+                    juce::Rectangle<float> (r.getX(), bar.getBottom() + 12.0f * u, r.getWidth(), 16.0f * u), juce::Justification::centred, false);
+    }
+
+    TuneKeyboard keys;
+    ScaleSelector keySel, scale;
+    GlassTabs* voice = nullptr;
+    GlassToggle *hard = nullptr, *formant = nullptr;
+    std::vector<StarKnob*> knobs;
+    std::vector<Pt> hist;
+    int hpos = 0, quiet = 0;
+    juce::int64 keyStamp = -1;
+    float lastIn = 0.0f, lastOut = 0.0f, lastNote = 60.0f, centre = 60.0f;
+    juce::Rectangle<float> screen, readout, head;
+};
+
 } // namespace
+
+//==============================================================================
+/*  AUTO MIX, après le mix : en haut, « affiner en mots » (une phrase, et rien n'est reconstruit : les macros et deux réglages
+    précis bougent, le compte rendu dit ce qui a été compris) ; au milieu les quatre macros, de gros potards qui pilotent toute
+    la chaîne (PRÉSENCE et CHALEUR : une courbe douce en fin de chaîne ; TENUE : tous les compresseurs ; ESPACE : la réverbe et
+    le delay) ; en bas le rôle de la voix, sa place dans le panoramique, les autres VOCALBOX du projet, et NOUVEAU MIX. */
+namespace
+{
+const juce::Colour cHaze { 0xffa8939a };
+
+class PillButton : public juce::Component
+{
+public:
+    explicit PillButton (juce::String t) : text (std::move (t)) { setMouseCursor (juce::MouseCursor::PointingHandCursor); }
+    std::function<void()> onClick;
+    bool lit = true;
+    void paint (juce::Graphics& g) override
+    {
+        const float u = ui::unitOf (*this);
+        const auto r = getLocalBounds().toFloat().reduced (1.0f);
+        const float rad = r.getHeight() * 0.5f;
+        if (lit)
+        {
+            g.setGradientFill (juce::ColourGradient (cEmber.withAlpha (hover ? 0.75f : 0.6f), 0.0f, r.getY(), onirique::look::emberDeep.withAlpha (0.6f), 0.0f, r.getBottom(), false));
+            g.fillRoundedRectangle (r, rad);
+            g.setColour (onirique::look::emberLit.withAlpha (0.6f));
+        }
+        else
+        {
+            g.setColour (juce::Colours::white.withAlpha (hover ? 0.07f : 0.04f));
+            g.fillRoundedRectangle (r, rad);
+            g.setColour (juce::Colour (255, 220, 225).withAlpha (0.14f));
+        }
+        g.drawRoundedRectangle (r, rad, 1.0f * u);
+        g.setColour (juce::Colours::white);
+        g.setFont (ui::css (ui::Face::mono, 11.0f * u, 0.16f));
+        g.drawText (text, r, juce::Justification::centred, false);
+    }
+    void mouseEnter (const juce::MouseEvent&) override { hover = true; repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { hover = false; repaint(); }
+    void mouseUp (const juce::MouseEvent& e) override { if (getLocalBounds().contains (e.getPosition()) && onClick) onClick(); }
+    float idealWidth() const { return ui::textWidth (ui::css (ui::Face::mono, 11.0f, 0.16f), text) * ui::unitOf (*this) + 44.0f * ui::unitOf (*this); }
+private:
+    juce::String text;
+    bool hover = false;
+};
+} // namespace
+
+class MixPage final : public ModulePanel
+{
+public:
+    MixPage (OniriqueVocalBoxAudioProcessor& p, std::function<void()> newMix)
+        : ModulePanel (p, 0), refineGo (utf8 ("AFFINER")), again (utf8 ("NOUVEAU MIX")),
+          role (p.apvts, ids::voiceRole, juce::StringArray { "LEAD", "BACKS", "ADLIBS", "DOUBLES" })
+    {
+        for (auto [id, label] : { std::pair { ids::macroPresence, utf8 ("PRÉSENCE") }, std::pair { ids::macroWarmth, utf8 ("CHALEUR") },
+                                  std::pair { ids::macroHold, juce::String ("TENUE") }, std::pair { ids::macroSpace, juce::String ("ESPACE") } })
+        {
+            auto& k = own (std::make_unique<StarKnob> (p.apvts, id, label));
+            macros.push_back (&k);
+        }
+        pan = &own (std::make_unique<StarKnob> (p.apvts, ids::outPan, "PAN"));
+        role.round = true;
+        addAndMakeVisible (role); anim.push_back (&role);
+        field.setMultiLine (false);
+        field.setReturnKeyStartsNewLine (false);
+        field.setColour (juce::TextEditor::backgroundColourId, juce::Colours::transparentBlack);
+        field.setColour (juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
+        field.setColour (juce::TextEditor::focusedOutlineColourId, juce::Colours::transparentBlack);
+        field.setColour (juce::TextEditor::textColourId, cBone);
+        field.setColour (juce::TextEditor::highlightColourId, cEmber.withAlpha (0.35f));
+        field.setColour (juce::CaretComponent::caretColourId, cEmber);
+        field.setTextToShowWhenEmpty (utf8 ("Affine en mots : un peu moins de réverbe, plus en avant, plus sombre, moins d'autotune…"), cHaze);
+        field.onReturnKey = [this] { refine(); };
+        addAndMakeVisible (field);
+        refineGo.onClick = [this] { refine(); };
+        addAndMakeVisible (refineGo);
+        again.lit = false;
+        again.onClick = std::move (newMix);
+        addAndMakeVisible (again);
+    }
+
+    void tick() override
+    {
+        ModulePanel::tick();
+        if (++frame % 30 == 0) { const auto now = projectText(); if (now != shownProject) { shownProject = now; repaint(); } }
+    }
+
+    void resized() override
+    {
+        const float u = ui::unitOf (*this);
+        auto r = getLocalBounds().toFloat().reduced (40.0f * u, 26.0f * u);
+        bar = r.removeFromTop (60.0f * u);
+        const float gw = refineGo.idealWidth();
+        refineGo.setBounds (juce::Rectangle<float> (bar.getRight() - 8.0f * u - gw, bar.getY() + 9.0f * u, gw, bar.getHeight() - 18.0f * u).toNearestInt());
+        field.setBounds (bar.withTrimmedLeft (54.0f * u).withRight ((float) refineGo.getX() - 12.0f * u).reduced (0.0f, 14.0f * u).toNearestInt());
+        field.setFont (ui::css (ui::Face::body, 16.0f * u));
+        field.applyFontToAllText (ui::css (ui::Face::body, 16.0f * u));
+        feedback = r.removeFromTop (30.0f * u);
+        auto bottom = r.removeFromBottom (54.0f * u);
+        r.removeFromBottom (12.0f * u);
+        // les quatre macros, grandes, côte à côte
+        const float gap = 24.0f * u, cw = (r.getWidth() - 3.0f * gap) / 4.0f;
+        for (int i = 0; i < 4; ++i)
+        {
+            const auto cell = juce::Rectangle<float> (r.getX() + (float) i * (cw + gap), r.getY(), cw, r.getHeight());
+            const float w = std::min (cw, 260.0f * u), h = std::min (cell.getHeight(), w + 92.0f * u);
+            macros[(size_t) i]->setBounds (juce::Rectangle<float> (w, h).withCentre (cell.getCentre()).toNearestInt());
+        }
+        const float rw = role.idealWidth (40.0f * u);
+        role.setBounds (juce::Rectangle<float> (bottom.getX() + 96.0f * u, bottom.getCentreY() - 20.0f * u, rw, 40.0f * u).toNearestInt());
+        roleLabel = juce::Rectangle<float> (bottom.getX(), bottom.getY(), 90.0f * u, bottom.getHeight());
+        const float aw = again.idealWidth();
+        again.setBounds (juce::Rectangle<float> (bottom.getRight() - aw, bottom.getCentreY() - 20.0f * u, aw, 40.0f * u).toNearestInt());
+        pan->setBounds (juce::Rectangle<float> (role.getRight() + 30.0f * u, bottom.getY() - 62.0f * u, 116.0f * u, bottom.getHeight() + 62.0f * u).toNearestInt());
+        pan->setShowText (true, true);
+        projectArea = juce::Rectangle<float> ((float) pan->getRight() + 20.0f * u, bottom.getY(), (float) again.getX() - pan->getRight() - 40.0f * u, bottom.getHeight());
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        const float u = ui::unitOf (*this);
+        // la barre d'affinage : la gélule de verre de la barre de recherche
+        const float rad = bar.getHeight() * 0.5f;
+        g.setColour (juce::Colour (0xff120d0f).withAlpha (0.9f));
+        g.fillRoundedRectangle (bar, rad);
+        g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.06f), 0.0f, bar.getY(), juce::Colours::white.withAlpha (0.0f), 0.0f, bar.getBottom(), false));
+        g.fillRoundedRectangle (bar, rad);
+        g.setColour (juce::Colour (255, 220, 225).withAlpha (0.14f));
+        g.drawRoundedRectangle (bar.reduced (0.5f), rad, 1.0f * u);
+        {
+            // l'étoile d'AUTO MIX à gauche du champ
+            juce::Path star;
+            const auto c = juce::Point<float> (bar.getX() + 30.0f * u, bar.getCentreY());
+            const float s = 9.0f * u;
+            star.startNewSubPath (c.x, c.y - s);
+            star.quadraticTo (c.x, c.y, c.x + s, c.y); star.quadraticTo (c.x, c.y, c.x, c.y + s);
+            star.quadraticTo (c.x, c.y, c.x - s, c.y); star.quadraticTo (c.x, c.y, c.x, c.y - s);
+            g.setColour (cEmber);
+            g.fillPath (star);
+        }
+        g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.12f));
+        g.setColour (understood ? juce::Colour (0xffd9b8bd) : cHaze);
+        g.drawText (feedbackText.isNotEmpty() ? feedbackText : utf8 ("RIEN N'EST RECONSTRUIT : LES MACROS BOUGENT, TU PEUX LES REPRENDRE À LA MAIN"),
+                    feedback.withTrimmedLeft (24.0f * u), juce::Justification::centredLeft, true);
+        g.setColour (cHaze);
+        g.drawText (utf8 ("CETTE VOIX"), roleLabel, juce::Justification::centredLeft, false);
+        g.drawText (shownProject, projectArea, juce::Justification::centredLeft, true);
+    }
+
+private:
+    juce::String projectText() const
+    {
+        const auto o = onirique::registry::others (&processor);
+        if (o.empty()) return utf8 ("SEULE VOCALBOX DU PROJET");
+        static const char* rn[4] { "LEAD", "BACKS", "ADLIBS", "DOUBLES" };
+        static const char* kn[12] { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+        juce::StringArray s;
+        for (const auto& e : o)
+            s.add (juce::String (rn[juce::jlimit (0, 3, e.role)]) + (e.key >= 0 ? juce::String (" (") + kn[e.key % 12] + (e.key >= 12 ? "m)" : ")") : juce::String()));
+        return utf8 ("AUSSI DANS LE PROJET : ") + s.joinIntoString (utf8 (" · "));
+    }
+
+    void refine()
+    {
+        const auto text = field.getText().trim();
+        if (text.isEmpty()) return;
+        const auto r = onirique::mix::parseRefine (text);
+        understood = r.any();
+        if (! understood)
+        {
+            feedbackText = utf8 ("PAS COMPRIS · ESSAIE « MOINS DE RÉVERBE », « PLUS EN AVANT », « PLUS SOMBRE », « MOINS D'AUTOTUNE »");
+            repaint();
+            return;
+        }
+        auto& apvts = processor.apvts;
+        auto bump = [&apvts] (const juce::String& id, float delta, float lo, float hi, bool mul)
+        {
+            if (auto* prm = apvts.getParameter (id))
+            {
+                const float now = apvts.getRawParameterValue (id)->load();
+                const float v = juce::jlimit (lo, hi, mul ? now * delta : now + delta);
+                prm->beginChangeGesture();
+                prm->setValueNotifyingHost (prm->convertTo0to1 (v));
+                prm->endChangeGesture();
+            }
+        };
+        bump (ids::macroPresence, r.presence, -100.0f, 100.0f, false);
+        bump (ids::macroWarmth, r.warmth, -100.0f, 100.0f, false);
+        bump (ids::macroHold, r.hold, -100.0f, 100.0f, false);
+        bump (ids::macroSpace, r.space, -100.0f, 100.0f, false);
+        // les réglages précis : les modules de la chaîne qui en ont
+        for (int c : processor.getChain())
+        {
+            if (! modules::valid (c)) continue;
+            const int t = modules::typeOf (c), k = modules::instanceOf (c);
+            if (t == modules::delay && r.delayMul != 1.0f) bump (ids::inst (ids::delayMix, k), r.delayMul, 0.0f, 100.0f, true);
+            if (t == modules::tuner && r.retuneMul != 1.0f) bump (ids::inst (ids::tuneRetune, k), r.retuneMul, 0.0f, 400.0f, true);
+            if (t == modules::debreath && r.breathDb != 0.0f) bump (ids::inst (ids::dbrReduction, k), -r.breathDb, 0.0f, 30.0f, false);
+        }
+        processor.learnRefine (text);   // ONR Neural Learning (s'il est allumé) : la retouche en mots part avec la note du mix
+        feedbackText = utf8 ("COMPRIS : ") + r.understood.joinIntoString (", ").toUpperCase();
+        field.clear();
+        repaint();
+    }
+
+    juce::TextEditor field;
+    PillButton refineGo, again;
+    GlassTabs role;
+    std::vector<StarKnob*> macros;
+    StarKnob* pan = nullptr;
+    juce::Rectangle<float> bar, feedback, roleLabel, projectArea;
+    juce::String feedbackText, shownProject;
+    bool understood = false;
+    int frame = 0;
+};
+
+std::unique_ptr<ModulePanel> createMixPage (OniriqueVocalBoxAudioProcessor& p, std::function<void()> onNewMix)
+{
+    return std::make_unique<MixPage> (p, std::move (onNewMix));
+}
 
 //==============================================================================
 std::unique_ptr<ModulePanel> createModulePanel (OniriqueVocalBoxAudioProcessor& p, int code)
@@ -2375,6 +3004,31 @@ std::unique_ptr<ModulePanel> createModulePanel (OniriqueVocalBoxAudioProcessor& 
             return s;
         }
         case modules::cl1b: return std::make_unique<Cl1bPanel> (p, code);
+        case modules::tuner: return std::make_unique<TunerPanel> (p, code);
+        case modules::declick:
+        {
+            auto s = stdPanel (p, code, std::make_unique<WaveViz> (p, code));
+            s->topRow = { &s->toggle (ids::dclkListen, "LISTEN") };
+            s->note = utf8 ("CLICS DE BOUCHE, SALIVE, LÈVRES · LES CONSONNES ET LA VOIX NE SONT PAS TOUCHÉES");
+            s->knobs = { &s->knob (ids::dclkSens, "SENSITIVITY"), &s->knob (ids::dclkAmount, "AMOUNT") };
+            return s;
+        }
+        case modules::debreath:
+        {
+            auto s = stdPanel (p, code, std::make_unique<WaveViz> (p, code));
+            s->topRow = { &s->toggle (ids::dbrListen, "LISTEN") };
+            s->note = utf8 ("LES RESPIRATIONS BAISSÉES, PAS COUPÉES · LES S ET LES FINS DE MOTS GARDÉS");
+            s->knobs = { &s->knob (ids::dbrReduction, "REDUCTION"), &s->knob (ids::dbrSens, "SENSITIVITY") };
+            return s;
+        }
+        case modules::dereverb:
+        {
+            auto s = stdPanel (p, code, std::make_unique<WaveViz> (p, code));
+            s->topRow = { &s->toggle (ids::drvAuto, "AUTO"), &s->toggle (ids::drvListen, "LISTEN") };
+            s->note = utf8 ("AUTO MESURE LA PIÈCE SUR LES FINS DE PHRASES");
+            s->knobs = { &s->knob (ids::drvAmount, "AMOUNT"), &s->knob (ids::drvTail, "TAIL") };
+            return s;
+        }
         default: break;
     }
     return createGenericPanel (p, code);

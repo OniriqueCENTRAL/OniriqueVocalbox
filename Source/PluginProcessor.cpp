@@ -2,6 +2,7 @@
 #include "PluginEditor.h"
 #include "Learning.h"
 #include "MixAnalysis.h"
+#include "Registry.h"
 
 using namespace onirique;
 
@@ -37,6 +38,7 @@ OniriqueVocalBoxAudioProcessor::~OniriqueVocalBoxAudioProcessor()
     stopTimer();
     cancelPendingUpdate();
     apvts.removeParameterListener (onirique::ids::oversampling, this);
+    onirique::registry::remove (this);
 }
 
 //==============================================================================
@@ -176,6 +178,8 @@ void OniriqueVocalBoxAudioProcessor::timerCallback()
 {
     // l'apprentissage : sans note au bout de 10 minutes, le mix part avec ses seules retouches
     if (learnPending() && juce::Time::getMillisecondCounterHiRes() * 0.001 - learnAt > 600.0) learnSend (0);
+    // les autres VOCALBOX du projet voient le rôle de celle-ci
+    if (auto* r = apvts.getRawParameterValue (onirique::ids::voiceRole)) onirique::registry::publishRole (this, juce::roundToInt (r->load()));
     // chaîne changée par un preset, A/B, l'automation du DAW... : sa latence suit
     if (currentRate > 0.0)
     {
