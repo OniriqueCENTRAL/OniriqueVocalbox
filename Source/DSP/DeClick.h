@@ -139,10 +139,14 @@ public:
                 pend.start -= shift; pend.end -= shift; pend.at -= shift;
             }
         }
+        // le mini-mètre : la profondeur du dernier clic retiré, pendant 0,2 s
+        if (sinceClick < (1 << 29)) sinceClick += n;
+        recentMeter.store (sinceClick < (int) (0.2 * fs) ? -lastDepth.load (std::memory_order_relaxed) : 0.0f, std::memory_order_relaxed);
     }
 
     int takeClicks() noexcept { return clicks.exchange (0, std::memory_order_relaxed); }
     float lastClickDb() const noexcept { return lastDepth.load (std::memory_order_relaxed); }
+    float recentClickDb() const noexcept { return recentMeter.load (std::memory_order_relaxed); }   // dB retirés, 0 sans clic récent
 
 private:
     struct Pending { bool active = false; int start = 0, end = 0, at = 0; float ref = 0.0f, g = 1.0f; };
@@ -163,6 +167,7 @@ private:
         }
         clicks.fetch_add (1, std::memory_order_relaxed);
         lastDepth.store (gainToDb (pend.g), std::memory_order_relaxed);
+        sinceClick = 0;
     }
 
     Pending pend;
@@ -199,5 +204,7 @@ private:
     bool listen = false;
     std::atomic<int> clicks { 0 };
     std::atomic<float> lastDepth { 0.0f };
+    std::atomic<float> recentMeter { 0.0f };
+    int sinceClick = 1 << 28;
 };
 } // namespace onirique

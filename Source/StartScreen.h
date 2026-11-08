@@ -35,6 +35,11 @@ private:
     OniriqueVocalBoxAudioProcessor& processor;
     juce::TextEditor search;
     GlassTabs role;   // LEAD, BACKS, ADLIBS, DOUBLES : la place de cette voix dans le morceau, avant AUTO MIX
+    // LA PREMIÈRE OUVERTURE : les trois étapes, montrées une seule fois (AppData/Onirique/VocalBox/guide-seen)
+    bool guide = false;
+    juce::Rectangle<float> guideArea() const;
+    juce::Rectangle<float> guideButton() const;
+    void paintGuide (juce::Graphics&, float u) const;
     juce::File reference;
     juce::String status;
 

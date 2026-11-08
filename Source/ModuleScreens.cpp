@@ -1562,6 +1562,7 @@ private:
 class Cl1bPanel final : public ModulePanel
 {
 public:
+    void pruneKnobs() { prune (knobs); resized(); }   // mode simple
     Cl1bPanel (OniriqueVocalBoxAudioProcessor& p, int c) : ModulePanel (p, c), strip (engine)
     {
         addAndMakeVisible (strip); anim.push_back (&strip);
@@ -2409,6 +2410,7 @@ private:
 class TunerPanel final : public ModulePanel
 {
 public:
+    void pruneKnobs() { prune (knobs); resized(); }   // mode simple
     TunerPanel (OniriqueVocalBoxAudioProcessor& p, int c) : ModulePanel (p, c), keys (p, inst), keySel (p, inst, true), scale (p, inst, false)
     {
         addAndMakeVisible (keys);
@@ -2469,9 +2471,12 @@ public:
         place (*voice, voice->idealWidth (0.0f));
         place (*hard, hard->idealWidth());
         place (*formant, formant->idealWidth());
+        // cinq potards, ou les essentiels du mode simple, centrés
+        const int nk = (int) knobs.size();
         const float gap = 10.0f * u, cw = (knobRow.getWidth() - 4.0f * gap) / 5.0f;
-        for (int i = 0; i < 5; ++i)
-            knobs[(size_t) i]->setBounds (juce::Rectangle<float> (knobRow.getX() + (float) i * (cw + gap), knobRow.getY(), cw, cellH).toNearestInt());
+        const float x0 = knobRow.getX() + (knobRow.getWidth() - (float) nk * cw - (float) (nk - 1) * gap) * 0.5f;
+        for (int i = 0; i < nk; ++i)
+            knobs[(size_t) i]->setBounds (juce::Rectangle<float> (x0 + (float) i * (cw + gap), knobRow.getY(), cw, cellH).toNearestInt());
     }
 
     void paint (juce::Graphics& g) override
@@ -2717,6 +2722,11 @@ public:
         again.lit = false;
         again.onClick = std::move (newMix);
         addAndMakeVisible (again);
+        saveChain.lit = false; share.lit = false;
+        saveChain.onClick = [this] { saveMyChain(); };
+        share.onClick = [this] { shareMyChain(); };
+        addAndMakeVisible (saveChain);
+        addAndMakeVisible (share);
 
         // ses habitudes : ce qu'il change d'habitude après AUTO MIX, proposé une fois, juste après le mix
         if (p.habitOffer.exchange (false)) habit = onirique::habits::mixHabit();
@@ -2769,9 +2779,12 @@ public:
         roleLabel = juce::Rectangle<float> (bottom.getX(), bottom.getY(), 90.0f * u, bottom.getHeight());
         const float aw = again.idealWidth();
         again.setBounds (juce::Rectangle<float> (bottom.getRight() - aw, bottom.getCentreY() - 20.0f * u, aw, 40.0f * u).toNearestInt());
+        const float shw = share.idealWidth(), svw = saveChain.idealWidth();
+        share.setBounds (juce::Rectangle<float> ((float) again.getX() - 12.0f * u - shw, bottom.getCentreY() - 20.0f * u, shw, 40.0f * u).toNearestInt());
+        saveChain.setBounds (juce::Rectangle<float> ((float) share.getX() - 10.0f * u - svw, bottom.getCentreY() - 20.0f * u, svw, 40.0f * u).toNearestInt());
         pan->setBounds (juce::Rectangle<float> (role.getRight() + 30.0f * u, bottom.getY(), 110.0f * u, bottom.getHeight()).toNearestInt());   // dans sa rangée : ne touche plus les macros
         pan->setShowText (true, true);
-        projectArea = juce::Rectangle<float> ((float) pan->getRight() + 20.0f * u, bottom.getY(), (float) again.getX() - pan->getRight() - 40.0f * u, bottom.getHeight());
+        projectArea = juce::Rectangle<float> ((float) pan->getRight() + 20.0f * u, bottom.getY(), (float) saveChain.getX() - pan->getRight() - 40.0f * u, bottom.getHeight());
     }
 
     void paint (juce::Graphics& g) override
@@ -2946,6 +2959,37 @@ private:
         repaint();
     }
 
+    // MA CHAÎNE : la chaîne entière gardée comme preset (retrouvée dans tous les projets), et un fichier à partager
+    void saveMyChain()
+    {
+        const auto name = processor.presets.save (utf8 ("Ma chaîne ") + juce::Time::getCurrentTime().formatted ("%d-%m-%Y %Hh%M"));
+        lastSaved = name;
+        understood = true;
+        feedbackText = utf8 ("CHAÎNE ENREGISTRÉE : « ") + name.toUpperCase() + utf8 (" », DANS TES PRESETS, POUR TOUS TES PROJETS");
+        repaint();
+    }
+    void shareMyChain()
+    {
+        if (lastSaved.isEmpty()) saveMyChain();
+        const auto file = processor.presets.getFolder().getChildFile (lastSaved + processor.presets.getExtension());
+        chooser = std::make_unique<juce::FileChooser> (utf8 ("Partager ma chaîne"),
+                      juce::File::getSpecialLocation (juce::File::userDesktopDirectory).getChildFile (file.getFileName()), "*" + processor.presets.getExtension());
+        juce::Component::SafePointer<MixPage> safe (this);
+        chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting,
+                              [safe, file] (const juce::FileChooser& fc)
+        {
+            if (safe == nullptr) return;
+            const auto dest = fc.getResult();
+            if (dest == juce::File() || ! file.copyFileTo (dest)) return;
+            safe->understood = true;
+            safe->feedbackText = utf8 ("FICHIER PRÊT À ENVOYER : ") + dest.getFileName().toUpperCase() + utf8 (" · TON AMI L'OUVRE AVEC « IMPORT PRESETS… » DANS LE MENU DE LA BARRE");
+            safe->repaint();
+        });
+    }
+    PillButton saveChain { utf8 ("ENREGISTRER MA CHAÎNE") }, share { utf8 ("PARTAGER") };
+    std::unique_ptr<juce::FileChooser> chooser;
+    juce::String lastSaved;
+
     onirique::habits::MixHabit habit;
     PillButton habitYes { utf8 ("APPLIQUER") }, habitNo { utf8 ("NON MERCI") };
     PillButton refineGo, again;
@@ -2964,7 +3008,7 @@ std::unique_ptr<ModulePanel> createMixPage (OniriqueVocalBoxAudioProcessor& p, s
 }
 
 //==============================================================================
-std::unique_ptr<ModulePanel> createModulePanel (OniriqueVocalBoxAudioProcessor& p, int code)
+static std::unique_ptr<ModulePanel> buildModulePanel (OniriqueVocalBoxAudioProcessor& p, int code)
 {
     if (! modules::valid (code)) return nullptr;
     const int type = modules::typeOf (code);
@@ -3138,4 +3182,16 @@ std::unique_ptr<ModulePanel> createModulePanel (OniriqueVocalBoxAudioProcessor& 
         default: break;
     }
     return createGenericPanel (p, code);
+}
+
+// l'écran du module, et le mode simple : ses potards essentiels seulement
+std::unique_ptr<ModulePanel> createModulePanel (OniriqueVocalBoxAudioProcessor& p, int code)
+{
+    auto panel = buildModulePanel (p, code);
+    if (panel == nullptr || ! onirique::uipref::simple()) return panel;
+    if (auto* s = dynamic_cast<StdPanel*> (panel.get())) s->prune (s->knobs);
+    else if (auto* f = dynamic_cast<FacePanel*> (panel.get())) f->prune (f->knobs);
+    else if (auto* c = dynamic_cast<Cl1bPanel*> (panel.get())) c->pruneKnobs();
+    else if (auto* t = dynamic_cast<TunerPanel*> (panel.get())) t->pruneKnobs();
+    return panel;
 }

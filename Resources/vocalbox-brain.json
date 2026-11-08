@@ -78,6 +78,8 @@
       "hints": { "tune": 0.6, "dark": 0.4, "comp": 0.7, "reverb": 0.25, "reverbSize": 0.5, "delay": 0.4, "controlled": true, "parallel": true , "fast": true } },
     { "name": "Tiakola", "aliases": ["tiakola", "tiako"], "genre": "rap fr",
       "hints": { "tune": 0.7, "air": 0.6, "bright": 0.4, "warm": 0.3, "comp": 0.5, "reverb": 0.4, "reverbSize": 0.6, "delay": 0.4, "doubler": 0.4 } },
+    { "name": "Dakeez", "aliases": ["dakeez"], "genre": "rap fr",
+      "hints": { "tune": 0.75, "air": 0.55, "warm": 0.4, "comp": 0.45, "reverb": 0.4, "reverbSize": 0.6, "delay": 0.4, "doubler": 0.35, "peakComp": "cl1b" } },
     { "name": "Gazo", "aliases": ["gazo"], "genre": "drill",
       "hints": { "tune": 0.7, "dark": 0.5, "comp": 0.7, "reverb": 0.25, "reverbSize": 0.4, "delay": 0.4, "sat": 0.3, "satType": 3, "controlled": true , "fast": true } },
     { "name": "Werenoi", "aliases": ["werenoi"], "genre": "rap fr",

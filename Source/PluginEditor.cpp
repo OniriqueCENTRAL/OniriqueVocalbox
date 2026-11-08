@@ -241,6 +241,20 @@ void ChainStrip::tick()
         moved |= ui::approach (t.hover, i == hoverTile ? 1.0f : 0.0f, 0.16f);
         moved |= ui::approach (t.sheen, i == hoverTile ? 1.0f : 0.0f, 0.07f);
     }
+    // les mini-mètres : ce que chaque module retire en ce moment (montée rapide, retombée douce) ; seul le carré qui bouge est
+    // redessiné (pendant la lecture, toute la rangée de verre à chaque image coûterait cher)
+    juce::Rectangle<int> meterDirty;
+    for (auto& t : tiles)
+    {
+        float red = 0.0f;
+        if (auto* m = processor.module (t.code)) red = isOn (t.code) ? m->activityDb() : 0.0f;
+        const float before = t.meter;
+        t.meter = red > t.meter ? t.meter + 0.6f * (red - t.meter) : t.meter + 0.12f * (red - t.meter);
+        if (t.meter < 0.05f) t.meter = 0.0f;
+        if (std::abs (t.meter - before) > 0.03f || (before > 0.0f) != (t.meter > 0.0f))
+            meterDirty = meterDirty.getUnion (tileRect (t.x).expanded (6.0f * u).getSmallestIntegerContainer());
+    }
+    if (! moved && ! meterDirty.isEmpty()) repaint (meterDirty);
     moved |= ui::approach (plusGlow, plusHover ? 1.0f : 0.0f, 0.16f);
     if (moved) repaint();
 }
@@ -313,6 +327,31 @@ void ChainStrip::paint (juce::Graphics& g)
             ui::softGlowEllipse (g, led, onirique::look::ember.withAlpha (0.8f * t.on), 10.0f * u);
         g.setColour (ui::ember.interpolatedWith (juce::Colour (0xff4a3a3e), 1.0f - t.on));
         g.fillEllipse (led);
+
+        // le mini-mètre : à droite du témoin, ce que le module retire (0 .. 18 dB), avec sa valeur ; il s'efface au survol
+        // (les boutons power et retirer prennent la place)
+        if (t.meter > 0.05f && t.hover < 0.99f)
+        {
+            const float fade = 1.0f - t.hover;
+            const auto vf = ui::css (ui::Face::mono, 8.5f * u, 0.06f);
+            const juce::String val = juce::String::fromUTF8 ("−") + juce::String (t.meter, t.meter < 10.0f ? 1 : 0);
+            const float vw = ui::textWidth (vf, val) + 2.0f;
+            const auto track = juce::Rectangle<float> (led.getRight() + 8.0f * u, led.getCentreY() - 1.5f * u,
+                                                       r.getRight() - pad - vw - 6.0f * u - (led.getRight() + 8.0f * u), 3.0f * u);
+            if (track.getWidth() > 4.0f * u)
+            {
+                g.setColour (juce::Colours::white.withAlpha (0.07f * fade));
+                g.fillRoundedRectangle (track, 1.5f * u);
+                const auto fill = track.withWidth (track.getWidth() * juce::jlimit (0.0f, 1.0f, t.meter / 18.0f));
+                ui::softGlowRect (g, fill, 1.5f * u, onirique::look::ember.withAlpha (0.45f * fade), 6.0f * u);
+                g.setColour (onirique::look::ember.withAlpha (fade));
+                g.fillRoundedRectangle (fill, 1.5f * u);
+                g.setColour (juce::Colour (0xffcbb6b9).withAlpha (fade));
+                g.setFont (vf);
+                g.drawText (val, juce::Rectangle<float> (track.getRight() + 6.0f * u, led.getY() - 3.0f * u, vw, led.getHeight() + 6.0f * u),
+                            juce::Justification::centredLeft, false);
+            }
+        }
 
         // power et retirer, au survol (#cbb6b9, fond blanc .12 sous la souris)
         if (t.hover > 0.01f && ! lifted)
@@ -855,6 +894,16 @@ VocalBoxView::VocalBoxView (OniriqueVocalBoxAudioProcessor& p)
     oversampling.round = true;
     addChildComponent (start);
     addChildComponent (mixButton);
+    addChildComponent (compare);
+    addChildComponent (simpleBtn);
+    simpleBtn.setState ("MODE SIMPLE", onirique::uipref::simple());
+    simpleBtn.onClick = [this]
+    {
+        onirique::uipref::setSimple (! onirique::uipref::simple());
+        simpleBtn.setState ("MODE SIMPLE", onirique::uipref::simple());
+        if (! mixPage && panel != nullptr) { const int s = selected; removeChildComponent (panel.get()); panel.reset(); selected = -1; select (s); }
+    };
+    compare.onClick = [this] { processor.setCompare (! processor.isComparing()); };
     addChildComponent (picker);
     mixButton.onClick = [this] { if (mixPage) select (processor.getChain()[0]); else openMixPage(); };
 
@@ -1082,7 +1131,9 @@ void VocalBoxView::resized()
     outStrip.setBounds (juce::Rectangle<float> (w - 24.0f * u - side, fy, side, fh).toNearestInt());
     start.setBounds (a.toNearestInt());
     mixButton.setBounds (juce::Rectangle<float> (0.0f, 6.0f * u, 132.0f * u, 36.0f * u).withRightX ((float) oversampling.getX() - 14.0f * u).toNearestInt());
-    rate.setBounds (juce::Rectangle<float> (0.0f, 6.0f * u, 300.0f * u, 36.0f * u).withRightX ((float) mixButton.getX() - 14.0f * u).toNearestInt());
+    compare.setBounds (juce::Rectangle<float> (0.0f, 6.0f * u, 210.0f * u, 36.0f * u).withRightX ((float) mixButton.getX() - 12.0f * u).toNearestInt());
+    simpleBtn.setBounds (juce::Rectangle<float> (0.0f, 6.0f * u, 150.0f * u, 36.0f * u).withRightX ((float) compare.getX() - 12.0f * u).toNearestInt());
+    rate.setBounds (juce::Rectangle<float> (0.0f, 6.0f * u, 300.0f * u, 36.0f * u).withRightX ((float) simpleBtn.getX() - 14.0f * u).toNearestInt());
     {
         // la suggestion des réglages habituels : ses deux boutons au bout de sa bande
         auto hb = habitArea();
@@ -1114,6 +1165,10 @@ void VocalBoxView::timerCallback()
     {
         const bool hasChain = modules::valid (processor.getChain()[0]);
         if (mixButton.isVisible() != hasChain) mixButton.setVisible (hasChain);
+        if (compare.isVisible() != hasChain) compare.setVisible (hasChain);
+        if (simpleBtn.isVisible() != hasChain) simpleBtn.setVisible (hasChain);
+        const bool cmp = processor.isComparing();
+        compare.setState (cmp ? juce::String::fromUTF8 ("AVANT · MÊME VOLUME") : juce::String ("COMPARER"), cmp);
     }
     if (panel != nullptr) panel->tick();
     {
@@ -1179,7 +1234,13 @@ void VocalBoxView::paint (juce::Graphics& g)
     g.setColour (cHaze);
     g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.12f));
     const auto lr = juce::Rectangle<float> (24.0f * u, 18.0f * u, (float) getWidth() - 48.0f * u, 14.0f * u);
-    g.drawText (juce::String::fromUTF8 ("CHAÎNE DE TRAITEMENT · GLISSE UN MODULE POUR CHANGER L'ORDRE"), lr, juce::Justification::centredLeft, false);
+    {
+        // le libellé s'arrête avant les boutons du haut (COMPARER, MODE SIMPLE, la note du mix)
+        float stop = lr.getRight();
+        for (juce::Component* c : { (juce::Component*) &rate, (juce::Component*) &simpleBtn, (juce::Component*) &compare, (juce::Component*) &mixButton })
+            if (c->isVisible()) stop = std::min (stop, (float) c->getX() - 16.0f * u);
+        g.drawText (juce::String::fromUTF8 ("CHAÎNE DE TRAITEMENT · GLISSE UN MODULE POUR CHANGER L'ORDRE"), lr.withRight (stop), juce::Justification::centredLeft, true);
+    }
     g.drawText (juce::String (count) + (count > 1 ? " MODULES" : " MODULE"), lr, juce::Justification::centredRight, false);
 
     // le panneau de verre (rayon 28)

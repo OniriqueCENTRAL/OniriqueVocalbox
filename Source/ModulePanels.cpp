@@ -383,6 +383,40 @@ GlassTabs& ModulePanel::tabs (const char* id, const juce::StringArray& labels)
     return own (std::make_unique<GlassTabs> (processor.apvts, P (id), labels));
 }
 
+// les potards essentiels de chaque module, ceux du mode simple (identifiants du premier exemplaire)
+void ModulePanel::prune (std::vector<StarKnob*>& ks) const
+{
+    using namespace onirique;
+    if (! uipref::simple() || ks.size() <= 2) return;
+    std::vector<const char*> keep;
+    switch (type)
+    {
+        case modules::gate:      keep = { ids::gateThr, ids::gateRange }; break;
+        case modules::reso:      keep = { ids::resoAmt }; break;
+        case modules::deess:     keep = { ids::deessFreq, ids::deessAmt }; break;
+        case modules::analog:    keep = { ids::mud, ids::high, ids::air }; break;
+        case modules::sat:       keep = { ids::drive, ids::satMix }; break;
+        case modules::fet:       keep = { ids::fetIn, ids::fetOut }; break;
+        case modules::parallel:  keep = { ids::parAmount }; break;
+        case modules::delay:     keep = { ids::delayMix, ids::delayFeedback }; break;
+        case modules::reverb:    keep = { ids::reverbMix, ids::reverbDecay, ids::reverbSize }; break;
+        case modules::chorus:    keep = { ids::chorusDepth, ids::chorusMix }; break;
+        case modules::flanger:   keep = { ids::flangerDepth, ids::flangerMix }; break;
+        case modules::cl1b:      keep = { ids::cl1bThreshold, ids::cl1bGain, ids::cl1bMix }; break;
+        case modules::tuner:     keep = { ids::tuneRetune, ids::tuneHumanize }; break;
+        default: return;
+    }
+    std::vector<StarKnob*> out;
+    for (auto* k : ks)
+    {
+        bool essential = false;
+        for (auto* id : keep) essential = essential || k->paramId() == P (id);
+        if (essential) out.push_back (k); else k->setVisible (false);
+    }
+    if (out.empty()) { for (auto* k : ks) k->setVisible (true); return; }
+    ks = out;
+}
+
 void ModulePanel::layoutKnobs (const std::vector<StarKnob*>& ks, juce::Rectangle<float> r, int cols)
 {
     if (ks.empty()) return;

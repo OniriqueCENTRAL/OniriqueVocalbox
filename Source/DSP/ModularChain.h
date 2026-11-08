@@ -109,6 +109,9 @@ public:
     virtual bool isSend() const noexcept { return false; }
     virtual void processSendInto (const float* const*, float* const*, int, int) noexcept {}
     virtual float getReductionDb() const noexcept { return 0.0f; }   // pour les mètres de l'interface
+    // le mini-mètre de son carré dans la chaîne : ce qu'il retire en ce moment (dB) ; la réduction, sauf pour ceux qui la
+    // mesurent autrement (RESONANCE, MULTIBAND : la bande la plus réduite ; DE-CLICK : le dernier clic retiré)
+    virtual float activityDb() const noexcept { return std::abs (getReductionDb()); }
 
     juce::AudioProcessorValueTreeState& apvts;
     const int type, inst;
@@ -237,6 +240,7 @@ public:
     }
     int getLatencySamples() const noexcept override { return engine.getLatencySamples(); }
     const ResonanceSuppressor::Meter& getMeter() const noexcept { return engine.getMeter(); }
+    float activityDb() const noexcept override { float m = 0.0f; for (auto& r : engine.getMeter().reductionDb) m = std::max (m, std::abs (r.load (std::memory_order_relaxed))); return m; }
 
 private:
     void prepareEngine (double rate, int factor, int maxBlock) override
@@ -646,6 +650,7 @@ public:
     int getLatencySamples() const noexcept override { return engine.getLatencySamples(); }
     int takeClicks() noexcept { return engine.takeClicks(); }
     float lastClickDb() const noexcept { return engine.lastClickDb(); }
+    float activityDb() const noexcept override { return engine.recentClickDb(); }
 private:
     void prepareEngine (double rate, int, int) override { engine.prepare (rate); }
     void updateEngine (bool, bool) noexcept override { engine.setParams (f (sens) * 0.01f, f (amt) * 0.01f, b (listen)); }
@@ -733,6 +738,7 @@ public:
         atk = raw (ids::mbAttack); rel = raw (ids::mbRelease); out = raw (ids::mbOutput);
     }
     const MultibandOpto::Meter& getMeter() const noexcept { return engine.getMeter(); }
+    float activityDb() const noexcept override { float m = 0.0f; for (auto& r : engine.getMeter().grDb) m = std::max (m, std::abs (r.load (std::memory_order_relaxed))); return m; }
 
 private:
     void prepareEngine (double rate, int, int) override { engine.prepare (rate); outGain.reset (rate, 0.03); }
@@ -1005,6 +1011,9 @@ public:
         maxLatency = juce::roundToInt (fs * 2.0);
         for (auto& d : dryDelay) d.prepare (maxLatency);
         inGain.reset (fs, 0.02); outGain.reset (fs, 0.02); wetMix.reset (fs, 0.02);
+        cmpMix.reset (fs, 0.03);
+        eCoef = (float) std::exp (-1.0 / (2.0 * fs));
+        eDry = eWet = 0.0f; matchGain = 1.0f;
         planStep = 1.0f / (float) std::max (1, juce::roundToInt (0.010 * fs));
         for (auto& w : wetBuf) w.assign ((size_t) kChunk, 0.0f);
 
@@ -1040,6 +1049,8 @@ public:
         }
     }
 
+    // COMPARER : la prise brute, remontée au volume du mix (une écoute de l'interface, ni réglage ni preset)
+    std::atomic<bool> compare { false };
     float getAutoGainDb() const noexcept { return autoGain.getGainDb(); }
     float consumeInputLevel (int c) noexcept  { return inLevel[c & 1].exchange (0.0f, std::memory_order_relaxed); }
     float consumeOutputLevel (int c) noexcept { return outLevel[c & 1].exchange (0.0f, std::memory_order_relaxed); }
@@ -1202,6 +1213,12 @@ private:
 
         macroStage (ch, numCh, n);
 
+        // COMPARER : la prise brute, remontée au volume du mix. Les deux volumes sont suivis en continu (énergie moyennée sur
+        // ~2 s, seulement quand la voix est là) ; le gain d'égalisation glisse d'un bloc à l'autre
+        const float matchTarget = eDry > 1.0e-12f ? juce::jlimit (0.1f, 10.0f, std::sqrt (eWet / eDry)) : 1.0f;
+        const float matchFrom = matchGain, matchStep = (matchTarget - matchGain) * 0.15f / (float) std::max (1, n);
+        cmpMix.setTargetValue (compare.load (std::memory_order_relaxed) ? 1.0f : 0.0f);
+
         // OUTPUT + BYPASS (signal sec aligné) ; chaîne modifiée : on descend, on reconstruit, on remonte (10 ms)
         for (int s = 0; s < n; ++s)
         {
@@ -1213,9 +1230,18 @@ private:
             else if (planGain < 1.0f) planGain = std::min (1.0f, planGain + planStep);
 
             const float g = outGain.getNextValue(), m = sCurve (wetMix.getNextValue()), pg = sCurve (planGain);
+            const float cm = sCurve (cmpMix.getNextValue()), mg = matchFrom + matchStep * (float) s;
+            float ed = 0.0f, ew = 0.0f;
             for (int c = 0; c < numCh; ++c)
-                ch[c][s] = sanitize ((dry[c][s] * (1.0f - m) + ch[c][s] * g * m) * pg);
+            {
+                const float d = dry[c][s], w = ch[c][s] * g;
+                ed += d * d; ew += w * w;
+                const float normal = (d * (1.0f - m) + w * m) * pg;
+                ch[c][s] = sanitize (normal + cm * (d * mg * pg - normal));
+            }
+            if (ed > 1.0e-9f * (float) numCh) { eDry = eCoef * eDry + (1.0f - eCoef) * ed; eWet = eCoef * eWet + (1.0f - eCoef) * ew; }
         }
+        matchGain = matchFrom + matchStep * (float) n;
         storePeaks (outLevel, ch, numCh, n);
     }
 
@@ -1291,7 +1317,8 @@ private:
     std::atomic<int> latency { 0 };
     AutoGain autoGain;
     bool autoOn = false;
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> inGain, outGain, wetMix;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> inGain, outGain, wetMix, cmpMix;
+    float eDry = 0.0f, eWet = 0.0f, eCoef = 0.9999f, matchGain = 1.0f;   // COMPARER : volumes suivis et gain d'égalisation
     DelayLine dryDelay[2];
     float dry[2][kChunk] {};
     std::vector<float> wetBuf[2];

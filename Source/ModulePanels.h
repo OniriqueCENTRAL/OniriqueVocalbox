@@ -55,6 +55,7 @@ public:
 
     // le disque du potard (pour aligner un dessin autour)
     juce::Rectangle<float> knobArea() const noexcept;
+    juce::String paramId() const { return param != nullptr ? param->paramID : juce::String(); }
 
 private:
     juce::RangedAudioParameter* param = nullptr;
@@ -119,6 +120,30 @@ private:
 };
 
 //==============================================================================
+/*  LE MODE SIMPLE (bouton du haut) : chaque module ne montre que ses 2 ou 3 potards essentiels ; les interrupteurs et les
+    onglets restent. Le choix est gardé pour tous les projets (AppData/Onirique/VocalBox/simple-mode). */
+namespace onirique::uipref
+{
+inline juce::File simpleFile()
+{
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("Onirique").getChildFile ("VocalBox").getChildFile ("simple-mode");
+}
+inline std::atomic<int>& simpleCache() { static std::atomic<int> c { -1 }; return c; }
+inline bool simple()
+{
+    auto& c = simpleCache();
+    if (c.load() < 0) c.store (simpleFile().existsAsFile() ? 1 : 0);
+    return c.load() == 1;
+}
+inline void setSimple (bool on)
+{
+    simpleCache().store (on ? 1 : 0);
+    if (on) { simpleFile().getParentDirectory().createDirectory(); simpleFile().replaceWithText ("1"); }
+    else simpleFile().deleteFile();
+}
+} // namespace onirique::uipref
+
+//==============================================================================
 /*  Le contenu d'un module, sur toute la place du panneau : chaque type a son écran (le 1176 et le LA-2A leur façade, les
     nettoyages leur forme d'onde avec ce qui est retiré, l'EQ celui d'ONIRIQUE EQ...). */
 class ModulePanel : public juce::Component, public Animated
@@ -146,6 +171,8 @@ public:
     }
     // une rangée de potards dans r (jusqu'à cols par rangée)
     static void layoutKnobs (const std::vector<StarKnob*>&, juce::Rectangle<float> r, int cols);
+    // mode simple : retire du vecteur (et cache) les potards qui ne sont pas essentiels pour ce module
+    void prune (std::vector<StarKnob*>& ks) const;
 
     OniriqueVocalBoxAudioProcessor& processor;
     onirique::ChainModule* engine = nullptr;

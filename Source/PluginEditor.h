@@ -33,7 +33,7 @@ public:
     juce::String getTooltip() override;
 
 private:
-    struct Tile { int code = 0; float x = 0.0f, vel = 0.0f, hover = 0.0f, on = 1.0f, sel = 0.0f, sheen = 0.0f; };
+    struct Tile { int code = 0; float x = 0.0f, vel = 0.0f, hover = 0.0f, on = 1.0f, sel = 0.0f, sheen = 0.0f, meter = 0.0f; };   // meter : ce que le module retire (dB), pour le mini-mètre
     juce::Rectangle<float> tileRect (float x) const;   // x : position dans la rangée (avant défilement)
     juce::Rectangle<float> plusRect() const;
     float slotX (int index) const;
@@ -145,6 +145,7 @@ class TextPill : public juce::Component
 public:
     explicit TextPill (juce::String t, bool litPill) : text (std::move (t)), lit (litPill) { setMouseCursor (juce::MouseCursor::PointingHandCursor); }
     std::function<void()> onClick;
+    void setState (const juce::String& t, bool litPill) { if (t != text || litPill != lit) { text = t; lit = litPill; repaint(); } }
     float idealWidth() const;
     void paint (juce::Graphics&) override;
     void mouseEnter (const juce::MouseEvent&) override { hover = true; repaint(); }
@@ -205,6 +206,8 @@ private:
     StartScreen start;   // chaîne vide : la sphère et la barre de recherche
     RateChip rate;       // la note du mix (apprentissage)
     MixPageButton mixButton;
+    TextPill compare { "COMPARER", false };   // la prise brute au volume du mix
+    TextPill simpleBtn { "MODE SIMPLE", false };   // les potards essentiels seulement (ModulePanels.h, uipref)
     bool mixPage = false;   // l'écran AUTO MIX (macros) à la place d'un module
     // ses réglages habituels pour le module qu'il vient d'ajouter (habitudes, sur son ordinateur)
     void offerHabit (int code);

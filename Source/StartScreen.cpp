@@ -20,6 +20,11 @@ StartScreen::StartScreen (OniriqueVocalBoxAudioProcessor& p)
     : processor (p), role (p.apvts, onirique::ids::voiceRole, juce::StringArray { "LEAD", "BACKS", "ADLIBS", "DOUBLES" })
 {
     role.round = true;
+    // la première ouverture : la carte des trois étapes, une seule fois
+    guide = ! juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("Onirique").getChildFile ("VocalBox").getChildFile ("guide-seen").existsAsFile();
+   #if ONIRIQUE_UI_TEST
+    if (juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_GUIDE", {}).isNotEmpty()) guide = true;
+   #endif
     addAndMakeVisible (role);
     // les points répartis régulièrement sur la sphère (spirale de Fibonacci)
     dots.reserve (kDots);
@@ -297,7 +302,7 @@ void StartScreen::paint (juce::Graphics& g)
     {
         g.setColour (cHaze.withAlpha (0.85f));
         g.setFont (ui::css (ui::Face::body, 16.0f * u));
-        g.drawText (utf8 ("Ex. : voix de Travis Scott, aérée et sombre · R&B doux façon SZA · rap FR très en avant"), search.getBounds().toFloat(),
+        g.drawText (utf8 ("Ex. : voix de Travis Scott, aérée et sombre · voix mélodique façon Dakeez · rap FR très en avant"), search.getBounds().toFloat(),
                     juce::Justification::centredLeft, true);
     }
     const auto go = goArea();
@@ -316,6 +321,7 @@ void StartScreen::paint (juce::Graphics& g)
     g.fillPath (ui::starPath ({ go.getX() + 30.0f * u, go.getCentreY() }, 7.0f * u, t * 0.6f));
     g.setFont (ui::css (ui::Face::mono, 11.0f * u, 0.14f));
     g.drawText (utf8 ("AUTO MIX"), go.withTrimmedLeft (44.0f * u), juce::Justification::centredLeft, false);
+    if (guide && stage == Stage::idle) paintGuide (g, u);   // la première ouverture, par-dessus la sphère
 }
 
 void StartScreen::mouseMove (const juce::MouseEvent& e)
@@ -324,8 +330,84 @@ void StartScreen::mouseMove (const juce::MouseEvent& e)
     if (o != overGo) { overGo = o; setMouseCursor (o ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor); }
 }
 
+//==============================================================================
+// LA PREMIÈRE OUVERTURE : une carte de verre au-dessus de la sphère, les trois étapes dans l'ordre, et C'EST PARTI
+namespace
+{
+juce::File guideFlag()
+{
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("Onirique").getChildFile ("VocalBox").getChildFile ("guide-seen");
+}
+}
+
+juce::Rectangle<float> StartScreen::guideArea() const
+{
+    const float u = ui::unitOf (*this);
+    const auto s = sphereArea();
+    return juce::Rectangle<float> (std::min ((float) getWidth() - 80.0f * u, 980.0f * u), 176.0f * u).withCentre (s.getCentre());
+}
+
+juce::Rectangle<float> StartScreen::guideButton() const
+{
+    const float u = ui::unitOf (*this);
+    const auto a = guideArea();
+    return juce::Rectangle<float> (170.0f * u, 40.0f * u).withCentre ({ a.getCentreX(), a.getBottom() - 34.0f * u });
+}
+
+void StartScreen::paintGuide (juce::Graphics& g, float u) const
+{
+    const auto a = guideArea();
+    const float rad = 22.0f * u;
+    g.setColour (juce::Colour (0xff120d0f).withAlpha (0.94f));
+    g.fillRoundedRectangle (a, rad);
+    ui::drawDemoGlass (g, a, rad, u, true);
+    g.setColour (cEmber.withAlpha (0.35f));
+    g.drawRoundedRectangle (a.reduced (0.5f), rad, 1.0f * u);
+    struct Step { const char* title; const char* text; };
+    const Step steps[3] {
+        { "CHOISIS LE RÔLE", "LEAD, BACKS, ADLIBS ou DOUBLES, en haut à droite : chaque voix a sa place." },
+        { "DÉCRIS LE SON", "« voix de SCH », « mélodique façon Dakeez »… ou glisse un morceau sur la sphère." },
+        { "LANCE LA LECTURE", "Clique AUTO MIX et joue ta piste : 10 secondes de ta voix suffisent." },
+    };
+    auto cols = a.reduced (28.0f * u, 22.0f * u).withTrimmedBottom (54.0f * u);
+    const float cw = cols.getWidth() / 3.0f;
+    for (int i = 0; i < 3; ++i)
+    {
+        auto c = juce::Rectangle<float> (cols.getX() + cw * (float) i, cols.getY(), cw, cols.getHeight()).reduced (12.0f * u, 0.0f);
+        const auto num = c.removeFromTop (30.0f * u);
+        const auto dot = juce::Rectangle<float> (26.0f * u, 26.0f * u).withPosition (num.getX(), num.getY());
+        g.setColour (cEmber);
+        g.fillEllipse (dot);
+        g.setColour (juce::Colours::white);
+        g.setFont (ui::css (ui::Face::mono, 12.0f * u, 0.0f));
+        g.drawText (juce::String (i + 1), dot, juce::Justification::centred, false);
+        g.setColour (cBone);
+        g.setFont (ui::css (ui::Face::display, 13.0f * u, 0.05f));
+        g.drawText (utf8 (steps[i].title), num.withTrimmedLeft (36.0f * u), juce::Justification::centredLeft, false);
+        c.removeFromTop (8.0f * u);
+        g.setColour (cHaze);
+        g.setFont (ui::css (ui::Face::body, 13.0f * u));
+        g.drawFittedText (utf8 (steps[i].text), c.toNearestInt(), juce::Justification::topLeft, 3, 1.0f);
+    }
+    const auto b = guideButton();
+    g.setGradientFill (juce::ColourGradient (cEmber.withAlpha (0.75f), 0.0f, b.getY(), onirique::look::emberDeep.withAlpha (0.75f), 0.0f, b.getBottom(), false));
+    g.fillRoundedRectangle (b, b.getHeight() * 0.5f);
+    g.setColour (juce::Colours::white);
+    g.setFont (ui::css (ui::Face::mono, 11.0f * u, 0.16f));
+    g.drawText (utf8 ("C'EST PARTI"), b, juce::Justification::centred, false);
+}
+
 void StartScreen::mouseDown (const juce::MouseEvent& e)
 {
+    if (guide)
+    {
+        // la carte d'accueil se ferme au bouton, ou d'un clic à côté ; elle ne revient plus
+        guide = false;
+        guideFlag().getParentDirectory().createDirectory();
+        guideFlag().replaceWithText ("1");
+        repaint();
+        return;
+    }
     if (goArea().contains (e.position)) submit();
     else if (barArea().contains (e.position)) search.grabKeyboardFocus();
     repaint();

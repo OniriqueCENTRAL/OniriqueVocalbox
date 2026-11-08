@@ -105,6 +105,9 @@ public:
     // LES HABITUDES (Habits.h, sur l'ordinateur seulement) : AUTO MIX vient de monter la chaîne, la retouche de l'utilisateur
     // sera suivie ; habitOffer : la page AUTO MIX peut proposer la correction habituelle. Thread de l'interface.
     void habitArm();
+    // COMPARER (bouton du haut) : la prise brute au volume du mix
+    void setCompare (bool on) noexcept { chain.compare.store (on); }
+    bool isComparing() const noexcept { return chain.compare.load(); }
     std::atomic<bool> habitOffer { false };
 
 private:
