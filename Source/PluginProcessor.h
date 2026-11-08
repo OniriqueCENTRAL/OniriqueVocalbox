@@ -9,6 +9,7 @@
 #include "DSP/ModularChain.h"
 #include "DSP/SpectrumTap.h"
 #include "StockPresets.h"
+#include <map>
 
 class OniriqueVocalBoxAudioProcessor : public juce::AudioProcessor,
                                        private juce::AudioProcessorValueTreeState::Listener,
@@ -101,6 +102,11 @@ public:
     // AUTO MIX vient de monter la chaîne : l'interface ouvre l'écran AUTO MIX (les macros, affiner en mots)
     std::atomic<bool> showMixPage { false };
 
+    // LES HABITUDES (Habits.h, sur l'ordinateur seulement) : AUTO MIX vient de monter la chaîne, la retouche de l'utilisateur
+    // sera suivie ; habitOffer : la page AUTO MIX peut proposer la correction habituelle. Thread de l'interface.
+    void habitArm();
+    std::atomic<bool> habitOffer { false };
+
 private:
     std::atomic<float>* pBypass = nullptr;
     std::atomic<float>* pOversampling = nullptr;
@@ -122,6 +128,15 @@ private:
     juce::var learnPayload;
     std::vector<std::pair<juce::String, float>> learnApplied;   // les réglages posés par AUTO MIX
     double learnAt = 0.0;
+    // habitudes : l'état de chaque module à son arrivée dans la chaîne (on ne retient que ce que l'utilisateur a touché),
+    // la dernière empreinte écrite, et la chaîne d'AUTO MIX de référence
+    void habitTick (bool now);
+    std::map<juce::String, float> habitSnapshot (int type, int k) const;
+    std::map<int, std::map<juce::String, float>> habitArrival, habitWritten;
+    std::vector<std::pair<juce::String, float>> habitBase;
+    onirique::modules::Chain habitChain {};
+    juce::int64 habitSession = juce::Time::currentTimeMillis(), habitMixId = 0;
+    int habitTicks = 0;
     juce::ThreadPool learnPool { 1 };   // l'envoi, hors de l'interface ; attendu à la fermeture
     std::atomic<int> capPos { 0 };
     std::atomic<bool> capturing { false };

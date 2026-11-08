@@ -477,6 +477,7 @@ void StartScreen::apply()
     set (ids::autoGain, 0.0f);
     for (const auto& [id, v] : plan.globals) set (id, v);   // macros à zéro, OUTPUT et panoramique du rôle
     processor.setChain (chain);
+    processor.habitArm();   // ce que l'utilisateur changera à cette chaîne sera retenu (habitudes, sur son ordinateur)
     processor.showMixPage.store (true);   // l'écran AUTO MIX s'ouvre : les macros et « affiner en mots »
     armLearning();   // l'apprentissage (s'il est allumé) : ce qui vient d'être décidé attend sa note
 }

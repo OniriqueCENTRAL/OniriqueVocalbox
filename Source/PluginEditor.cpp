@@ -1,5 +1,6 @@
 #include "PluginEditor.h"
 #include "Learning.h"
+#include "Habits.h"
 #include "OniriqueWindowSize.h"
 #include <BinaryData.h>
 
@@ -863,7 +864,22 @@ VocalBoxView::VocalBoxView (OniriqueVocalBoxAudioProcessor& p)
     {
         const int code = processor.addModule (type);
         picker.close();
-        if (code != 0) select (code);
+        if (code != 0) { select (code); offerHabit (code); }
+    };
+    addChildComponent (habitYes);
+    addChildComponent (habitNo);
+    habitNo.onClick = [this] { closeHabit(); };
+    habitYes.onClick = [this]
+    {
+        const int k = modules::instanceOf (habitCode);
+        for (const auto& [id, v] : habitValues)
+            if (auto* prm = processor.apvts.getParameter (ids::inst (id.toRawUTF8(), k)))
+            {
+                prm->beginChangeGesture();
+                prm->setValueNotifyingHost (prm->convertTo0to1 (v));
+                prm->endChangeGesture();
+            }
+        closeHabit();
     };
 
     const auto chain = p.getChain();
@@ -872,6 +888,8 @@ VocalBoxView::VocalBoxView (OniriqueVocalBoxAudioProcessor& p)
     // essais locaux : ONIRIQUE_UI_MODULE=<code> ouvre ce module, ONIRIQUE_UI_PICKER=1 ouvre le +
     if (const auto m = juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_MODULE", {}); m.isNotEmpty()) select (m.getIntValue());
     if (juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_PICKER", {}).isNotEmpty()) picker.open();
+    // ONIRIQUE_UI_HABIT=1 : les suggestions des habitudes (page AUTO MIX et module affiché)
+    if (juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_HABIT", {}).isNotEmpty()) { processor.habitOffer.store (true); offerHabit (selected); }
     if (juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_MIXPAGE", {}).isNotEmpty()) openMixPage();
    #endif
     startTimerHz (60);
@@ -898,10 +916,80 @@ void VocalBoxView::themeChanged()
     repaint();
 }
 
+// SES RÉGLAGES HABITUELS : un module qu'il a déjà réglé à sa façon (3 séances au moins) arrive avec une proposition, dans
+// l'en-tête du module : les deux réglages qui s'écartent le plus de ceux d'usine, APPLIQUER ou NON MERCI
+void VocalBoxView::offerHabit (int code)
+{
+    closeHabit();
+    const int type = modules::typeOf (code), k = modules::instanceOf (code);
+    auto values = onirique::habits::moduleHabit (type);
+    if (values.empty()) return;
+    std::vector<std::pair<float, juce::String>> gaps;
+    for (const auto& [id, v] : values)
+        if (auto* prm = processor.apvts.getParameter (ids::inst (id.toRawUTF8(), k)))
+        {
+            const float n = prm->convertTo0to1 (v), gap = std::abs (n - prm->getDefaultValue());
+            if (gap > 0.02f)
+                gaps.push_back ({ gap, upper (prm->getName (40).fromFirstOccurrenceOf (" ", false, false)) + " " + prm->getText (n, 24)
+                                       + (prm->getLabel().isNotEmpty() && ! prm->getText (n, 24).containsIgnoreCase (prm->getLabel()) ? " " + prm->getLabel() : juce::String()) });
+        }
+    if (gaps.empty()) return;
+    std::sort (gaps.begin(), gaps.end(), [] (const auto& a, const auto& b) { return a.first > b.first; });
+    juce::StringArray top;
+    for (size_t i = 0; i < std::min<size_t> (2, gaps.size()); ++i) top.add (gaps[i].second);
+    habitValues = std::move (values);
+    habitCode = code;
+    habitText = juce::String::fromUTF8 ("Tes réglages habituels : ") + top.joinIntoString (juce::String::fromUTF8 (" · ")) + (gaps.size() > 2 ? juce::String::fromUTF8 ("…") : juce::String());
+    habitYes.setVisible (true);
+    habitNo.setVisible (true);
+    resized();
+    repaint();
+}
+
+void VocalBoxView::closeHabit()
+{
+    habitCode = 0;
+    habitValues.clear();
+    habitYes.setVisible (false);
+    habitNo.setVisible (false);
+    repaint();
+}
+
+// la bande de la suggestion : dans l'en-tête du module, à gauche du bouton ON
+juce::Rectangle<float> VocalBoxView::habitArea() const
+{
+    const auto a = panelArea();
+    const float u = ui::unitOf (*this);
+    const auto pr = headerPower();
+    return { a.getX() + a.getWidth() * 0.36f, pr.getY(), pr.getX() - 16.0f * u - (a.getX() + a.getWidth() * 0.36f), pr.getHeight() };
+}
+
+float TextPill::idealWidth() const
+{
+    const float u = ui::unitOf (*this);
+    return ui::textWidth (ui::css (ui::Face::mono, 11.0f * u, 0.14f), text) + 36.0f * u;
+}
+
+void TextPill::paint (juce::Graphics& g)
+{
+    const float u = ui::unitOf (*this);
+    const auto r = getLocalBounds().toFloat().reduced (1.0f);
+    drawLitButton (g, r, lit ? 1.0f : 0.0f, hover ? 1.0f : 0.0f, u);
+    if (! lit)
+    {
+        g.setColour (juce::Colour (255, 220, 225).withAlpha (hover ? 0.24f : 0.14f));
+        g.drawRoundedRectangle (r, 12.0f * u, 1.0f * u);
+    }
+    g.setColour (lit || hover ? juce::Colours::white : cBtn);
+    g.setFont (ui::css (ui::Face::mono, 11.0f * u, 0.14f));
+    g.drawText (text, r, juce::Justification::centred, false);
+}
+
 // l'écran AUTO MIX : les macros, affiner en mots, le rôle ; NOUVEAU MIX vide la chaîne (l'écran de départ revient)
 void VocalBoxView::openMixPage()
 {
     if (! modules::valid (processor.getChain()[0])) return;
+    closeHabit();
     mixPage = true;
     mixButton.active = true;
     mixButton.repaint();
@@ -923,6 +1011,7 @@ void VocalBoxView::select (int code)
 {
     const auto chain = processor.getChain();
     if (std::find (chain.begin(), chain.end(), code) == chain.end()) code = chain[0];
+    if (code != habitCode) closeHabit();
     if (mixPage) { mixPage = false; mixButton.active = false; mixButton.repaint(); panel.reset(); selected = -1; }
     if (code == selected && (panel != nullptr || code == 0)) return;
     selected = code;
@@ -994,6 +1083,13 @@ void VocalBoxView::resized()
     start.setBounds (a.toNearestInt());
     mixButton.setBounds (juce::Rectangle<float> (0.0f, 6.0f * u, 132.0f * u, 36.0f * u).withRightX ((float) oversampling.getX() - 14.0f * u).toNearestInt());
     rate.setBounds (juce::Rectangle<float> (0.0f, 6.0f * u, 300.0f * u, 36.0f * u).withRightX ((float) mixButton.getX() - 14.0f * u).toNearestInt());
+    {
+        // la suggestion des réglages habituels : ses deux boutons au bout de sa bande
+        auto hb = habitArea();
+        habitNo.setBounds (hb.removeFromRight (habitNo.idealWidth()).toNearestInt());
+        hb.removeFromRight (8.0f * u);
+        habitYes.setBounds (hb.removeFromRight (habitYes.idealWidth()).toNearestInt());
+    }
     picker.setBounds (getLocalBounds());
     backdrop = {};
 }
@@ -1133,8 +1229,21 @@ void VocalBoxView::paint (juce::Graphics& g)
     g.drawText (name, juce::Rectangle<float> (nx, cy - 18.0f * u, nw + 10.0f, 36.0f * u), juce::Justification::centredLeft, false);
     g.setColour (cHaze);
     g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.12f));
-    g.drawText (upper (juce::String::fromUTF8 (inf.desc)), juce::Rectangle<float> (nx + nw + 14.0f * u, cy - 18.0f * u, 800.0f * u, 36.0f * u),
+    g.drawText (upper (juce::String::fromUTF8 (inf.desc)), juce::Rectangle<float> (nx + nw + 14.0f * u, cy - 18.0f * u, (habitYes.isVisible() ? std::max (0.0f, habitArea().getX() - 20.0f * u - (nx + nw + 14.0f * u)) : 800.0f * u), 36.0f * u),
                 juce::Justification::centredLeft, false);
+
+    if (habitYes.isVisible() && habitCode == selected)
+    {
+        // la suggestion : une bande braise, le texte, puis APPLIQUER et NON MERCI
+        const auto band = habitArea();
+        g.setColour (onirique::look::ember.withAlpha (0.10f));
+        g.fillRoundedRectangle (band, 12.0f * u);
+        g.setColour (onirique::look::ember.withAlpha (0.35f));
+        g.drawRoundedRectangle (band.reduced (0.5f), 12.0f * u, 1.0f * u);
+        g.setColour (cBone);
+        g.setFont (ui::css (ui::Face::body, 13.0f * u));
+        g.drawText (habitText, band.withTrimmedLeft (16.0f * u).withRight ((float) habitYes.getX() - 10.0f * u), juce::Justification::centredLeft, true);
+    }
 
     const auto pr = headerPower();
     drawLitButton (g, pr, powerLit, powerHover, u);

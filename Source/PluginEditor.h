@@ -139,6 +139,22 @@ private:
     float glow = 0.0f;
 };
 
+// une gélule de texte cliquable (APPLIQUER, NON MERCI de la suggestion des réglages habituels)
+class TextPill : public juce::Component
+{
+public:
+    explicit TextPill (juce::String t, bool litPill) : text (std::move (t)), lit (litPill) { setMouseCursor (juce::MouseCursor::PointingHandCursor); }
+    std::function<void()> onClick;
+    float idealWidth() const;
+    void paint (juce::Graphics&) override;
+    void mouseEnter (const juce::MouseEvent&) override { hover = true; repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { hover = false; repaint(); }
+    void mouseUp (const juce::MouseEvent& e) override { if (getLocalBounds().contains (e.getPosition()) && onClick) onClick(); }
+private:
+    juce::String text;
+    bool lit, hover = false;
+};
+
 // AUTO MIX, en haut à droite de la chaîne : ouvre l'écran des macros (et « affiner en mots ») ; allumé quand il est affiché
 class MixPageButton : public juce::Component
 {
@@ -190,6 +206,14 @@ private:
     RateChip rate;       // la note du mix (apprentissage)
     MixPageButton mixButton;
     bool mixPage = false;   // l'écran AUTO MIX (macros) à la place d'un module
+    // ses réglages habituels pour le module qu'il vient d'ajouter (habitudes, sur son ordinateur)
+    void offerHabit (int code);
+    void closeHabit();
+    juce::Rectangle<float> habitArea() const;
+    std::map<juce::String, float> habitValues;
+    juce::String habitText;
+    int habitCode = 0;
+    TextPill habitYes { "APPLIQUER", true }, habitNo { "NON MERCI", false };
     juce::TooltipWindow tooltips { this, 600 };
     int selected = 0;
     float panelFade = 1.0f, powerLit = 0.0f, powerHover = 0.0f;

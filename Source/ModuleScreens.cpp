@@ -1,6 +1,7 @@
 #include "ModulePanels.h"
 #include "Registry.h"
 #include "MixAnalysis.h"
+#include "Habits.h"
 
 using namespace onirique;
 
@@ -2716,6 +2717,16 @@ public:
         again.lit = false;
         again.onClick = std::move (newMix);
         addAndMakeVisible (again);
+
+        // ses habitudes : ce qu'il change d'habitude après AUTO MIX, proposé une fois, juste après le mix
+        if (p.habitOffer.exchange (false)) habit = onirique::habits::mixHabit();
+        habitYes.onClick = [this] { applyHabit(); };
+        habitNo.lit = false;
+        habitNo.onClick = [this] { habit = {}; habitYes.setVisible (false); habitNo.setVisible (false); feedbackText.clear(); resized(); repaint(); };
+        addChildComponent (habitYes);
+        addChildComponent (habitNo);
+        habitYes.setVisible (habit.any());
+        habitNo.setVisible (habit.any());
     }
 
     void tick() override
@@ -2734,7 +2745,15 @@ public:
         field.setBounds (bar.withTrimmedLeft (54.0f * u).withRight ((float) refineGo.getX() - 12.0f * u).reduced (0.0f, 14.0f * u).toNearestInt());
         field.setFont (ui::css (ui::Face::body, 16.0f * u));
         field.applyFontToAllText (ui::css (ui::Face::body, 16.0f * u));
-        feedback = r.removeFromTop (30.0f * u);
+        feedback = r.removeFromTop ((habit.any() ? 48.0f : 30.0f) * u);
+        if (habit.any())
+        {
+            auto fb = feedback.reduced (0.0f, 6.0f * u);
+            const float nw = habitNo.idealWidth(), yw = habitYes.idealWidth();
+            habitNo.setBounds (fb.removeFromRight (nw).toNearestInt());
+            fb.removeFromRight (10.0f * u);
+            habitYes.setBounds (fb.removeFromRight (yw).toNearestInt());
+        }
         auto bottom = r.removeFromBottom (116.0f * u);
         r.removeFromBottom (12.0f * u);
         // les quatre macros, grandes, côte à côte
@@ -2778,10 +2797,27 @@ public:
             g.fillPath (star);
         }
         g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.12f));
-        g.setColour (understood ? juce::Colour (0xffd9b8bd) : cHaze);
-        g.drawText (feedbackText.isNotEmpty() ? feedbackText : utf8 ("RIEN N'EST RECONSTRUIT : LES MACROS BOUGENT, TU PEUX LES REPRENDRE À LA MAIN"),
-                    feedback.withTrimmedLeft (24.0f * u), juce::Justification::centredLeft, true);
+        if (habit.any() && feedbackText.isEmpty())
+        {
+            // la suggestion : une bande de verre braise, le texte, APPLIQUER et NON MERCI à droite
+            const auto band = feedback.reduced (0.0f, 2.0f * u);
+            g.setColour (cEmber.withAlpha (0.10f));
+            g.fillRoundedRectangle (band, band.getHeight() * 0.5f);
+            g.setColour (cEmber.withAlpha (0.35f));
+            g.drawRoundedRectangle (band, band.getHeight() * 0.5f, 1.0f * u);
+            g.setColour (cBone);
+            g.setFont (ui::css (ui::Face::body, 14.0f * u));
+            g.drawText (habit.describe() + utf8 (" Appliquer les réglages qui s'en rapprochent le plus ?"),
+                        band.withTrimmedLeft (22.0f * u).withRight ((float) habitYes.getX() - 12.0f * u), juce::Justification::centredLeft, true);
+        }
+        else
+        {
+            g.setColour (understood ? juce::Colour (0xffd9b8bd) : cHaze);
+            g.drawText (feedbackText.isNotEmpty() ? feedbackText : utf8 ("RIEN N'EST RECONSTRUIT : LES MACROS BOUGENT, TU PEUX LES REPRENDRE À LA MAIN"),
+                        feedback.withTrimmedLeft (24.0f * u), juce::Justification::centredLeft, true);
+        }
         g.setColour (cHaze);
+        g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.12f));
         g.drawText (utf8 ("CETTE VOIX"), roleLabel, juce::Justification::centredLeft, false);
         g.drawText (shownProject, projectArea, juce::Justification::centredLeft, true);
     }
@@ -2843,6 +2879,31 @@ private:
     }
 
     juce::TextEditor field;
+    void applyHabit()
+    {
+        juce::StringArray done;
+        for (auto [id, v, name] : { std::tuple { ids::macroPresence, habit.presence, utf8 ("PRÉSENCE") }, std::tuple { ids::macroWarmth, habit.warmth, utf8 ("CHALEUR") },
+                                    std::tuple { ids::macroHold, habit.hold, juce::String ("TENUE") }, std::tuple { ids::macroSpace, habit.space, juce::String ("ESPACE") } })
+        {
+            if (v == 0.0f) continue;
+            if (auto* prm = processor.apvts.getParameter (id))
+            {
+                prm->beginChangeGesture();
+                prm->setValueNotifyingHost (prm->convertTo0to1 (v));
+                prm->endChangeGesture();
+            }
+            done.add (name + (v > 0 ? " +" : utf8 (" −")) + juce::String (juce::roundToInt (std::abs (v))));
+        }
+        habit = {};
+        habitYes.setVisible (false); habitNo.setVisible (false);
+        understood = true;
+        feedbackText = utf8 ("TES RÉGLAGES HABITUELS SONT APPLIQUÉS : ") + done.joinIntoString (utf8 (" · "));
+        resized();
+        repaint();
+    }
+
+    onirique::habits::MixHabit habit;
+    PillButton habitYes { utf8 ("APPLIQUER") }, habitNo { utf8 ("NON MERCI") };
     PillButton refineGo, again;
     GlassTabs role;
     std::vector<StarKnob*> macros;

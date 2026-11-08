@@ -1,6 +1,6 @@
 {
-  "version": 6,
-  "updated": "2026-11-07",
+  "version": 7,
+  "updated": "2026-11-08",
   "about": "Le cerveau d’AUTO MIX : la façon de mixer la voix de chaque artiste (couleur, tenue, espace, texture, effets), sur les échelles de la barre de recherche (0..1 ; comp -1..1 ; satType 0 lampe, 1 analog, 2 bande, 3 transformateur). Les corrections viennent de l'apprentissage (retouches et notes des utilisateurs qui l'ont accepté) : elles s'ajoutent aux réglages décidés. tune : l'accordage du TUNER (0,3 justesse discrète, 0,6..0,85 autotune moderne, 0,9+ effet robot), estimé d'après le son de leurs morceaux.",
   "artists": [
     { "name": "Travis Scott", "aliases": ["travis scott", "la flame", "cactus jack"], "genre": "rap",
@@ -115,7 +115,10 @@
     { "name": "Kerchak", "aliases": ["kerchak"], "genre": "rap fr", "estimate": true,
       "hints": { "tune": 0.8, "dark": 0.4, "warm": 0.3, "comp": 0.5, "reverb": 0.5, "reverbSize": 0.7, "delay": 0.45, "doubler": 0.3 , "fast": true } },
     { "name": "Yvnnis", "aliases": ["yvnnis"], "genre": "rap fr underground", "estimate": true,
-      "hints": { "tune": 0.7, "dark": 0.3, "air": 0.3, "comp": 0.3, "reverb": 0.55, "reverbSize": 0.8, "delay": 0.45, "sat": 0.3, "satType": 2, "dreamy": true } },
+      "hints": { "tune": 0.7, "dark": 0.3, "air": 0.3, "comp": 0.3, "reverb": 0.55, "reverbSize": 0.8, "delay": 0.45, "sat": 0.3, "satType": 2, "dreamy": true },
+      "voice": { "source": "voix clean, extrait de 16 s (Nov, 08/11/2026)", "dyn": 4.6, "rt60": 0.59, "wet": -2.9, "echo": 0,
+        "bands": { "160": -3.0, "200": -3.4, "250": -3.0, "315": 0.0, "400": 2.6, "500": 4.6, "630": 5.2, "800": 5.6, "1000": 4.9, "1250": 2.9,
+                   "1600": 0.6, "2000": -1.4, "2500": -2.6, "3150": -3.2, "4000": -3.6, "5000": -3.3, "6300": -2.6, "8000": -2.2 } } },
     { "name": "Theodora", "aliases": ["theodora"], "genre": "pop", "estimate": true,
       "hints": { "tune": 0.5, "bright": 0.6, "air": 0.6, "comp": 0.7, "reverb": 0.3, "reverbSize": 0.5, "delay": 0.35, "doubler": 0.5, "controlled": true , "peakComp": "cl1b" } },
     { "name": "Houdi", "aliases": ["houdi"], "genre": "rap fr", "estimate": true,

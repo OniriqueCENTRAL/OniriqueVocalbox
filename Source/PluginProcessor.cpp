@@ -3,6 +3,7 @@
 #include "Learning.h"
 #include "MixAnalysis.h"
 #include "Registry.h"
+#include "Habits.h"
 
 using namespace onirique;
 
@@ -39,6 +40,7 @@ OniriqueVocalBoxAudioProcessor::~OniriqueVocalBoxAudioProcessor()
     cancelPendingUpdate();
     apvts.removeParameterListener (onirique::ids::oversampling, this);
     onirique::registry::remove (this);
+    habitTick (true);   // les dernières retouches de la séance
 }
 
 //==============================================================================
@@ -174,8 +176,93 @@ void OniriqueVocalBoxAudioProcessor::learnSend (int rating)
     learnPool.addJob ([payload] { onirique::learning::postFeedback (payload); });
 }
 
+//==============================================================================
+// LES HABITUDES : les réglages d'un module (sans l'interrupteur, ni LISTEN / SOLO : ce sont des écoutes, pas des réglages)
+std::map<juce::String, float> OniriqueVocalBoxAudioProcessor::habitSnapshot (int type, int k) const
+{
+    std::map<juce::String, float> out;
+    const juce::String on (modules::info (type).onId);
+    for (const auto& id : modules::paramIds (type))
+    {
+        if (id == on || id.containsIgnoreCase ("listen") || id.containsIgnoreCase ("solo")) continue;
+        if (auto* p = apvts.getRawParameterValue (ids::inst (id.toRawUTF8(), k))) out[id] = p->load();
+    }
+    return out;
+}
+
+void OniriqueVocalBoxAudioProcessor::habitArm()
+{
+    habitTick (true);   // le mix d'avant garde sa dernière retouche
+    habitMixId = juce::Time::currentTimeMillis();
+    habitBase.clear();
+    for (auto* id : { ids::macroPresence, ids::macroWarmth, ids::macroHold, ids::macroSpace })
+        habitBase.push_back ({ id, apvts.getRawParameterValue (id)->load() });
+    for (int c : getChain())
+    {
+        if (! modules::valid (c)) continue;
+        const int t = modules::typeOf (c), k = modules::instanceOf (c);
+        const char* id = t == modules::fet ? ids::fetIn : t == modules::opto ? ids::laPeak : t == modules::cl1b ? ids::cl1bThreshold
+                       : t == modules::reverb ? ids::reverbMix : t == modules::delay ? ids::delayMix : nullptr;
+        if (id != nullptr) habitBase.push_back ({ ids::inst (id, k), apvts.getRawParameterValue (ids::inst (id, k))->load() });
+    }
+    // la chaîne d'AUTO MIX arrive telle quelle : ce n'est pas encore une habitude de l'utilisateur
+    habitArrival.clear();
+    habitChain = getChain();
+    for (int c : habitChain) if (modules::valid (c)) habitArrival[c] = habitSnapshot (modules::typeOf (c), modules::instanceOf (c));
+    habitOffer.store (habits::mixHabit().any());
+}
+
+void OniriqueVocalBoxAudioProcessor::habitTick (bool now)
+{
+    // un module qui arrive (ajouté, preset, AUTO MIX) : son état de départ est noté ; un module retiré est oublié
+    const auto c = getChain();
+    if (c != habitChain)
+    {
+        for (int x : c) if (modules::valid (x) && habitArrival.find (x) == habitArrival.end()) habitArrival[x] = habitSnapshot (modules::typeOf (x), modules::instanceOf (x));
+        for (auto it = habitArrival.begin(); it != habitArrival.end();)
+            it = std::find (c.begin(), c.end(), it->first) == c.end() ? habitArrival.erase (it) : std::next (it);
+        habitChain = c;
+    }
+    if (! now && ++habitTicks < 300) return;   // l'écriture : toutes les 30 s, et à la fermeture
+    habitTicks = 0;
+    try
+    {
+        // un module que l'utilisateur a touché : une empreinte par séance
+        for (const auto& [code, start] : habitArrival)
+        {
+            const auto cur = habitSnapshot (modules::typeOf (code), modules::instanceOf (code));
+            bool touched = false;
+            for (const auto& [id, v] : cur) { auto s = start.find (id); touched = touched || (s != start.end() && std::abs (s->second - v) > 1.0e-4f); }
+            if (! touched || habitWritten[code] == cur) continue;
+            habits::recordModule (modules::typeOf (code), juce::String (habitSession) + "-" + juce::String (code), cur);
+            habitWritten[code] = cur;
+        }
+        // après AUTO MIX : la retouche, en points de macros
+        if (! habitBase.empty())
+        {
+            auto now01 = [this] (const juce::String& id) { auto* p = apvts.getRawParameterValue (id); return p != nullptr ? p->load() : 0.0f; };
+            float holdDelta = 0.0f, spaceDelta = 0.0f; int nh = 0, ns = 0;
+            for (const auto& [id, base] : habitBase)
+            {
+                const float v = now01 (id);
+                if (id.startsWith (ids::fetIn)) { holdDelta += (v - base) / 6.0f * 100.0f; ++nh; }
+                else if (id.startsWith (ids::laPeak)) { holdDelta += (v - base) / 20.0f * 100.0f; ++nh; }
+                else if (id.startsWith (ids::cl1bThreshold)) { holdDelta += -(v - base) / 8.0f * 100.0f; ++nh; }
+                else if (id.startsWith (ids::reverbMix) || id.startsWith (ids::delayMix))
+                { spaceDelta += base > 0.5f ? 100.0f * std::log2 (std::max (v, 0.5f) / base) : 0.0f; ++ns; }
+            }
+            const float hold = now01 (ids::macroHold) + (nh > 0 ? holdDelta / (float) nh : 0.0f);
+            const float space = now01 (ids::macroSpace) + (ns > 0 ? spaceDelta / (float) ns : 0.0f);
+            habits::recordMix (habitMixId, juce::jlimit (-100.0f, 100.0f, now01 (ids::macroPresence)), juce::jlimit (-100.0f, 100.0f, now01 (ids::macroWarmth)),
+                               juce::jlimit (-100.0f, 100.0f, hold), juce::jlimit (-100.0f, 100.0f, space));
+        }
+    }
+    catch (...) {}   // un fichier illisible ne doit jamais gêner le plugin
+}
+
 void OniriqueVocalBoxAudioProcessor::timerCallback()
 {
+    habitTick (false);
     // l'apprentissage : sans note au bout de 10 minutes, le mix part avec ses seules retouches
     if (learnPending() && juce::Time::getMillisecondCounterHiRes() * 0.001 - learnAt > 600.0) learnSend (0);
     // les autres VOCALBOX du projet voient le rôle de celle-ci
