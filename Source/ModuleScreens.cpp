@@ -2,6 +2,8 @@
 #include "Registry.h"
 #include "MixAnalysis.h"
 #include "Habits.h"
+#include "Learning.h"
+#include <thread>
 
 using namespace onirique;
 
@@ -2658,6 +2660,7 @@ public:
     explicit PillButton (juce::String t) : text (std::move (t)) { setMouseCursor (juce::MouseCursor::PointingHandCursor); }
     std::function<void()> onClick;
     bool lit = true;
+    void setText (juce::String t) { text = std::move (t); repaint(); }
     void paint (juce::Graphics& g) override
     {
         const float u = ui::unitOf (*this);
@@ -2687,6 +2690,147 @@ public:
 private:
     juce::String text;
     bool hover = false;
+};
+
+/*  MON PROFIL (page AUTO MIX) : ce que VOCALBOX a retenu de tes mix, en clair. Tout reste sur l'ordinateur (habits.json) ;
+    EFFACER MES HABITUDES le vide (deux clics : le second confirme). */
+class ProfileCard final : public juce::Component
+{
+public:
+    ProfileCard()
+    {
+        wipe.lit = false;
+        close.onClick = [this] { setVisible (false); if (onClose) onClose(); };
+        wipe.onClick = [this]
+        {
+            if (! armed) { armed = true; wipe.setText (utf8 ("CONFIRMER L'EFFACEMENT")); resized(); return; }
+            onirique::habits::clearAll();
+            armed = false;
+            wipe.setText (utf8 ("EFFACER MES HABITUDES"));
+            refresh();
+            note = utf8 ("Tes habitudes sont effacées. VOCALBOX recommence à apprendre à partir de ton prochain mix.");
+            resized();
+            repaint();
+        };
+        addAndMakeVisible (wipe);
+        addAndMakeVisible (close);
+        usual.lit = false;
+        usual.onClick = [this] { if (onBuildUsual && onBuildUsual()) { setVisible (false); if (onClose) onClose(); } };
+        addChildComponent (usual);
+        setInterceptsMouseClicks (true, true);
+    }
+    std::function<void()> onClose;
+    std::function<bool()> onBuildUsual;   // monte la chaîne habituelle (true si elle a été montée)
+
+    void refresh()
+    {
+        lines.clear();
+        note.clear();
+        auto add = [this] (juce::String head, juce::String text) { lines.push_back ({ std::move (head), std::move (text) }); };
+        // AUTO MIX : l'habitude générale, puis celle de chaque rôle qui en a une à lui
+        const int total = onirique::habits::mixSessions();
+        const auto general = onirique::habits::mixHabit (-1);
+        add ("AUTO MIX", total == 0 ? utf8 ("Aucun mix suivi pour l'instant. Après AUTO MIX, tes retouches sont retenues ici.")
+                         : juce::String (total) + (total > 1 ? utf8 (" mix suivis. ") : utf8 (" mix suivi. "))
+                           + (general.any() ? general.describe() : utf8 ("Pas encore d'habitude : il faut au moins 3 mix retouchés dans le même sens.")));
+        static const char* roleName[4] { "LEAD", "BACKS", "ADLIBS", "DOUBLES" };
+        for (int r = 0; r < 4; ++r)
+        {
+            const auto h = onirique::habits::mixHabit (r);
+            if (h.role == r && h.any()) add (roleName[r], h.describe() + " (" + juce::String (h.sessions) + " mix)");
+        }
+        // les modules réglés à la main : prêts quand il y a 3 séances
+        juce::StringArray ready, learning;
+        for (const auto& [type, n] : onirique::habits::moduleSessions())
+        {
+            if (type < 0 || type >= modules::numTypes || n <= 0) continue;
+            const juce::String name (modules::info (type).name);
+            (n >= onirique::habits::kMin ? ready : learning).add (name + " (" + juce::String (n) + ")");
+        }
+        add ("MODULES", ready.isEmpty() && learning.isEmpty() ? utf8 ("Aucun module réglé à la main pour l'instant.")
+                        : (ready.isEmpty() ? juce::String() : utf8 ("Réglages habituels prêts : ") + ready.joinIntoString (", ") + ". ")
+                          + (learning.isEmpty() ? juce::String() : utf8 ("En cours d'apprentissage : ") + learning.joinIntoString (", ") + "."));
+        // les chaînes construites à la main : sa chaîne habituelle, et les modules qu'il met le plus
+        {
+            const auto ch = onirique::habits::chainHabit();
+            juce::StringArray usualNames, often;
+            for (int t : ch.usual) usualNames.add (modules::info (t).name);
+            for (const auto& [t, share] : ch.often) often.add (juce::String (modules::info (t).name) + " " + juce::String (juce::roundToInt (share * 100.0f)) + " %");
+            add (utf8 ("CHAÎNES À LA MAIN"), ch.chains == 0 ? utf8 ("Aucune chaîne construite à la main pour l'instant (sans AUTO MIX). Elles seront retenues ici.")
+                 : ch.any() ? utf8 ("Tu montes d'habitude : ") + usualNames.joinIntoString (utf8 (" → ")) + " (" + juce::String (ch.chains) + utf8 (" chaînes). Le plus souvent : ") + often.joinIntoString (", ") + "."
+                 : juce::String (ch.chains) + utf8 (ch.chains > 1 ? " chaînes construites. " : " chaîne construite. ") + utf8 ("Ta chaîne habituelle apparaîtra après 3 chaînes qui se ressemblent.")
+                   + (often.isEmpty() ? juce::String() : utf8 (" Le plus souvent : ") + often.joinIntoString (", ") + "."));
+            usual.setVisible (ch.any() && onBuildUsual != nullptr);
+        }
+        add ("ONR NEURAL LEARNING", onirique::learning::enabled()
+                 ? utf8 ("Allumé : tes mix aident AUTO MIX à progresser pour tout le monde, de façon anonyme et sans jamais envoyer de son.")
+                 : utf8 ("Éteint : rien ne quitte ton ordinateur. Tu peux l'allumer dans le menu ⋯ (HELP VOCALBOX LEARN)."));
+        repaint();
+    }
+
+    void resized() override
+    {
+        const float u = ui::unitOf (*this);
+        const auto card = cardArea();
+        const float cw = close.idealWidth(), ww = wipe.idealWidth();
+        close.setBounds (juce::Rectangle<float> (card.getRight() - 28.0f * u - cw, card.getBottom() - 58.0f * u, cw, 38.0f * u).toNearestInt());
+        wipe.setBounds (juce::Rectangle<float> ((float) close.getX() - 12.0f * u - ww, card.getBottom() - 58.0f * u, ww, 38.0f * u).toNearestInt());
+        const float uw = usual.idealWidth();
+        usual.setBounds (juce::Rectangle<float> (card.getX() + 28.0f * u, card.getBottom() - 58.0f * u, uw, 38.0f * u).toNearestInt());
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        const float u = ui::unitOf (*this);
+        g.fillAll (juce::Colour (0xff0b0709).withAlpha (0.72f));
+        const auto card = cardArea();
+        g.setColour (juce::Colour (0xff120c0e).withAlpha (0.96f));
+        g.fillRoundedRectangle (card, 22.0f * u);
+        ui::drawDemoGlass (g, card, 22.0f * u, u, true);
+        auto r = card.reduced (34.0f * u, 26.0f * u);
+        g.setColour (cBone);
+        g.setFont (ui::css (ui::Face::display, 24.0f * u, 0.01f));
+        g.drawText (utf8 ("Mon profil"), r.removeFromTop (34.0f * u), juce::Justification::centredLeft, false);
+        g.setColour (cHaze);
+        g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.14f));
+        g.drawText (utf8 ("CE QUE VOCALBOX A RETENU DE TES MIX · TOUT RESTE SUR TON ORDINATEUR"), r.removeFromTop (20.0f * u), juce::Justification::centredLeft, false);
+        r.removeFromTop (14.0f * u);
+        r.removeFromBottom (64.0f * u);
+        const float rowH = juce::jmin (64.0f * u, r.getHeight() / (float) juce::jmax<size_t> (1, lines.size()));
+        for (const auto& [head, text] : lines)
+        {
+            auto row = r.removeFromTop (rowH);
+            auto left = row.removeFromLeft (190.0f * u);
+            g.setColour (cEmber);
+            g.fillEllipse (juce::Rectangle<float> (6.0f * u, 6.0f * u).withCentre ({ left.getX() + 4.0f * u, left.getY() + 11.0f * u }));
+            g.setColour (cBone);
+            g.setFont (ui::css (ui::Face::mono, 11.0f * u, 0.14f));
+            g.drawText (head, left.withTrimmedLeft (18.0f * u).withHeight (22.0f * u), juce::Justification::centredLeft, true);
+            g.setColour (juce::Colour (0xffd9c6c9));
+            g.setFont (ui::css (ui::Face::body, 14.0f * u));
+            g.drawFittedText (text, row.toNearestInt().withTrimmedTop (2), juce::Justification::topLeft, 3, 1.0f);
+        }
+        if (note.isNotEmpty())
+        {
+            g.setColour (juce::Colour (0xffd9b8bd));
+            g.setFont (ui::css (ui::Face::body, 13.0f * u));
+            g.drawText (note, card.reduced (34.0f * u, 0.0f).withTop ((float) wipe.getY()).withHeight ((float) wipe.getHeight()).withRight ((float) wipe.getX() - 16.0f * u),
+                        juce::Justification::centredLeft, true);
+        }
+    }
+    void mouseDown (const juce::MouseEvent& e) override { if (! cardArea().contains (e.position)) close.onClick(); }
+
+private:
+    juce::Rectangle<float> cardArea() const
+    {
+        const float u = ui::unitOf (*this);
+        const auto b = getLocalBounds().toFloat();
+        return juce::Rectangle<float> (juce::jmin (980.0f * u, b.getWidth() - 40.0f * u), juce::jmin (580.0f * u, b.getHeight() - 20.0f * u)).withCentre (b.getCentre());
+    }
+    std::vector<std::pair<juce::String, juce::String>> lines;
+    juce::String note;
+    bool armed = false;
+    PillButton wipe { utf8 ("EFFACER MES HABITUDES") }, close { utf8 ("FERMER") }, usual { utf8 ("MONTER MA CHAÎNE HABITUELLE") };
 };
 } // namespace
 
@@ -2724,19 +2868,41 @@ public:
         addAndMakeVisible (again);
         saveChain.lit = false; share.lit = false;
         saveChain.onClick = [this] { saveMyChain(); };
-        share.onClick = [this] { shareMyChain(); };
+        share.onClick = [this] { shareMenu(); };
         addAndMakeVisible (saveChain);
         addAndMakeVisible (share);
 
-        // ses habitudes : ce qu'il change d'habitude après AUTO MIX, proposé une fois, juste après le mix
-        if (p.habitOffer.exchange (false)) habit = onirique::habits::mixHabit();
-        habitYes.onClick = [this] { applyHabit(); };
+        // LES PROPOSITIONS, une à la fois, juste après le mix : ses habitudes (ce qu'il change d'habitude après AUTO MIX, pour
+        // ce rôle s'il en a assez), la voix mesurée qui ressemble à la sienne, la chaîne de la communauté d'un artiste demandé
+        if (p.habitOffer.exchange (false))
+            habit = onirique::habits::mixHabit (juce::roundToInt (p.apvts.getRawParameterValue (ids::voiceRole)->load()));
+        offerArtist = p.offerVoice;
+        offerChain = p.offerChain;
+        p.offerVoice.clear();
+        p.offerChain = juce::var();
+        habitYes.onClick = [this] { acceptOffer(); };
         habitNo.lit = false;
-        habitNo.onClick = [this] { habit = {}; habitYes.setVisible (false); habitNo.setVisible (false); feedbackText.clear(); resized(); repaint(); };
+        habitNo.onClick = [this] { nextOffer(); };
         addChildComponent (habitYes);
         addChildComponent (habitNo);
-        habitYes.setVisible (habit.any());
-        habitNo.setVisible (habit.any());
+        profileBtn.lit = false;
+        profileBtn.onClick = [this] { profile.refresh(); profile.setVisible (true); profile.toFront (false); };
+        addAndMakeVisible (profileBtn);
+        addChildComponent (profile);
+        profile.onBuildUsual = [this]
+        {
+            if (! processor.buildUsualChain()) return false;
+            endOffers();
+            understood = true;
+            feedbackText = utf8 ("TA CHAÎNE HABITUELLE EST MONTÉE, AVEC TES RÉGLAGES HABITUELS");
+            resized();
+            repaint();
+            return true;
+        };
+        pickOffer();
+       #if ONIRIQUE_UI_TEST
+        if (juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_PROFILE", {}).isNotEmpty()) { profile.refresh(); profile.setVisible (true); }
+       #endif
     }
 
     void tick() override
@@ -2755,8 +2921,14 @@ public:
         field.setBounds (bar.withTrimmedLeft (54.0f * u).withRight ((float) refineGo.getX() - 12.0f * u).reduced (0.0f, 14.0f * u).toNearestInt());
         field.setFont (ui::css (ui::Face::body, 16.0f * u));
         field.applyFontToAllText (ui::css (ui::Face::body, 16.0f * u));
-        feedback = r.removeFromTop ((habit.any() ? 48.0f : 30.0f) * u);
-        if (habit.any())
+        feedback = r.removeFromTop ((offer != Offer::none ? 48.0f : 34.0f) * u);
+        {
+            // MON PROFIL, au bout de la ligne ; la proposition (et ses boutons) prend le reste
+            const float pw = profileBtn.idealWidth();
+            profileBtn.setBounds (juce::Rectangle<float> (feedback.getRight() - pw, feedback.getCentreY() - 15.0f * u, pw, 30.0f * u).toNearestInt());
+            feedback.setRight ((float) profileBtn.getX() - 14.0f * u);
+        }
+        if (offer != Offer::none)
         {
             auto fb = feedback.reduced (0.0f, 6.0f * u);
             const float nw = habitNo.idealWidth(), yw = habitYes.idealWidth();
@@ -2764,6 +2936,7 @@ public:
             fb.removeFromRight (10.0f * u);
             habitYes.setBounds (fb.removeFromRight (yw).toNearestInt());
         }
+        profile.setBounds (getLocalBounds());
         auto bottom = r.removeFromBottom (116.0f * u);
         r.removeFromBottom (12.0f * u);
         // les quatre macros, grandes, côte à côte
@@ -2810,7 +2983,7 @@ public:
             g.fillPath (star);
         }
         g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.12f));
-        if (habit.any() && feedbackText.isEmpty())
+        if (offer != Offer::none && feedbackText.isEmpty())
         {
             // la suggestion : une bande de verre braise, le texte, APPLIQUER et NON MERCI à droite
             const auto band = feedback.reduced (0.0f, 2.0f * u);
@@ -2820,8 +2993,7 @@ public:
             g.drawRoundedRectangle (band, band.getHeight() * 0.5f, 1.0f * u);
             g.setColour (cBone);
             g.setFont (ui::css (ui::Face::body, 14.0f * u));
-            g.drawText (habit.describe() + utf8 (" Appliquer les réglages qui s'en rapprochent le plus ?"),
-                        band.withTrimmedLeft (22.0f * u).withRight ((float) habitYes.getX() - 12.0f * u), juce::Justification::centredLeft, true);
+            g.drawText (offerText(), band.withTrimmedLeft (22.0f * u).withRight ((float) habitYes.getX() - 12.0f * u), juce::Justification::centredLeft, true);
         }
         else
         {
@@ -2952,7 +3124,7 @@ private:
         if (habit.breath != 0.0f)
             if (const int k = instanceOf (modules::debreath); k >= 0) { nudge (k, ids::dbrReduction, habit.breath, false); done.add ("RESPIRATIONS " + signedText (-habit.breath, 0) + " dB"); }
         habit = {};
-        habitYes.setVisible (false); habitNo.setVisible (false);
+        endOffers();
         understood = true;
         feedbackText = utf8 ("TES RÉGLAGES HABITUELS SONT APPLIQUÉS : ") + done.joinIntoString (utf8 (" · "));
         resized();
@@ -2986,12 +3158,122 @@ private:
             safe->repaint();
         });
     }
+    // PARTAGER : un fichier pour un ami, ou la chaîne à la communauté (ONR Neural Learning allumé) ; une chaîne partagée par
+    // assez de postes pour un même artiste devient, une fois validée par les fondateurs, une proposition d'AUTO MIX
+    void shareMenu()
+    {
+        juce::PopupMenu m;
+        m.setLookAndFeel (&getLookAndFeel());
+        m.addItem (1, utf8 ("UN FICHIER POUR UN AMI"));
+        const bool on = onirique::learning::enabled();
+        m.addItem (2, on ? utf8 ("À LA COMMUNAUTÉ (ONR NEURAL LEARNING)") : utf8 ("À LA COMMUNAUTÉ · ALLUME ONR NEURAL LEARNING DANS LE MENU ⋯"), on);
+        juce::Component::SafePointer<MixPage> safe (this);
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&share).withMinimumWidth (share.getWidth()), [safe] (int r)
+        {
+            if (safe == nullptr) return;
+            if (r == 1) safe->shareMyChain();
+            if (r == 2) safe->shareCommunity();
+        });
+    }
+    void shareCommunity()
+    {
+        auto* o = new juce::DynamicObject();
+        o->setProperty ("install", onirique::learning::installId());
+        o->setProperty ("version", JucePlugin_VersionString);
+        o->setProperty ("request", processor.lastRequest.substring (0, 300));
+        juce::Array<juce::var> arts;
+        for (const auto& a : processor.lastArtists) arts.add (a);
+        o->setProperty ("artists", arts);
+        o->setProperty ("role", juce::roundToInt (processor.apvts.getRawParameterValue (ids::voiceRole)->load()));
+        o->setProperty ("modules", processor.chainSnapshot());
+        const juce::var payload (o);
+        understood = true;
+        feedbackText = utf8 ("ENVOI DE TA CHAÎNE À LA COMMUNAUTÉ…");
+        repaint();
+        juce::Component::SafePointer<MixPage> safe (this);
+        juce::Thread::launch ([payload, safe]
+        {
+            const bool ok = onirique::learning::postChain (payload);
+            juce::MessageManager::callAsync ([safe, ok]
+            {
+                if (safe == nullptr) return;
+                safe->understood = ok;
+                safe->feedbackText = ok ? utf8 ("MERCI : TA CHAÎNE EST PARTAGÉE, ANONYME. AVEC CELLES DES AUTRES, ELLE POURRA DEVENIR UNE PROPOSITION D'AUTO MIX")
+                                        : utf8 ("LE SERVEUR NE RÉPOND PAS : RÉESSAIE PLUS TARD");
+                safe->repaint();
+            });
+        });
+    }
+
+    // LES PROPOSITIONS : une à la fois (habitude, puis voix qui ressemble, puis chaîne de la communauté) ; NON MERCI passe à la
+    // suivante, ESSAYER / APPLIQUER clôt la série
+    enum class Offer { none, habit, voice, chain };
+    Offer offer = Offer::none;
+    juce::String offerArtist;
+    juce::var offerChain;
+    void pickOffer()
+    {
+        offer = habit.any() ? Offer::habit
+              : offerArtist.isNotEmpty() && processor.onRemix ? Offer::voice
+              : offerChain.isObject() && processor.onApplyChain ? Offer::chain : Offer::none;
+        habitYes.setText (offer == Offer::habit ? utf8 ("APPLIQUER") : utf8 ("ESSAYER"));
+        habitYes.setVisible (offer != Offer::none);
+        habitNo.setVisible (offer != Offer::none);
+        resized();
+        repaint();
+    }
+    void nextOffer()
+    {
+        if (offer == Offer::habit) habit = {};
+        else if (offer == Offer::voice) offerArtist.clear();
+        else if (offer == Offer::chain) offerChain = juce::var();
+        feedbackText.clear();
+        pickOffer();
+    }
+    void endOffers()
+    {
+        habit = {}; offerArtist.clear(); offerChain = juce::var();
+        offer = Offer::none;
+        habitYes.setVisible (false); habitNo.setVisible (false);
+    }
+    juce::String offerText() const
+    {
+        if (offer == Offer::habit) return habit.describe() + utf8 (" Appliquer les réglages qui s'en rapprochent le plus ?");
+        if (offer == Offer::voice) return utf8 ("Ta voix ressemble à celle de ") + offerArtist + utf8 (". Essayer sa chaîne, avec la même prise ?");
+        if (offer == Offer::chain)
+            return utf8 ("La communauté a une chaîne pour ") + offerChain["artist"].toString()
+                 + (offerChain.hasProperty ("installs") ? utf8 (" (") + offerChain["installs"].toString() + utf8 (" postes)") : juce::String())
+                 + utf8 (". L'essayer ?");
+        return {};
+    }
+    void acceptOffer()
+    {
+        if (offer == Offer::habit) { applyHabit(); return; }
+        auto* p = &processor;
+        if (offer == Offer::voice)
+        {
+            // la même demande, avec la voix qui ressemble : AUTO MIX refait la chaîne sans réécouter
+            const auto text = (processor.lastRequest + utf8 (" façon ") + offerArtist).trim();
+            juce::MessageManager::callAsync ([p, text] { if (p->onRemix) p->onRemix (text); });
+        }
+        else if (offer == Offer::chain)
+        {
+            const auto c = offerChain;
+            juce::MessageManager::callAsync ([p, c] { if (p->onApplyChain) p->onApplyChain (c); });
+        }
+        endOffers();
+        resized();
+        repaint();
+    }
+
     PillButton saveChain { utf8 ("ENREGISTRER MA CHAÎNE") }, share { utf8 ("PARTAGER") };
     std::unique_ptr<juce::FileChooser> chooser;
     juce::String lastSaved;
 
     onirique::habits::MixHabit habit;
     PillButton habitYes { utf8 ("APPLIQUER") }, habitNo { utf8 ("NON MERCI") };
+    PillButton profileBtn { utf8 ("MON PROFIL") };
+    ProfileCard profile;
     PillButton refineGo, again;
     GlassTabs role;
     std::vector<StarKnob*> macros;

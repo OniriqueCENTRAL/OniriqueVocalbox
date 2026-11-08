@@ -510,10 +510,14 @@ void StartScreen::finish()
     if (lookup.joinable()) lookup.join();
     if (lookupFound.load()) hints = mix::parseHints (requestText);
     lastProfile = src;
+    lastTarget = tgt;
     // le rôle choisi, et la tonalité qu'une autre VOCALBOX du projet a trouvée (le lead)
     hints.role = juce::roundToInt (processor.apvts.getRawParameterValue (onirique::ids::voiceRole)->load());
     hints.sharedKey = onirique::registry::sharedKey (&processor);
+    // le modèle appris (ONR Neural Learning), seulement s'il a été entraîné et validé : de petites retouches des couleurs
+    mix::applyLearnedModel (hints, src);
     plan = mix::buildPlan (src, tgt, hints);
+    computeOffers();
     if (plan.keyFound >= 0) onirique::registry::publishKey (&processor, plan.keyFound, plan.keyConfidence);
     juce::StringArray head;
     head.add (src.valid ? utf8 ("Ta voix : 10 s écoutées") : utf8 ("Ta voix n'a pas été écoutée : réglages d'après la demande seule"));
@@ -524,6 +528,10 @@ void StartScreen::finish()
     if (! hints.understood.isEmpty()) head.add (utf8 ("Compris : ") + hints.understood.joinIntoString (", "));
     if (! hints.unknown.isEmpty() && refState.load() != 2)
         head.add (utf8 ("« ") + hints.unknown.joinIntoString (" ") + utf8 (" » : glisse un de ses morceaux sur la sphère pour coller à sa voix"));
+    // l'indice de confiance : un artiste dont la fiche est estimée ou trouvée par le serveur, sans morceau glissé
+    if (! hints.unsure.isEmpty() && refState.load() != 2)
+        head.add (utf8 ("Je connais encore peu ") + hints.unsure.joinIntoString (", ")
+                  + utf8 (" : glisse un de ses morceaux sur la sphère pour un résultat plus précis"));
     head.addArray (plan.report);
     plan.report = head;
     stage = Stage::report;
@@ -559,9 +567,80 @@ void StartScreen::apply()
     set (ids::autoGain, 0.0f);
     for (const auto& [id, v] : plan.globals) set (id, v);   // macros à zéro, OUTPUT et panoramique du rôle
     processor.setChain (chain);
+    // le pourquoi de chaque module (la bulle au survol de sa tuile), et les propositions de la page AUTO MIX
+    {
+        std::map<int, juce::String> why;
+        for (const auto& s : plan.modules) if (s.why.isNotEmpty()) why[modules::code (s.type, juce::jlimit (0, kInstances - 1, s.instance))] = s.why;
+        processor.setWhy (why);
+    }
+    processor.lastRequest = requestText;
+    processor.lastArtists = hints.artists;
+    processor.offerVoice = nextOfferVoice;
+    processor.offerChain = nextOfferChain;
+    nextOfferVoice.clear();
+    nextOfferChain = juce::var();
     processor.habitArm();   // ce que l'utilisateur changera à cette chaîne sera retenu (habitudes, sur son ordinateur)
     processor.showMixPage.store (true);   // l'écran AUTO MIX s'ouvre : les macros et « affiner en mots »
     armLearning();   // l'apprentissage (s'il est allumé) : ce qui vient d'être décidé attend sa note
+}
+
+//==============================================================================
+// ONR NEURAL LEARNING, les propositions après le mix : la voix mesurée qui ressemble à la prise (seulement si la demande n'a
+// ni référence glissée ni artiste à voix mesurée), et la chaîne de la communauté d'un artiste demandé (validée par les fondateurs)
+void StartScreen::computeOffers()
+{
+    nextOfferVoice.clear();
+    nextOfferChain = mix::communityChain (hints.artists);
+    if (lastProfile.valid && refState.load() != 2 && hints.voiceOf.isEmpty())
+    {
+        const auto vm = mix::nearestVoice (lastProfile);
+        if (vm.distance < 3.5f && ! hints.artists.contains (vm.artist)) nextOfferVoice = vm.artist;
+    }
+}
+
+void StartScreen::remix (const juce::String& text)
+{
+    if (stage != Stage::idle) return;
+    processor.learnFlush ("remix");   // le mix d'avant part avec ses retouches, avant que la chaîne ne change
+    requestText = text.substring (0, 300);
+    hints = mix::parseHints (requestText);
+    hints.role = juce::roundToInt (processor.apvts.getRawParameterValue (onirique::ids::voiceRole)->load());
+    hints.sharedKey = onirique::registry::sharedKey (&processor);
+    mix::applyLearnedModel (hints, lastProfile);
+    plan = mix::buildPlan (lastProfile, lastTarget, hints);
+    nextOfferVoice.clear();                                  // pas de nouvelle proposition de voix : c'est déjà un essai
+    nextOfferChain = mix::communityChain (hints.artists);
+    apply();
+}
+
+void StartScreen::applyChain (const juce::var& c)
+{
+    auto* list = c["modules"].getArray();
+    if (stage != Stage::idle || list == nullptr) return;
+    processor.learnFlush ("community");
+    mix::Plan p;
+    p.inputDb = plan.inputDb;   // le niveau d'entrée de la prise, et les réglages généraux du mix d'avant
+    p.globals = plan.globals;
+    const juce::String why = utf8 ("Chaîne de la communauté pour ") + c["artist"].toString()
+                             + (c.hasProperty ("installs") ? utf8 (" (") + c["installs"].toString() + utf8 (" postes)") : juce::String());
+    for (const auto& m : *list)
+    {
+        int type = -1;
+        for (int t = 0; t < modules::numTypes; ++t) if (m["type"].toString().equalsIgnoreCase (modules::info (t).name)) type = t;
+        if (type < 0) continue;
+        mix::Setting s;
+        s.type = type;
+        s.instance = juce::jlimit (0, kInstances - 1, (int) m.getProperty ("instance", 0));
+        s.why = why;
+        if (auto* o = m["params"].getDynamicObject())
+            for (const auto& prm : o->getProperties()) s.params.emplace_back (prm.name.toString(), (float) (double) prm.value);
+        p.modules.push_back (s);
+    }
+    if (p.modules.empty()) return;
+    plan = p;
+    nextOfferVoice.clear();
+    nextOfferChain = juce::var();
+    apply();
 }
 
 //==============================================================================
@@ -604,6 +683,23 @@ void StartScreen::armLearning()
         for (float b : lastProfile.bands) bands.add (std::round (b * 10.0f) / 10.0f);
         pv->setProperty ("bands", bands);
         o->setProperty ("profile", juce::var (pv));
+    }
+    // la voix du morceau de référence, en mesures seulement (jamais le son) : avec assez de références d'un même artiste,
+    // le serveur propose aux fondateurs sa voix mesurée (pour les artistes qui n'en ont pas encore)
+    if (refState.load() == 2 && lastTarget.valid)
+    {
+        auto* rv = obj();
+        juce::Array<juce::var> bands;
+        for (float b : lastTarget.bands) bands.add (std::round (b * 10.0f) / 10.0f);
+        rv->setProperty ("bands", bands);
+        rv->setProperty ("dyn", std::round (lastTarget.dynRange * 10.0f) / 10.0f);
+        rv->setProperty ("rt60", std::round (lastTarget.rt60 * 100.0f) / 100.0f);
+        rv->setProperty ("wet", std::round (lastTarget.wetDb * 10.0f) / 10.0f);
+        rv->setProperty ("echo", std::round (lastTarget.echoAmount * 100.0f) / 100.0f);
+        rv->setProperty ("ai", refAi.load());
+        rv->setProperty ("fromMix", lastTarget.fromMix);
+        rv->setProperty ("seconds", std::round (lastTarget.seconds));
+        o->setProperty ("refProfile", juce::var (rv));
     }
 
     std::vector<std::pair<juce::String, float>> applied;

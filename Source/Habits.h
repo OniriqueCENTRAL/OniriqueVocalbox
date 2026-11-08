@@ -34,7 +34,7 @@ inline void save (const juce::var& v)
     file().replaceWithText (juce::JSON::toString (v, true));
 }
 
-constexpr int kKeep = 20, kMin = 3;
+constexpr int kKeep = 20, kKeepMix = 40, kMin = 3;   // AUTO MIX : 40 séances (assez pour chaque rôle)
 
 /*  ---- AUTO MIX : la correction de l'utilisateur, une séance = un échantillon.
     Les 4 macros en points (-100 .. +100) : PRÉSENCE, CHALEUR (avec le LOW de l'EQ ANALOG), TENUE (avec les compresseurs),
@@ -42,13 +42,15 @@ constexpr int kKeep = 20, kMin = 3;
     l'EQ au-dessus de 5 kHz), le mud (MUD de l'EQ ANALOG, bandes de l'EQ entre 200 et 500 Hz : + = il en retire plus), les S
     (DE-ESSER, %), l'autotune (vitesse du TUNER, en octaves : + = plus marqué), le grain (préampli, saturation) et les
     respirations (DE-BREATH, dB). Une habitude : 3 séances au moins, 70 % dans le même sens, une moyenne au-delà d'un seuil. */
-struct MixSample { float p = 0, w = 0, h = 0, s = 0, a = 0, m = 0, d = 0, t = 0, g = 0, r = 0; };
+// role : LEAD, BACKS, ADLIBS, DOUBLES (-1 : pas noté, les séances d'avant) ; c : COMPARER utilisé pendant la retouche
+struct MixSample { float p = 0, w = 0, h = 0, s = 0, a = 0, m = 0, d = 0, t = 0, g = 0, r = 0; int role = -1, c = 0; };
 
 struct MixHabit
 {
     float presence = 0.0f, warmth = 0.0f, hold = 0.0f, space = 0.0f;
     float air = 0.0f, mud = 0.0f, ess = 0.0f, tune = 0.0f, grain = 0.0f, breath = 0.0f;
     int sessions = 0;
+    int role = -1;   // l'habitude d'un rôle (assez de séances pour lui), sinon -1 : l'habitude générale
     bool any() const noexcept
     {
         return presence != 0.0f || warmth != 0.0f || hold != 0.0f || space != 0.0f || air != 0.0f || mud != 0.0f || ess != 0.0f
@@ -77,7 +79,9 @@ struct MixHabit
         for (size_t i = 0; i < std::min<size_t> (4, s.size()); ++i) parts.add (s[i].second);
         const auto last = parts[parts.size() - 1];
         parts.remove (parts.size() - 1);
-        return u8 ("D'habitude, ") + (parts.isEmpty() ? last : parts.joinIntoString (", ") + " et " + last) + ".";
+        static const char* roleText[4] { "sur tes voix lead, ", "sur tes backs, ", "sur tes adlibs, ", "sur tes doubles, " };
+        return u8 ("D'habitude, ") + (role >= 0 && role < 4 ? u8 (roleText[role]) : juce::String())
+             + (parts.isEmpty() ? last : parts.joinIntoString (", ") + " et " + last) + ".";
     }
 };
 
@@ -93,27 +97,42 @@ inline void recordMix (juce::int64 session, const MixSample& x)
     o->setProperty ("id", session);
     o->setProperty ("p", x.p); o->setProperty ("w", x.w); o->setProperty ("h", x.h); o->setProperty ("s", x.s); o->setProperty ("a", x.a);
     o->setProperty ("m", x.m); o->setProperty ("d", x.d); o->setProperty ("t", x.t); o->setProperty ("g", x.g); o->setProperty ("r", x.r);
+    o->setProperty ("role", x.role); o->setProperty ("c", x.c);
     list.add (juce::var (o));
-    while (list.size() > kKeep) list.remove (0);
+    while (list.size() > kKeepMix) list.remove (0);
     v.getDynamicObject()->setProperty ("mix", list);
     save (v);
 }
 
-inline MixHabit mixHabit()
+inline MixHabit mixHabit (int role = -1)
 {
     const juce::ScopedLock sl (lock());
     MixHabit h;
     auto v = load();
-    auto* a = v["mix"].getArray();
-    if (a == nullptr || a->size() < kMin) return h;
+    auto* all = v["mix"].getArray();
+    if (all == nullptr) return h;
+    // le rôle d'abord (LEAD, BACKS...) : ses séances seules quand il en a assez ; sinon toutes, comme avant
+    juce::Array<juce::var> own;
+    if (role >= 0) for (const auto& e : *all) if ((int) e.getProperty ("role", -1) == role) own.add (e);
+    const bool byRole = own.size() >= kMin;
+    const juce::Array<juce::var>* a = byRole ? &own : all;
+    if (a->size() < kMin) return h;
     h.sessions = a->size();
+    h.role = byRole ? role : -1;
+    // une retouche faite en comparant avant / après (COMPARER, 2 fois au moins) pèse une fois et demie
+    auto weight = [] (const juce::var& e) { return (int) e.getProperty ("c", 0) >= 2 ? 1.5f : 1.0f; };
     // thr : le seuil de la moyenne ; step : l'arrondi ; lo, hi : les bornes
-    auto dim = [a] (const char* k, float thr, float step, float lo, float hi)
+    auto dim = [a, &weight] (const char* k, float thr, float step, float lo, float hi)
     {
-        float sum = 0.0f; int pos = 0, neg = 0;
-        for (const auto& e : *a) { const float x = (float) (double) e[k]; sum += x; if (x > thr / 3.0f) ++pos; else if (x < -thr / 3.0f) ++neg; }
-        const float mean = sum / (float) a->size();
-        const float agree = (float) std::max (pos, neg) / (float) a->size();
+        float sum = 0.0f, wsum = 0.0f, pos = 0.0f, neg = 0.0f;
+        for (const auto& e : *a)
+        {
+            const float x = (float) (double) e[k], w = weight (e);
+            sum += w * x; wsum += w;
+            if (x > thr / 3.0f) pos += w; else if (x < -thr / 3.0f) neg += w;
+        }
+        const float mean = sum / wsum;
+        const float agree = std::max (pos, neg) / wsum;
         if (std::abs (mean) < thr || agree < 0.7f) return 0.0f;
         return juce::jlimit (lo, hi, std::round (mean / step) * step);
     };
@@ -165,5 +184,100 @@ inline std::map<juce::String, float> moduleHabit (int type)
         out[id] = xs[xs.size() / 2];
     }
     return out;
+}
+
+// ---- LES CHAÎNES CONSTRUITES À LA MAIN (sans AUTO MIX, ou la sienne remaniée) : une séance = la suite de ses modules (types).
+//      Après 3 chaînes : sa chaîne habituelle (les modules présents dans au moins la moitié de ses chaînes, rangés à leur place
+//      moyenne) et les modules qu'il ajoute le plus.
+inline void recordChain (const juce::String& sessionKey, const std::vector<int>& types)
+{
+    const juce::ScopedLock sl (lock());
+    auto v = load();
+    juce::Array<juce::var> list;
+    if (auto* a = v["chains"].getArray()) list = *a;
+    for (int i = list.size(); --i >= 0;) if (list[i]["s"].toString() == sessionKey) list.remove (i);
+    juce::Array<juce::var> t;
+    for (int x : types) t.add (x);
+    auto* o = new juce::DynamicObject();
+    o->setProperty ("s", sessionKey);
+    o->setProperty ("t", t);
+    list.add (juce::var (o));
+    while (list.size() > kKeep) list.remove (0);
+    v.getDynamicObject()->setProperty ("chains", list);
+    save (v);
+}
+
+struct ChainHabit
+{
+    std::vector<int> usual;                    // sa chaîne habituelle, dans l'ordre
+    std::vector<std::pair<int, float>> often;  // les modules qu'il met le plus (part de ses chaînes)
+    int chains = 0;
+    bool any() const noexcept { return usual.size() >= 2; }
+};
+
+inline ChainHabit chainHabit()
+{
+    const juce::ScopedLock sl (lock());
+    ChainHabit h;
+    auto v = load();
+    auto* a = v["chains"].getArray();
+    if (a == nullptr || a->size() < kMin) return h;
+    h.chains = a->size();
+    std::map<int, int> count;
+    std::map<int, float> place;   // la place moyenne (0 : en tête, 1 : en bout de chaîne)
+    for (const auto& e : *a)
+    {
+        auto* t = e["t"].getArray();
+        if (t == nullptr || t->isEmpty()) continue;
+        std::vector<int> seen;
+        for (int i = 0; i < t->size(); ++i)
+        {
+            const int type = (int) (*t)[i];
+            if (std::find (seen.begin(), seen.end(), type) != seen.end()) continue;
+            seen.push_back (type);
+            ++count[type];
+            place[type] += t->size() > 1 ? (float) i / (float) (t->size() - 1) : 0.5f;
+        }
+    }
+    std::vector<std::pair<float, int>> order;
+    for (const auto& [type, n] : count)
+    {
+        const float share = (float) n / (float) h.chains;
+        h.often.push_back ({ type, share });
+        if (share >= 0.5f) order.push_back ({ place[type] / (float) n, type });
+    }
+    std::sort (order.begin(), order.end());
+    for (const auto& o : order) h.usual.push_back (o.second);
+    std::sort (h.often.begin(), h.often.end(), [] (const auto& x, const auto& y) { return x.second > y.second; });
+    if (h.often.size() > 5) h.often.resize (5);
+    return h;
+}
+
+// ---- MON PROFIL : le nombre de séances retenues par module (ceux qui ont une habitude : 3 séances au moins), et l'effacement
+inline std::map<int, int> moduleSessions()
+{
+    const juce::ScopedLock sl (lock());
+    std::map<int, int> out;
+    auto v = load();
+    if (auto* o = v["modules"].getDynamicObject())
+        for (const auto& p : o->getProperties())
+            if (auto* a = p.value.getArray()) out[p.name.toString().getIntValue()] = a->size();
+    return out;
+}
+inline int mixSessions (int role = -1)
+{
+    const juce::ScopedLock sl (lock());
+    auto v = load();
+    auto* a = v["mix"].getArray();
+    if (a == nullptr) return 0;
+    if (role < 0) return a->size();
+    int n = 0;
+    for (const auto& e : *a) if ((int) e.getProperty ("role", -1) == role) ++n;
+    return n;
+}
+inline void clearAll()
+{
+    const juce::ScopedLock sl (lock());
+    file().deleteFile();
 }
 } // namespace onirique::habits

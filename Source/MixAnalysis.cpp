@@ -532,12 +532,13 @@ bool newerBrain (const juce::var& a, const juce::var& b)
 std::shared_ptr<const std::vector<ArtistStyle>> loadBrain()
 {
     auto list = std::make_shared<std::vector<ArtistStyle>>();
-    auto addFrom = [&list] (const juce::var& root, bool replace)
+    auto addFrom = [&list] (const juce::var& root, bool replace, bool server = false)
     {
         if (auto* a = root["artists"].getArray())
             for (const auto& v : *a)
             {
                 auto s = artistFromVar (v);
+                s.fromServer = s.fromServer || server;
                 if (s.name.isEmpty() || s.aliases.isEmpty()) continue;
                 auto same = std::find_if (list->begin(), list->end(), [&s] (const ArtistStyle& o) { return o.name.equalsIgnoreCase (s.name); });
                 if (same == list->end()) list->push_back (s);
@@ -559,7 +560,7 @@ std::shared_ptr<const std::vector<ArtistStyle>> loadBrain()
         const juce::SpinLock::ScopedLockType l (brainLock);
         correctionsNow = inUse["corrections"];
     }
-    addFrom (juce::JSON::parse (brainFolder().getChildFile ("artists-cache.json")), false);
+    addFrom (juce::JSON::parse (brainFolder().getChildFile ("artists-cache.json")), false, true);
     return list;
 }
 } // namespace
@@ -622,6 +623,8 @@ ArtistStyle artistFromVar (const juce::var& v)
     if (s.name.isNotEmpty()) s.aliases.addIfNotAlreadyThere (plainText (s.name));
     s.hints = v["hints"];
     s.voice = v["voice"];
+    s.estimate = (bool) v.getProperty ("estimate", false);
+    s.fromServer = (bool) v.getProperty ("found", false);
     return s;
 }
 
@@ -679,6 +682,7 @@ void applyArtist (Hints& h, const ArtistStyle& a)
         }
     }
     h.artists.addIfNotAlreadyThere (a.name);
+    if ((a.estimate || a.fromServer) && ! a.voice.isObject()) h.unsure.addIfNotAlreadyThere (a.name);
     h.understood.addIfNotAlreadyThere (juce::String::fromUTF8 ("façon ") + a.name);
 }
 
@@ -821,6 +825,8 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
 {
     Plan plan;
     auto& rep = plan.report;
+    // chaque module retient où en était le compte rendu à son arrivée : sa ligne (le « pourquoi ») est celle qui suit
+    auto tag = [&rep] (Setting x) { x.repAt = rep.size(); return x; };
 
     /*  LE RÔLE de la voix (choisi dans VOCALBOX) : la même demande, mais une autre place dans le morceau.
         - BACKS : derrière le lead, plus sombres, plus tenus, plus loin (réverbe), doublés, 4 dB plus bas, accordés serré.
@@ -907,7 +913,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
             const float sens = src.clicksPerMin >= 25.0f ? 60.0f : 50.0f;
             put (s, ids::dclkSens, sens);
             put (s, ids::dclkAmount, src.clicksPerMin >= 25.0f ? 80.0f : 70.0f);
-            plan.modules.push_back (s);
+            plan.modules.push_back (tag (s));
             rep.add (src.valid && src.clicksPerMin >= 1.0f
                        ? u8 ("Bruits de bouche : ") + juce::String (juce::roundToInt (src.clicksPerMin)) + u8 (" clics par minute entendus, DE-CLICK (les consonnes ne sont pas touchées)")
                        : u8 ("DE-CLICK demandé : les clics de bouche retirés"));
@@ -917,7 +923,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
             Setting s { modules::noise, 0, {} };
             const float amt = juce::jlimit (15.0f, 70.0f, 15.0f + (62.0f - gap) * 2.2f);
             put (s, ids::nsAmount, std::round (amt));
-            plan.modules.push_back (s);
+            plan.modules.push_back (tag (s));
             rep.add (u8 ("Fond à ") + juce::String (juce::roundToInt (gap)) + u8 (" dB sous la voix : noise suppressor ") + juce::String (juce::roundToInt (amt)) + " %");
         }
         // DE-REVERB : la pièce de l'enregistrement (chambre, salon) entendue après les phrases, ou demandé. Pas sur une voix sèche
@@ -931,7 +937,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
             put (s, ids::drvAmount, std::round (amt));
             put (s, ids::drvAuto, 1.0f);
             if (src.valid && src.rt60 > 0.1f) put (s, ids::drvTail, juce::jlimit (0.1f, 3.0f, src.rt60));
-            plan.modules.push_back (s);
+            plan.modules.push_back (tag (s));
             rep.add (roomHeard ? u8 ("La pièce s'entend autour de ta voix (queue de ") + juce::String (src.rt60, 2) + u8 (" s) : DE-REVERB ")
                                    + juce::String (juce::roundToInt (amt)) + u8 (" %, l'espace viendra de la réverbe du mix")
                                : u8 ("DE-REVERB demandé : la pièce retirée"));
@@ -947,7 +953,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
             if (h.rapStyle || h.fast) red += 2.0f;
             red = std::round (juce::jlimit (5.0f, 16.0f, red));
             put (s, ids::dbrReduction, red);
-            plan.modules.push_back (s);
+            plan.modules.push_back (tag (s));
             rep.add (src.valid && src.breathsPerMin >= 1.0f
                        ? u8 ("Respirations : ") + juce::String (juce::roundToInt (src.breathsPerMin)) + u8 (" par minute, à ") + dbText (src.breathDb)
                              + u8 (" sous les phrases : DE-BREATH −") + juce::String (juce::roundToInt (red)) + u8 (" dB (baissées, pas coupées)")
@@ -958,14 +964,14 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
             Setting s { modules::gate, 0, {} };
             put (s, ids::gateThr, juce::jlimit (-75.0f, -25.0f, floorIn + 0.45f * gap));
             put (s, ids::gateRange, gap < 35.0f ? 20.0f : 14.0f);
-            plan.modules.push_back (s);
+            plan.modules.push_back (tag (s));
             rep.add (u8 ("Bruit entre les phrases : gate (−") + juce::String (gap < 35.0f ? 20 : 14) + " dB)");
         }
         if (src.plosivesPerMin > 1.5f)
         {
             Setting s { modules::plosive, 0, {} };
             put (s, ids::plosive, juce::jlimit (30.0f, 70.0f, 30.0f + src.plosivesPerMin * 2.5f));
-            plan.modules.push_back (s);
+            plan.modules.push_back (tag (s));
             rep.add (u8 ("Des P et des B qui claquent : plosives"));
         }
     }
@@ -984,7 +990,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
         Setting s { modules::preamp, 0, {} };
         put (s, ids::preampMic, mic ? 1.0f : 0.0f);
         put (s, ids::preampGain, std::round (gdb * 10.0f) / 10.0f);
-        plan.modules.insert (plan.modules.begin(), s);   // le tout premier de la chaîne, comme à l'enregistrement
+        plan.modules.insert (plan.modules.begin(), tag (s));   // le tout premier de la chaîne, comme à l'enregistrement
         const int db = juce::roundToInt (gdb);
         rep.add (u8 ("Préampli N73 en tête (") + (mic ? "MIC +" : "LINE ") + juce::String (db) + u8 (" dB) : ")
                  + (h.preamp > 0.0f ? (h.preampOf.isNotEmpty() ? u8 ("comme dans la chaîne d'enregistrement de ") + h.preampOf : u8 ("demandé"))
@@ -1047,7 +1053,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
                 put (s, ids::tuneRetune, rt); put (s, ids::tuneHumanize, 50.0f); put (s, ids::tuneFlex, a < 0.4f ? 30.0f : 15.0f);
                 how = u8 ("une justesse naturelle (Retune ") + juce::String (juce::roundToInt (rt)) + u8 (" ms, Humanize, Flex-Tune : les inflexions restent)");
             }
-            plan.modules.push_back (s);
+            plan.modules.push_back (tag (s));
             const juce::String keyText = key >= 0 ? juce::String (names[key % 12]) + (key >= 12 ? u8 (" mineur") : u8 (" majeur")) + " (" + keyWhy + ")"
                                                   : u8 ("chromatique (tonalité pas assez sûre : toutes les notes)");
             rep.add (u8 ("TUNER en ") + keyText + " : " + how
@@ -1063,6 +1069,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
     }
 
     // ---- 3. EQ : l'écart entre la prise et la cible (±4 dB lissés), présence pour la mettre en avant
+    const int eqRep = rep.size();   // les résonances sont écrites avant l'EQ : elles sont à lui
     float highBoost = 0.0f, mudCut = 0.0f, mudExcess = 0.0f, compGr = 0.0f;
     bool multiUsed = false;
     // chant ou rap : d'après la prise (notes tenues), et ce que la demande en dit
@@ -1171,7 +1178,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
         put (s, ids::peqType[7], 2.0f); put (s, ids::peqFreq[7], 10000.0f); put (s, ids::peqGain[7], std::round (shelf * 10.0f) / 10.0f); put (s, ids::peqQ[7], 0.71f);
         if (std::abs (shelf) >= 0.7f) moves.add ("air " + dbText (shelf));
         highBoost = juce::jmax (highBoost, shelf);
-        plan.modules.push_back (s);
+        { auto x = tag (s); x.repAt = eqRep; plan.modules.push_back (x); }
         rep.add ("EQ : coupe-bas " + hzText (cut) + (moves.isEmpty() ? juce::String() : u8 (" · ") + moves.joinIntoString (u8 (" · "))));
     }
 
@@ -1199,7 +1206,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
             put (c, ids::cl1bAttack, std::round (10.0f * (fast > 0.5f ? 1.0f : 3.0f + 9.0f * soft)) / 10.0f);
             put (c, ids::cl1bRelease, std::round (fast > 0.5f ? 90.0f : 150.0f + 350.0f * soft));
             put (c, ids::cl1bGain, std::round (0.8f * grFet * 10.0f) / 10.0f);
-            plan.modules.push_back (c);
+            plan.modules.push_back (tag (c));
         }
         else
         {
@@ -1214,7 +1221,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
             put (fet, ids::fetAttack, std::round (10.0f * atk) / 10.0f);
             put (fet, ids::fetRelease, std::round (10.0f * rel) / 10.0f);
             put (fet, ids::fetRatio, h.comp > 0.6f ? 1.0f : 0.0f);
-            plan.modules.push_back (fet);
+            plan.modules.push_back (tag (fet));
         }
         const float grOpto = juce::jlimit (2.0f, 7.0f, 2.0f + 0.35f * need);
         compGr = grFet + grOpto;
@@ -1222,7 +1229,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
         Setting opto { modules::opto, 0, {} };
         put (opto, ids::laPeak, std::round (juce::jlimit (0.0f, 100.0f, -(level - 1.5f * grOpto) / 0.45f)));   // seuil -0,45 × PEAK
         put (opto, ids::laGain, juce::jlimit (-12.0f, 30.0f, 0.8f * grOpto));
-        plan.modules.push_back (opto);
+        plan.modules.push_back (tag (opto));
         rep.add (u8 ("Dynamique ") + juce::String (srcDr, 1) + u8 (" dB → ") + juce::String (tgtDr, 1) + u8 (" dB : ")
                  + (useCl1b ? u8 ("CL1B (≈ −") : u8 ("1176 (≈ −")) + juce::String (juce::roundToInt (grFet))
                  + u8 (" dB sur les crêtes") + (fast > 0.5f ? u8 (", attaque et relâchement rapides du rap moderne") : juce::String())
@@ -1277,7 +1284,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
         const float soft = juce::jlimit (0.0f, 1.0f, sung + (h.comp < -0.2f ? 0.4f : 0.0f));
         put (s, ids::mbAttack, h.fast ? 3.0f : std::round (6.0f + 14.0f * soft));
         put (s, ids::mbRelease, h.fast ? 60.0f : std::round (90.0f + 130.0f * soft));
-        plan.modules.push_back (s);
+        plan.modules.push_back (tag (s));
         rep.add (u8 ("Multiband : environ −") + juce::String (gr, 1) + u8 (" dB par zone pour une voix maîtrisée · gains ") + gains.joinIntoString (u8 (" · ")));
     }
 
@@ -1292,7 +1299,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
         put (s, ids::deessS, 1.0f);
         put (s, ids::deessCH, amt > 50.0f ? 1.0f : 0.0f);
         put (s, ids::deessClarity, h.air > 0.3f || h.bright > 0.3f ? 35.0f : 20.0f);
-        plan.modules.push_back (s);
+        plan.modules.push_back (tag (s));
         rep.add (u8 ("Sifflantes vers ") + hzText (src.valid ? src.sibFreq : 6500.0f) + " : de-esser " + juce::String (juce::roundToInt (amt)) + " %");
     }
 
@@ -1305,7 +1312,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
         put (s, ids::drive, 2.0f + 5.0f * h.sat);
         put (s, ids::satMix, juce::jlimit (25.0f, 90.0f, 30.0f + 55.0f * h.sat));
         put (s, ids::satWarmth, 20.0f + 40.0f * h.warm);
-        plan.modules.push_back (s);
+        plan.modules.push_back (tag (s));
         static const char* names[] { "lampe", "analogique", "bande", "transformateur" };
         rep.add (u8 ("Couleur : saturation ") + u8 (names[type]) + (h.sat > 0.4f ? u8 (" marquée") : u8 (" légère")));
     }
@@ -1329,7 +1336,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
         put (s, ids::high, std::round (hi * 10.0f) / 10.0f);
         put (s, ids::air, std::round (air * 10.0f) / 10.0f);
         put (s, ids::lowCut, 1.0f);
-        plan.modules.push_back (s);
+        plan.modules.push_back (tag (s));
         rep.add (u8 ("EQ analog après les compressions : ")
                  + (mud > 0.0f ? u8 ("seconde couche de DeMud (MUD ") + juce::String (mud, 1) + u8 (", le mud que les compresseurs font remonter), ")
                                : u8 ("pas de mud à reprendre, "))
@@ -1344,7 +1351,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
         put (s, ids::parThresh, juce::jlimit (-57.0f, -9.0f, L - 14.0f));
         put (s, ids::parAttack, h.fast ? 6.6f : std::round (10.0f * (6.0f - 2.0f * sung)) / 10.0f);
         put (s, ids::parRelease, h.fast ? 7.0f : std::round (10.0f * (6.5f - 2.0f * sung)) / 10.0f);
-        plan.modules.push_back (s);
+        plan.modules.push_back (tag (s));
         rep.add (u8 ("Compression parallèle : la voix gagne en densité et passe devant la prod"));
     }
 
@@ -1370,7 +1377,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
             put (s, ids::reverbPreDelay, decay > 2.0f ? 35.0f : 22.0f);
             put (s, ids::reverbDucking, 8.0f);    // un léger effacement sous la voix (8 %), la queue s'ouvre dans les blancs
             put (s, ids::reverbClean, 35.0f);
-            plan.modules.push_back (s);
+            plan.modules.push_back (tag (s));
             static const char* modes[] { "room", "plate", "plate 2", "hall", "shimmer" };
             rep.add (u8 ("Réverbe ") + modes[mode] + " " + juce::String (decay, 1) + " s, envoi " + juce::String (juce::roundToInt (mix)) + " %"
                      + (tgt.valid && tgt.rt60 > 0.0f && ! h.reverbExplicit ? (tgtIn.valid ? u8 (" (d'après la référence)") : u8 (" (d'après la voix de ") + h.voiceOf + ")") : juce::String()));
@@ -1389,7 +1396,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
             put (s, ids::delayFeedback, 20.0f + 25.0f * amount);
             put (s, ids::delayMix, 10.0f + 18.0f * amount);
             put (s, ids::delayDucking, 10.0f);    // léger : 10 % au plus
-            plan.modules.push_back (s);
+            plan.modules.push_back (tag (s));
             rep.add (tgt.valid && tgt.echoMs > 0.0f ? u8 ("Écho entendu à ") + juce::String (juce::roundToInt (tgt.echoMs)) + u8 (" ms dans la référence : delay")
                                                     : juce::String ("Delay au tempo, en retrait sous la voix"));
         }
@@ -1403,13 +1410,29 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
         put (s, ids::chorusOn, h.chorus > 0.0f ? 1.0f : 0.0f); put (s, ids::chorusMix, 20.0f + 25.0f * h.chorus);
         put (s, ids::flangerOn, h.flanger > 0.0f ? 1.0f : 0.0f); put (s, ids::flangerMix, 25.0f + 25.0f * h.flanger);
         put (s, ids::phoneOn, h.phone > 0.0f ? 1.0f : 0.0f); put (s, ids::phoneAmount, 40.0f + 40.0f * h.phone);
-        plan.modules.push_back (s);
+        plan.modules.push_back (tag (s));
         juce::StringArray fx;
         if (h.doubler > 0.0f) fx.add ("doubleur");
         if (h.chorus > 0.0f) fx.add ("chorus");
         if (h.flanger > 0.0f) fx.add ("flanger");
         if (h.phone > 0.0f) fx.add (u8 ("téléphone"));
         rep.add ("Creative FX : " + fx.joinIntoString (", "));
+    }
+
+    // LE POURQUOI de chaque module : les lignes du compte rendu écrites entre son arrivée et celle du module suivant (le 1176 et
+    // le LA-2A, ajoutés ensemble, partagent la leur). Rien ne change dans la chaîne : c'est seulement le texte de la bulle.
+    std::vector<int> marks;
+    for (const auto& s : plan.modules) if (s.repAt >= 0) marks.push_back (s.repAt);
+    std::sort (marks.begin(), marks.end());
+    marks.erase (std::unique (marks.begin(), marks.end()), marks.end());
+    for (auto& s : plan.modules)
+    {
+        if (s.repAt < 0) continue;
+        const auto next = std::upper_bound (marks.begin(), marks.end(), s.repAt);
+        const int end = next != marks.end() ? *next : rep.size();
+        juce::StringArray lines;
+        for (int i = s.repAt; i < end; ++i) lines.add (rep[i]);
+        s.why = lines.joinIntoString (u8 (" · "));
     }
     return plan;
 }
@@ -1463,5 +1486,86 @@ Refine parseRefine (const juce::String& text)
     r.presence = juce::jlimit (-100.0f, 100.0f, r.presence); r.warmth = juce::jlimit (-100.0f, 100.0f, r.warmth);
     r.hold = juce::jlimit (-100.0f, 100.0f, r.hold); r.space = juce::jlimit (-100.0f, 100.0f, r.space);
     return r;
+}
+
+//==============================================================================
+// ONR NEURAL LEARNING, les compléments : ils lisent le cerveau, ils ne changent rien à ce qui précède
+VoiceMatch nearestVoice (const Profile& src)
+{
+    VoiceMatch best;
+    if (! src.valid || src.fromMix) return best;
+    const auto brain = brainArtists();
+    if (brain == nullptr) return best;
+    for (const auto& a : *brain)
+    {
+        auto* o = a.voice.isObject() ? a.voice["bands"].getDynamicObject() : nullptr;
+        if (o == nullptr) continue;
+        // le timbre seul (160 Hz .. 8 kHz), sa forme : l'écart moyen est retiré (le niveau ne compte pas)
+        std::vector<float> d;
+        for (int b = 0; b < kBands; ++b)
+        {
+            const auto key = juce::Identifier (juce::String (juce::roundToInt (kCentres[b])));
+            if (kCentres[b] >= 160.0f && kCentres[b] <= 8000.0f && o->hasProperty (key))
+                d.push_back (src.bands[(size_t) b] - (float) (double) o->getProperty (key));
+        }
+        if (d.size() < 8) continue;
+        float mean = 0.0f;
+        for (float x : d) mean += x;
+        mean /= (float) d.size();
+        float e = 0.0f;
+        for (float x : d) e += (x - mean) * (x - mean);
+        const float dist = std::sqrt (e / (float) d.size());
+        if (dist < best.distance) { best.distance = dist; best.artist = a.name; }
+    }
+    return best;
+}
+
+juce::var communityChain (const juce::StringArray& artists)
+{
+    const auto chains = brainCorrections()["chains"];
+    if (! chains.isObject()) return {};
+    for (const auto& name : artists)
+    {
+        const auto c = chains[juce::Identifier (plainText (name).isEmpty() ? juce::String ("_") : plainText (name))];
+        if (c.isObject() && c["modules"].isArray() && c["modules"].getArray()->size() > 0)
+        {
+            auto out = c;
+            if (out.getDynamicObject() != nullptr && ! out.hasProperty ("artist")) out.getDynamicObject()->setProperty ("artist", name);
+            return out;
+        }
+    }
+    return {};
+}
+
+std::array<float, 8> modelFeatures (const Profile& p)
+{
+    auto avg = [&p] (int a, int b) { float s = 0.0f; for (int i = a; i <= b; ++i) s += p.bands[(size_t) i]; return s / (float) (b - a + 1); };
+    std::array<float, 8> f { 1.0f, avg (8, 11) / 6.0f, avg (21, 23) / 6.0f, avg (26, 28) / 6.0f, (p.dynRange - 6.0f) / 4.0f,
+                             (p.sibilance + 10.0f) / 10.0f, p.sung, std::min (p.rt60, 2.0f) };
+    for (auto& x : f) x = juce::jlimit (-3.0f, 3.0f, x);
+    return f;
+}
+
+bool applyLearnedModel (Hints& h, const Profile& src)
+{
+    const auto model = brainCorrections()["model"];
+    const auto outs = model["outputs"];
+    if (! src.valid || src.fromMix || ! outs.isObject()) return false;
+    const auto f = modelFeatures (src);
+    auto predict = [&f, &outs] (const char* k)
+    {
+        auto* w = outs[k].getArray();
+        if (w == nullptr || w->size() != (int) f.size()) return 0.0f;
+        float s = 0.0f;
+        for (size_t i = 0; i < f.size(); ++i) s += f[i] * (float) (double) (*w)[(int) i];
+        return std::isfinite (s) ? juce::jlimit (-0.15f, 0.15f, s) : 0.0f;
+    };
+    h.bright = juce::jlimit (0.0f, 1.0f, h.bright + predict ("bright"));
+    h.air = juce::jlimit (0.0f, 1.0f, h.air + predict ("air"));
+    h.warm = juce::jlimit (0.0f, 1.0f, h.warm + predict ("warm"));
+    h.comp = juce::jlimit (-1.0f, 1.0f, h.comp + predict ("comp"));
+    h.reverbBias = juce::jlimit (-0.3f, 0.3f, h.reverbBias + predict ("reverb"));
+    h.delayBias = juce::jlimit (-0.3f, 0.3f, h.delayBias + predict ("delay"));
+    return true;
 }
 } // namespace onirique::mix

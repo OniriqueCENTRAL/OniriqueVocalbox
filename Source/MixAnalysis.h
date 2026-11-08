@@ -103,6 +103,7 @@ struct Hints
     juce::StringArray understood;   // ce qui a été compris (pour le compte rendu)
     juce::StringArray unknown;      // les mots non compris (des noms d'artistes, souvent)
     juce::StringArray artists;      // les artistes reconnus par le cerveau (leur fiche est appliquée)
+    juce::StringArray unsure;       // ceux dont la fiche est estimée ou trouvée par le serveur (AUTO MIX les connaît moins bien)
     // la voix mesurée du premier artiste demandé qui en a une (cerveau : « voice ») : sert de cible quand aucune référence n'est glissée
     float reverbBias = 0.0f, delayBias = 0.0f;   // appris sur toutes les demandes (ONR Neural Learning)
     juce::String voiceOf;
@@ -122,6 +123,8 @@ struct ArtistStyle
     juce::StringArray aliases;   // en minuscules, sans accents
     juce::var hints;             // bright, air, warm, dark, comp, reverb, reverbSize, delay, sat, satType, doubler, chorus, flanger, phone, controlled, parallel, dreamy
     juce::var voice;             // facultatif : la voix mesurée sur une référence (bands, dyn, rt60, wet, echo)
+    bool estimate = false;       // fiche estimée (pas mesurée, pas confirmée par un ingé son)
+    bool fromServer = false;     // fiche trouvée par le serveur (artists-cache.json) ou ajoutée par ONR Neural Learning
 };
 std::shared_ptr<const std::vector<ArtistStyle>> brainArtists();
 juce::File brainFolder();
@@ -136,6 +139,8 @@ struct Setting
     int type = -1;
     int instance = 0;                                     // exemplaire (deux SATURATION : préampli et couleur)
     std::vector<std::pair<juce::String, float>> params;   // identifiants du premier exemplaire, valeurs réelles
+    juce::String why;                                     // pourquoi AUTO MIX l'a mis (sa ligne du compte rendu)
+    int repAt = -1;                                       // (buildPlan) la taille du compte rendu quand il a été ajouté
 };
 
 struct Plan
@@ -163,4 +168,16 @@ struct Refine
     bool any() const noexcept { return ! understood.isEmpty(); }
 };
 Refine parseRefine (const juce::String& text);
+
+/*  ONR NEURAL LEARNING, les compléments (ils s'ajoutent à ce qui précède, sans rien remplacer) :
+    - nearestVoice : la voix mesurée du cerveau la plus proche de la prise (timbre 160 Hz .. 8 kHz et tenue) ;
+    - communityChain : la chaîne de la communauté validée par les fondateurs pour un des artistes demandés (corrections.chains) ;
+    - applyLearnedModel : le petit modèle appris sur les mix gardés (corrections.model), validé par les fondateurs ; il ne fait
+      que de petites retouches (±0,15 au plus) des couleurs, après le cerveau ; sans modèle publié, rien ne change ;
+    - modelFeatures : les mesures que le modèle lit (les mêmes que le serveur, brainlearn.js). */
+struct VoiceMatch { juce::String artist; float distance = 99.0f; };
+VoiceMatch nearestVoice (const Profile& source);
+juce::var communityChain (const juce::StringArray& artists);
+std::array<float, 8> modelFeatures (const Profile&);
+bool applyLearnedModel (Hints&, const Profile&);
 } // namespace onirique::mix

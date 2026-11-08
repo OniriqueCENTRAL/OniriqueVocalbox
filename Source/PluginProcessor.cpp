@@ -21,6 +21,7 @@ OniriqueVocalBoxAudioProcessor::OniriqueVocalBoxAudioProcessor()
     presets.onLoad = [] (juce::ValueTree& s) { vocalbox::upgradeSnapshot (s); };
     // ONR Neural Learning : le cerveau publié, s'il est plus récent que celui du plugin (une fois par jour, hors de l'audio)
     learnPool.addJob ([] { onirique::mix::installBrainIfNewer (onirique::learning::fetchBrain()); });
+    learnPool.addJob ([this] { sendPendingFromDisk(); });
     apvts.state.setProperty ("preset", "Init", nullptr);   // l'état de départ : les valeurs par défaut
     vocalbox::importOldUserPresets (presets);
     startTimerHz (10);
@@ -41,6 +42,13 @@ OniriqueVocalBoxAudioProcessor::~OniriqueVocalBoxAudioProcessor()
     apvts.removeParameterListener (onirique::ids::oversampling, this);
     onirique::registry::remove (this);
     habitTick (true);   // les dernières retouches de la séance
+    // un mix sans note ni 10 minutes de retouches : son retour est gardé et partira à la prochaine ouverture
+    if (learnPending() && onirique::learning::enabled())
+    {
+        const auto f = onirique::learning::file().getSiblingFile ("learn-pending.json");
+        f.getParentDirectory().createDirectory();
+        f.replaceWithText (juce::JSON::toString (learnFinal(), true));
+    }
 }
 
 //==============================================================================
@@ -151,30 +159,82 @@ void OniriqueVocalBoxAudioProcessor::learnArm (juce::var payload, std::vector<st
     learnPayload = std::move (payload);
     learnApplied = std::move (applied);
     learnAt = juce::Time::getMillisecondCounterHiRes() * 0.001;
+    learnChain = getChain();
+    learnCompares = compareCount.load();
+}
+
+juce::var OniriqueVocalBoxAudioProcessor::learnFinal()
+{
+    auto payload = learnPayload;
+    // les retouches : ce que l'utilisateur a changé depuis (la valeur décidée, puis celle d'aujourd'hui)
+    auto* fin = new juce::DynamicObject();
+    int changed = 0;
+    for (const auto& [id, was] : learnApplied)
+        if (auto* p = apvts.getParameter (id))
+        {
+            const float now = p->convertFrom0to1 (p->getValue());
+            if (std::abs (now - was) > 1.0e-3f * juce::jmax (1.0f, std::abs (was))) { fin->setProperty (id, now); ++changed; }
+        }
+    // ce que l'utilisateur a fait de la chaîne (les « oui » et « non » silencieux) : gardée telle quelle, retouchée, ou démontée
+    const auto now = getChain();
+    int total = 0, kept = 0, added = 0;
+    for (int c : learnChain) if (modules::valid (c)) { ++total; if (std::find (now.begin(), now.end(), c) != now.end()) ++kept; }
+    for (int c : now) if (modules::valid (c) && std::find (learnChain.begin(), learnChain.end(), c) == learnChain.end()) ++added;
+    auto* out = new juce::DynamicObject();
+    out->setProperty ("total", total);
+    out->setProperty ("kept", kept);
+    out->setProperty ("added", added);
+    out->setProperty ("changed", changed);
+    out->setProperty ("compares", compareCount.load() - learnCompares);
+    juce::Array<juce::var> removed, addedNames;
+    for (int c : learnChain) if (modules::valid (c) && std::find (now.begin(), now.end(), c) == now.end()) removed.add (modules::info (modules::typeOf (c)).name);
+    for (int c : now) if (modules::valid (c) && std::find (learnChain.begin(), learnChain.end(), c) == learnChain.end()) addedNames.add (modules::info (modules::typeOf (c)).name);
+    out->setProperty ("removedModules", removed);
+    out->setProperty ("addedModules", addedNames);
+    out->setProperty ("result", total > 0 && kept * 2 < total ? "rebuilt"
+                              : kept == total && added == 0 && changed == 0 ? "kept" : "tweaked");
+    if (auto* o = payload.getDynamicObject())
+    {
+        o->setProperty ("final", juce::var (fin));
+        o->setProperty ("outcome", juce::var (out));
+        o->setProperty ("minutes", juce::roundToInt ((juce::Time::getMillisecondCounterHiRes() * 0.001 - learnAt) / 60.0));
+    }
+    return payload;
 }
 
 void OniriqueVocalBoxAudioProcessor::learnSend (int rating)
 {
     if (! learnPending()) return;
-    auto payload = learnPayload;
+    auto payload = learnFinal();
     learnPayload = juce::var();
     if (! onirique::learning::enabled()) return;   // éteint entre-temps : rien ne part
-    // les retouches : ce que l'utilisateur a changé depuis (la valeur décidée, puis celle d'aujourd'hui)
-    auto* fin = new juce::DynamicObject();
-    for (const auto& [id, was] : learnApplied)
-        if (auto* p = apvts.getParameter (id))
-        {
-            const float now = p->convertFrom0to1 (p->getValue());
-            if (std::abs (now - was) > 1.0e-3f * juce::jmax (1.0f, std::abs (was))) fin->setProperty (id, now);
-        }
-    if (auto* o = payload.getDynamicObject())
-    {
-        o->setProperty ("final", juce::var (fin));
-        o->setProperty ("rating", juce::jlimit (-1, 1, rating));
-        o->setProperty ("minutes", juce::roundToInt ((juce::Time::getMillisecondCounterHiRes() * 0.001 - learnAt) / 60.0));
-    }
+    if (auto* o = payload.getDynamicObject()) o->setProperty ("rating", juce::jlimit (-1, 1, rating));
     learnPool.addJob ([payload] { onirique::learning::postFeedback (payload); });
 }
+
+// un retour gardé à la fermeture du projet (le mix n'avait ni note ni 10 minutes) : il part à la prochaine ouverture
+void OniriqueVocalBoxAudioProcessor::sendPendingFromDisk()
+{
+    const auto f = onirique::learning::file().getSiblingFile ("learn-pending.json");
+    if (! f.existsAsFile()) return;
+    const auto v = juce::JSON::parse (f);
+    f.deleteFile();
+    if (v.isObject() && onirique::learning::enabled()) onirique::learning::postFeedback (v);
+}
+
+void OniriqueVocalBoxAudioProcessor::setWhy (const std::map<int, juce::String>& w)
+{
+    auto* o = new juce::DynamicObject();
+    for (const auto& [code, text] : w) if (text.isNotEmpty()) o->setProperty (juce::Identifier (juce::String (code)), text);
+    apvts.state.setProperty ("mixWhy", juce::JSON::toString (juce::var (o), true), nullptr);
+}
+
+juce::String OniriqueVocalBoxAudioProcessor::whyOf (int code) const
+{
+    const auto v = juce::JSON::parse (apvts.state.getProperty ("mixWhy").toString());
+    return v.isObject() ? v.getProperty (juce::Identifier (juce::String (code)), {}).toString() : juce::String();
+}
+
 
 //==============================================================================
 // LES HABITUDES : les réglages d'un module (sans l'interrupteur, ni LISTEN / SOLO : ce sont des écoutes, pas des réglages)
@@ -199,7 +259,9 @@ void OniriqueVocalBoxAudioProcessor::habitArm()
     habitChain = getChain();
     for (int c : habitChain) if (modules::valid (c)) habitArrival[c] = habitSnapshot (modules::typeOf (c), modules::instanceOf (c));
     habitMixBase = habitArrival;
-    habitOffer.store (habits::mixHabit().any());
+    habitRole = juce::roundToInt (apvts.getRawParameterValue (ids::voiceRole)->load());
+    habitCompares = compareCount.load();
+    habitOffer.store (habits::mixHabit (habitRole).any());
 }
 
 void OniriqueVocalBoxAudioProcessor::habitTick (bool now)
@@ -212,11 +274,35 @@ void OniriqueVocalBoxAudioProcessor::habitTick (bool now)
         for (auto it = habitArrival.begin(); it != habitArrival.end();)
             it = std::find (c.begin(), c.end(), it->first) == c.end() ? habitArrival.erase (it) : std::next (it);
         habitChain = c;
+        // le pourquoi d'AUTO MIX : oublié pour un module qui quitte la chaîne (un autre pourrait reprendre sa place)
+        const auto w = juce::JSON::parse (apvts.state.getProperty ("mixWhy").toString());
+        if (auto* o = w.getDynamicObject())
+        {
+            std::map<int, juce::String> keep;
+            for (const auto& p : o->getProperties())
+                if (std::find (c.begin(), c.end(), p.name.toString().getIntValue()) != c.end()) keep[p.name.toString().getIntValue()] = p.value.toString();
+            if ((int) keep.size() != o->getProperties().size()) setWhy (keep);
+        }
     }
+    if (! habitStarted) { habitStarted = true; habitStartChain = c; }
     if (! now && ++habitTicks < 300) return;   // l'écriture : toutes les 30 s, et à la fermeture
     habitTicks = 0;
     try
     {
+        // la chaîne construite à la main dans cette séance (pas celle du projet rouvert, pas celle d'AUTO MIX telle quelle)
+        {
+            std::vector<int> types;
+            for (int x : c) if (modules::valid (x)) types.push_back (modules::typeOf (x));
+            std::vector<int> autoTypes;
+            for (const auto& [code, base] : habitMixBase) autoTypes.push_back (modules::typeOf (code));
+            auto sorted = [] (std::vector<int> v) { std::sort (v.begin(), v.end()); return v; };
+            const bool isAuto = habitMixId != 0 && sorted (types) == sorted (autoTypes);
+            if (types.size() >= 2 && c != habitStartChain && ! isAuto && types != habitChainWritten)
+            {
+                habits::recordChain (juce::String (habitSession) + "-chain", types);
+                habitChainWritten = types;
+            }
+        }
         // un module que l'utilisateur a touché : une empreinte par séance
         for (const auto& [code, start] : habitArrival)
         {
@@ -270,6 +356,8 @@ void OniriqueVocalBoxAudioProcessor::habitTick (bool now)
             x.w = juce::jlimit (-100.0f, 100.0f, macro (ids::macroWarmth) + x.w);
             x.h = juce::jlimit (-100.0f, 100.0f, macro (ids::macroHold) + (nh > 0 ? holdD / (float) nh : 0.0f));
             x.s = juce::jlimit (-100.0f, 100.0f, macro (ids::macroSpace) + (ns > 0 ? spaceD / (float) ns : 0.0f));
+            x.role = habitRole;
+            x.c = compareCount.load() - habitCompares;
             habits::recordMix (habitMixId, x);
         }
     }
@@ -407,6 +495,8 @@ void OniriqueVocalBoxAudioProcessor::setStateInformation (const void* data, int 
             presets.readState (state);
             apvts.replaceState (state);
             if (currentRate > 0.0) setLatencySamples (chain.latencyFor (getChain()));
+            habitStarted = true;             // la chaîne du projet rouvert : pas une construction de cette séance
+            habitStartChain = getChain();
         }
 }
 
@@ -418,4 +508,49 @@ juce::AudioProcessorEditor* OniriqueVocalBoxAudioProcessor::createEditor()
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
     return new OniriqueVocalBoxAudioProcessor();
+}
+
+// la chaîne telle qu'elle est : chaque module (son nom, son exemplaire, ses réglages, sans les écoutes) ; pour la communauté
+juce::var OniriqueVocalBoxAudioProcessor::chainSnapshot() const
+{
+    juce::Array<juce::var> mods;
+    for (int c : getChain())
+    {
+        if (! modules::valid (c)) continue;
+        auto* m = new juce::DynamicObject();
+        m->setProperty ("type", modules::info (modules::typeOf (c)).name);
+        m->setProperty ("instance", modules::instanceOf (c));
+        m->setProperty ("on", apvts.getRawParameterValue (ids::inst (modules::info (modules::typeOf (c)).onId, modules::instanceOf (c)))->load() > 0.5f);
+        auto* p = new juce::DynamicObject();
+        for (const auto& [id, v] : habitSnapshot (modules::typeOf (c), modules::instanceOf (c))) p->setProperty (juce::Identifier (id), std::round (v * 1000.0f) / 1000.0f);
+        m->setProperty ("params", juce::var (p));
+        mods.add (juce::var (m));
+    }
+    return mods;
+}
+
+bool OniriqueVocalBoxAudioProcessor::buildUsualChain()
+{
+    const auto h = habits::chainHabit();
+    if (! h.any()) return false;
+    learnFlush ("usual");   // le retour d'AUTO MIX en cours part avant que la chaîne ne change
+    auto set = [this] (const juce::String& id, float v)
+    {
+        if (auto* p = apvts.getParameter (id)) p->setValueNotifyingHost (p->convertTo0to1 (v));
+    };
+    modules::Chain c {};
+    size_t n = 0;
+    for (int type : h.usual)
+    {
+        if (n >= c.size() || type < 0 || type >= modules::numTypes) continue;
+        for (const auto& id : modules::paramIds (type))
+            if (auto* p = apvts.getParameter (ids::inst (id.toRawUTF8(), 0))) p->setValueNotifyingHost (p->getDefaultValue());
+        set (ids::inst (modules::info (type).onId, 0), 1.0f);
+        for (const auto& [id, v] : habits::moduleHabit (type)) set (ids::inst (id.toRawUTF8(), 0), v);
+        c[n++] = modules::code (type, 0);
+    }
+    if (n == 0) return false;
+    setWhy ({});
+    setChain (c);
+    return true;
 }

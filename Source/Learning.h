@@ -58,6 +58,17 @@ inline bool postFeedback (const juce::var& payload)
     return in != nullptr;
 }
 
+/** Une chaîne partagée à la communauté (PARTAGER, seulement si l'apprentissage est allumé) : la demande, les artistes et
+ *  les modules avec leurs réglages ; rien d'autre. Rend true si le serveur l'a reçue. */
+inline bool postChain (const juce::var& payload)
+{
+    const auto url = juce::URL (juce::String (kServer) + "/api/vocalbox/chains").withPOSTData (juce::JSON::toString (payload, true));
+    const auto opts = juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inPostData)
+                          .withConnectionTimeoutMs (8000).withExtraHeaders ("Content-Type: application/json");
+    if (auto in = url.createInputStream (opts)) return juce::JSON::parse (in->readEntireStreamAsString())["ok"];
+    return false;
+}
+
 /** Le dernier cerveau publié (ONR Neural Learning : le fichier livré enrichi par les retours des utilisateurs). Demandé une
  *  fois par jour au plus, à tous (rien n'est envoyé : une simple lecture, comme une mise à jour) ; vide si pas de réponse. */
 inline juce::var fetchBrain()

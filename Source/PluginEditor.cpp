@@ -524,7 +524,12 @@ juce::String ChainStrip::getTooltip()
     if (plusHover) return "Add a module to the chain (up to three of each).";
     if (hoverButton == 0) return "Switch this module on / off.";
     if (hoverButton == 1) return "Remove this module from the chain.";
-    if (hoverTile >= 0) return "Click to open the module, drag it left or right to change the order.";
+    if (hoverTile >= 0 && hoverTile < (int) tiles.size())
+    {
+        // le pourquoi d'AUTO MIX, pour un module qu'il a monté (sa ligne du compte rendu)
+        if (const auto why = processor.whyOf (tiles[(size_t) hoverTile].code); why.isNotEmpty()) return juce::String::fromUTF8 ("AUTO MIX : ") + why;
+        return "Click to open the module, drag it left or right to change the order.";
+    }
     return {};
 }
 
@@ -907,6 +912,9 @@ VocalBoxView::VocalBoxView (OniriqueVocalBoxAudioProcessor& p)
     addChildComponent (picker);
     mixButton.onClick = [this] { if (mixPage) select (processor.getChain()[0]); else openMixPage(); };
 
+    // ONR Neural Learning : la page AUTO MIX peut refaire le mix (une voix qui ressemble) ou monter une chaîne de la communauté
+    processor.onRemix = [this] (const juce::String& text) { start.remix (text); };
+    processor.onApplyChain = [this] (const juce::var& c) { start.applyChain (c); };
     strip.onSelect = [this] (int code) { select (code); };
     strip.onAdd = [this] { picker.open(); };
     picker.onPick = [this] (int type)
@@ -939,6 +947,9 @@ VocalBoxView::VocalBoxView (OniriqueVocalBoxAudioProcessor& p)
     if (juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_PICKER", {}).isNotEmpty()) picker.open();
     // ONIRIQUE_UI_HABIT=1 : les suggestions des habitudes (page AUTO MIX et module affiché)
     if (juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_HABIT", {}).isNotEmpty()) { processor.habitOffer.store (true); offerHabit (selected); }
+    // ONIRIQUE_UI_OFFER=voice ou chain : les propositions d'ONR Neural Learning sur la page AUTO MIX
+    if (const auto o = juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_OFFER", {}); o == "voice") processor.offerVoice = "SDM";
+    else if (o == "chain") processor.offerChain = juce::JSON::parse (R"({"artist":"Tiakola","installs":7,"modules":[]})");
     if (juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_MIXPAGE", {}).isNotEmpty()) openMixPage();
    #endif
     startTimerHz (60);
@@ -947,6 +958,8 @@ VocalBoxView::VocalBoxView (OniriqueVocalBoxAudioProcessor& p)
 VocalBoxView::~VocalBoxView()
 {
     stopTimer();
+    processor.onRemix = nullptr;
+    processor.onApplyChain = nullptr;
     setLookAndFeel (nullptr);
 }
 
@@ -1047,7 +1060,7 @@ void VocalBoxView::openMixPage()
     panel = createMixPage (processor, [this]
     {
         juce::Component::SafePointer<VocalBoxView> safe (this);
-        juce::MessageManager::callAsync ([safe] { if (safe != nullptr) { safe->mixPage = false; safe->processor.setChain ({}); } });
+        juce::MessageManager::callAsync ([safe] { if (safe != nullptr) { safe->mixPage = false; safe->processor.learnFlush ("newmix"); safe->processor.setChain ({}); } });
     });
     addAndMakeVisible (*panel);
     panel->toBehind (&picker);
@@ -1332,7 +1345,7 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
     bar.onThemeChanged = [this] { refreshTheme(); };
     // le menu ⋯ : ONR NEURAL LEARNING, l'apprentissage d’AUTO MIX (désactivé tant que l'utilisateur ne l'allume pas)
     bar.setMenuOption ("ONR NEURAL LEARNING", juce::String::fromUTF8 ("HELP VOCALBOX LEARN"),
-                       juce::String::fromUTF8 ("Anonymous: your request, voice measurements, the chain and your tweaks. Never audio."),
+                       juce::String::fromUTF8 ("Anonymous: your request, voice measurements, the chain, what you keep or change. Never audio."),
                        [] { return onirique::learning::enabled(); },
                        [] (bool on) { onirique::learning::setEnabled (on); });
     startTimer (1000);

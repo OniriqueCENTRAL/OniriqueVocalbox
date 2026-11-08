@@ -91,6 +91,9 @@ public:
     void learnArm (juce::var payload, std::vector<std::pair<juce::String, float>> applied);
     bool learnPending() const noexcept { return learnPayload.isObject(); }
     void learnSend (int rating);   // -1, 0 (pas de note), +1 : avec les retouches, puis oublié
+    // le retour d'un mix pas encore parti, quand l'utilisateur demande un NOUVEAU MIX (ou en essaie un autre) : il part tel
+    // quel, avant que la chaîne ne change (ses retouches sont encore là)
+    void learnFlush (const char* why) { if (learnPending()) { learnPayload.getDynamicObject()->setProperty ("ended", why); learnSend (0); } }
     // une retouche dite en mots après le mix (« moins de réverbe ») : jointe au retour, c'est ce qui apprend le plus au cerveau
     void learnRefine (const juce::String& text)
     {
@@ -106,9 +109,28 @@ public:
     // sera suivie ; habitOffer : la page AUTO MIX peut proposer la correction habituelle. Thread de l'interface.
     void habitArm();
     // COMPARER (bouton du haut) : la prise brute au volume du mix
-    void setCompare (bool on) noexcept { chain.compare.store (on); }
+    void setCompare (bool on) noexcept { chain.compare.store (on); if (on) compareCount.fetch_add (1); }
     bool isComparing() const noexcept { return chain.compare.load(); }
     std::atomic<bool> habitOffer { false };
+
+    // LE POURQUOI de chaque module monté par AUTO MIX (sa ligne du compte rendu), gardé avec le projet ; oublié quand le
+    // module quitte la chaîne. Thread de l'interface.
+    void setWhy (const std::map<int, juce::String>& w);
+    juce::String whyOf (int code) const;
+
+    // ONR Neural Learning, les propositions de la page AUTO MIX après un mix (thread de l'interface) :
+    // offerVoice : la voix mesurée du cerveau qui ressemble à la prise ; offerChain : la chaîne de la communauté (validée)
+    // d'un artiste demandé. L'interface les lit une fois. onRemix / onApplyChain : l'écran de départ refait le mix (même prise).
+    juce::String offerVoice;
+    juce::var offerChain;
+    std::function<void (const juce::String&)> onRemix;
+    std::function<void (const juce::var&)> onApplyChain;
+    juce::String lastRequest;          // la demande du dernier AUTO MIX, et ses artistes reconnus (MixPage, partage)
+    juce::StringArray lastArtists;
+    // la chaîne telle qu'elle est (types, exemplaires, tous les réglages) : PARTAGER À LA COMMUNAUTÉ
+    juce::var chainSnapshot() const;
+    // MON PROFIL : monte la chaîne habituelle de l'utilisateur (Habits.h), chaque module avec ses réglages habituels s'il en a
+    bool buildUsualChain();
 
 private:
     std::atomic<float>* pBypass = nullptr;
@@ -139,6 +161,15 @@ private:
     std::map<int, std::map<juce::String, float>> habitMixBase;   // la chaîne d'AUTO MIX telle qu'il l'a montée
     onirique::modules::Chain habitChain {};
     juce::int64 habitSession = juce::Time::currentTimeMillis(), habitMixId = 0;
+    int habitRole = -1, habitCompares = 0;      // le rôle du mix suivi, et COMPARER déjà compté avant lui
+    bool habitStarted = false;                  // la chaîne trouvée à l'ouverture (projet rouvert) : pas une construction
+    onirique::modules::Chain habitStartChain {};
+    std::vector<int> habitChainWritten;
+    std::atomic<int> compareCount { 0 };        // COMPARER allumé, depuis l'ouverture
+    onirique::modules::Chain learnChain {};     // la chaîne montée par AUTO MIX (ce que l'utilisateur en garde)
+    int learnCompares = 0;
+    juce::var learnFinal();                     // le retour complet (retouches, ce qui est gardé), prêt à partir
+    void sendPendingFromDisk();                 // un retour gardé à la fermeture du projet part à l'ouverture suivante
     int habitTicks = 0;
     juce::ThreadPool learnPool { 1 };   // l'envoi, hors de l'interface ; attendu à la fermeture
     std::atomic<int> capPos { 0 };

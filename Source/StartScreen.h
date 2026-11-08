@@ -17,6 +17,10 @@ public:
     void resized() override;
     void mouseDown (const juce::MouseEvent&) override;
     void mouseMove (const juce::MouseEvent&) override;
+    // ONR Neural Learning : refaire le mix avec la même prise (une autre demande : « façon Tiakola »), ou monter une chaîne de
+    // la communauté ; rien n'est réécouté
+    void remix (const juce::String& text);
+    void applyChain (const juce::var& chain);
 
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
     void fileDragEnter (const juce::StringArray&, int, int) override { dragging = true; }
@@ -70,6 +74,9 @@ private:
     juce::String requestText;
     std::thread lookup;
     std::atomic<bool> lookupFound { false };
-    onirique::mix::Profile lastProfile;
+    onirique::mix::Profile lastProfile, lastTarget;
+    juce::String nextOfferVoice;   // les propositions de la page AUTO MIX, calculées avec le mix, remises au processeur avec la chaîne
+    juce::var nextOfferChain;
+    void computeOffers();
     void armLearning();
 };
