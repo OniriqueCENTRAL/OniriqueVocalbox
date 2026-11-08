@@ -194,21 +194,11 @@ void OniriqueVocalBoxAudioProcessor::habitArm()
 {
     habitTick (true);   // le mix d'avant garde sa dernière retouche
     habitMixId = juce::Time::currentTimeMillis();
-    habitBase.clear();
-    for (auto* id : { ids::macroPresence, ids::macroWarmth, ids::macroHold, ids::macroSpace })
-        habitBase.push_back ({ id, apvts.getRawParameterValue (id)->load() });
-    for (int c : getChain())
-    {
-        if (! modules::valid (c)) continue;
-        const int t = modules::typeOf (c), k = modules::instanceOf (c);
-        const char* id = t == modules::fet ? ids::fetIn : t == modules::opto ? ids::laPeak : t == modules::cl1b ? ids::cl1bThreshold
-                       : t == modules::reverb ? ids::reverbMix : t == modules::delay ? ids::delayMix : nullptr;
-        if (id != nullptr) habitBase.push_back ({ ids::inst (id, k), apvts.getRawParameterValue (ids::inst (id, k))->load() });
-    }
-    // la chaîne d'AUTO MIX arrive telle quelle : ce n'est pas encore une habitude de l'utilisateur
+    // la chaîne d'AUTO MIX arrive telle quelle : son état sert de départ à la retouche, et ce n'est pas encore une habitude
     habitArrival.clear();
     habitChain = getChain();
     for (int c : habitChain) if (modules::valid (c)) habitArrival[c] = habitSnapshot (modules::typeOf (c), modules::instanceOf (c));
+    habitMixBase = habitArrival;
     habitOffer.store (habits::mixHabit().any());
 }
 
@@ -237,24 +227,50 @@ void OniriqueVocalBoxAudioProcessor::habitTick (bool now)
             habits::recordModule (modules::typeOf (code), juce::String (habitSession) + "-" + juce::String (code), cur);
             habitWritten[code] = cur;
         }
-        // après AUTO MIX : la retouche, en points de macros
-        if (! habitBase.empty())
+        // après AUTO MIX : la retouche de l'utilisateur, module par module, ramenée aux macros et aux grandeurs des modules
+        if (habitMixId != 0)
         {
-            auto now01 = [this] (const juce::String& id) { auto* p = apvts.getRawParameterValue (id); return p != nullptr ? p->load() : 0.0f; };
-            float holdDelta = 0.0f, spaceDelta = 0.0f; int nh = 0, ns = 0;
-            for (const auto& [id, base] : habitBase)
+            auto macro = [this] (const char* id) { auto* p = apvts.getRawParameterValue (id); return p != nullptr ? p->load() : 0.0f; };
+            habits::MixSample x;
+            float holdD = 0.0f, spaceD = 0.0f; int nh = 0, ns = 0;
+            for (const auto& [code, base] : habitMixBase)
             {
-                const float v = now01 (id);
-                if (id.startsWith (ids::fetIn)) { holdDelta += (v - base) / 6.0f * 100.0f; ++nh; }
-                else if (id.startsWith (ids::laPeak)) { holdDelta += (v - base) / 20.0f * 100.0f; ++nh; }
-                else if (id.startsWith (ids::cl1bThreshold)) { holdDelta += -(v - base) / 8.0f * 100.0f; ++nh; }
-                else if (id.startsWith (ids::reverbMix) || id.startsWith (ids::delayMix))
-                { spaceDelta += base > 0.5f ? 100.0f * std::log2 (std::max (v, 0.5f) / base) : 0.0f; ++ns; }
+                if (std::find (c.begin(), c.end(), code) == c.end()) continue;
+                const int t = modules::typeOf (code);
+                const auto cur = habitSnapshot (t, modules::instanceOf (code));
+                auto b = [&base] (const char* id) { auto it = base.find (id); return it != base.end() ? it->second : 0.0f; };
+                auto n = [&cur] (const char* id) { auto it = cur.find (id); return it != cur.end() ? it->second : 0.0f; };
+                auto d = [&] (const char* id) { return n (id) - b (id); };
+                switch (t)
+                {
+                    case modules::fet:  holdD += d (ids::fetIn) / 6.0f * 100.0f; ++nh; break;
+                    case modules::opto: holdD += d (ids::laPeak) / 20.0f * 100.0f; ++nh; break;
+                    case modules::cl1b: holdD += -d (ids::cl1bThreshold) / 8.0f * 100.0f; ++nh; break;
+                    case modules::reverb: spaceD += b (ids::reverbMix) > 0.5f ? 100.0f * std::log2 (std::max (n (ids::reverbMix), 0.5f) / b (ids::reverbMix)) : 0.0f; ++ns; break;
+                    case modules::delay:  spaceD += b (ids::delayMix) > 0.5f ? 100.0f * std::log2 (std::max (n (ids::delayMix), 0.5f) / b (ids::delayMix)) : 0.0f; ++ns; break;
+                    case modules::analog: x.a += d (ids::air) + 0.5f * d (ids::high); x.m += d (ids::mud); x.w += 15.0f * d (ids::low); break;
+                    case modules::peq:
+                        for (int k = 0; k < 8; ++k)
+                        {
+                            if (n (ids::peqOn[k]) < 0.5f) continue;
+                            const float f = n (ids::peqFreq[k]), g = d (ids::peqGain[k]);
+                            if (f >= 5000.0f) x.a += 0.5f * g;
+                            else if (f >= 200.0f && f <= 500.0f) x.m -= 0.5f * g;
+                        }
+                        break;
+                    case modules::deess:    x.d += d (ids::deessAmt); break;
+                    case modules::tuner:    x.t += std::log2 ((b (ids::tuneRetune) + 1.0f) / (n (ids::tuneRetune) + 1.0f)); break;
+                    case modules::preamp:   x.g += d (ids::preampGain) / 6.0f; break;
+                    case modules::sat:      x.g += d (ids::drive); break;
+                    case modules::debreath: x.r += d (ids::dbrReduction); break;
+                    default: break;
+                }
             }
-            const float hold = now01 (ids::macroHold) + (nh > 0 ? holdDelta / (float) nh : 0.0f);
-            const float space = now01 (ids::macroSpace) + (ns > 0 ? spaceDelta / (float) ns : 0.0f);
-            habits::recordMix (habitMixId, juce::jlimit (-100.0f, 100.0f, now01 (ids::macroPresence)), juce::jlimit (-100.0f, 100.0f, now01 (ids::macroWarmth)),
-                               juce::jlimit (-100.0f, 100.0f, hold), juce::jlimit (-100.0f, 100.0f, space));
+            x.p = juce::jlimit (-100.0f, 100.0f, macro (ids::macroPresence));
+            x.w = juce::jlimit (-100.0f, 100.0f, macro (ids::macroWarmth) + x.w);
+            x.h = juce::jlimit (-100.0f, 100.0f, macro (ids::macroHold) + (nh > 0 ? holdD / (float) nh : 0.0f));
+            x.s = juce::jlimit (-100.0f, 100.0f, macro (ids::macroSpace) + (ns > 0 ? spaceD / (float) ns : 0.0f));
+            habits::recordMix (habitMixId, x);
         }
     }
     catch (...) {}   // un fichier illisible ne doit jamais gêner le plugin

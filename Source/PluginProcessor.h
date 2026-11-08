@@ -133,7 +133,7 @@ private:
     void habitTick (bool now);
     std::map<juce::String, float> habitSnapshot (int type, int k) const;
     std::map<int, std::map<juce::String, float>> habitArrival, habitWritten;
-    std::vector<std::pair<juce::String, float>> habitBase;
+    std::map<int, std::map<juce::String, float>> habitMixBase;   // la chaîne d'AUTO MIX telle qu'il l'a montée
     onirique::modules::Chain habitChain {};
     juce::int64 habitSession = juce::Time::currentTimeMillis(), habitMixId = 0;
     int habitTicks = 0;

@@ -1125,7 +1125,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
                 // beaucoup de boue : on ne remonte pas le bas juste en dessous
                 if (g < -3.0f) for (auto& b : bands) if (b.f < mudFreq && b.g > 0.0f) b.g = 0.0f, b.used = false;
                 for (int i = 0; i < 3; ++i) if (i != slot && octs (bands[(size_t) i].f, mudFreq) < 0.7f && bands[(size_t) i].g < 0.0f) bands[(size_t) i].used = false;
-                rep.add (u8 ("Boue mesurée (+") + juce::String (ex, 1) + u8 (" dB) : coupe ") + dbText (g) + u8 (" à ") + hzText (mudFreq));
+                rep.add (u8 ("Mud mesuré (+") + juce::String (ex, 1) + u8 (" dB) : coupe ") + dbText (g) + u8 (" à ") + hzText (mudFreq));
             }
         }
 
@@ -1331,8 +1331,8 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
         put (s, ids::lowCut, 1.0f);
         plan.modules.push_back (s);
         rep.add (u8 ("EQ analog après les compressions : ")
-                 + (mud > 0.0f ? u8 ("seconde couche de DeMud (MUD ") + juce::String (mud, 1) + u8 (", la boue que les compresseurs font remonter), ")
-                               : u8 ("pas de boue à reprendre, "))
+                 + (mud > 0.0f ? u8 ("seconde couche de DeMud (MUD ") + juce::String (mud, 1) + u8 (", le mud que les compresseurs font remonter), ")
+                               : u8 ("pas de mud à reprendre, "))
                  + u8 ("clarté HI +") + juce::String (hi, 1) + " et AIR +" + juce::String (air, 1));
     }
 
@@ -1451,7 +1451,7 @@ Refine parseRefine (const juce::String& text)
         if (has ({ "sombre", "dark", "doux", "douce", "moins brillant", "moins agressi", "smooth" })) { r.presence -= 28.0f * k; said (k > 0 ? "plus sombre" : "moins sombre"); hit = true; }
         else if (has ({ "brillant", "brillante", "clair", "claire", "aere", "aeree", " air ", "bright", "cristal" })) { r.presence += 28.0f * k; said (k > 0 ? "plus brillante" : "moins brillante"); hit = true; }
         if (has ({ "chaud", "chaude", "rond", "ronde", "epais", "epaisse", "corps", "warm", "grave" })) { r.warmth += 28.0f * k; said (k > 0 ? "plus chaude" : "moins chaude"); hit = true; }
-        if (has ({ " fine ", " fin ", "maigre", "moins de basses", "boueu", "boue" })) { r.warmth -= 25.0f * amt; said ("plus légère dans le bas"); hit = true; }
+        if (has ({ " fine ", " fin ", "maigre", "moins de basses", "boueu", "boue", " mud " })) { r.warmth -= 25.0f * amt; said ("plus légère dans le bas"); hit = true; }
         // la tenue
         if (has ({ "compress", "tenu", "tenue", "serre", "serree", "punch", "dense", "constant" })) { r.hold += 28.0f * k; said (k > 0 ? "plus tenue" : "moins tenue"); hit = true; }
         if (has ({ "naturel", "naturelle", "dynamique", "respire" }) && ! has ({ "respiration" })) { r.hold -= 25.0f * amt; said ("plus naturelle"); hit = true; }

@@ -2,6 +2,7 @@
 #include <juce_core/juce_core.h>
 #include <map>
 #include <vector>
+#include <algorithm>
 
 /*  LES HABITUDES de l'utilisateur, gardées sur son ordinateur (AppData/Onirique/VocalBox/habits.json), jamais envoyées.
 
@@ -35,29 +36,52 @@ inline void save (const juce::var& v)
 
 constexpr int kKeep = 20, kMin = 3;
 
-// ---- AUTO MIX : la correction de l'utilisateur, en points de macros (-100 .. +100)
+/*  ---- AUTO MIX : la correction de l'utilisateur, une séance = un échantillon.
+    Les 4 macros en points (-100 .. +100) : PRÉSENCE, CHALEUR (avec le LOW de l'EQ ANALOG), TENUE (avec les compresseurs),
+    ESPACE (avec les retours de réverbe et de delay). Puis, en unités des modules : l'air (AIR et HI de l'EQ ANALOG, bandes de
+    l'EQ au-dessus de 5 kHz), le mud (MUD de l'EQ ANALOG, bandes de l'EQ entre 200 et 500 Hz : + = il en retire plus), les S
+    (DE-ESSER, %), l'autotune (vitesse du TUNER, en octaves : + = plus marqué), le grain (préampli, saturation) et les
+    respirations (DE-BREATH, dB). Une habitude : 3 séances au moins, 70 % dans le même sens, une moyenne au-delà d'un seuil. */
+struct MixSample { float p = 0, w = 0, h = 0, s = 0, a = 0, m = 0, d = 0, t = 0, g = 0, r = 0; };
+
 struct MixHabit
 {
     float presence = 0.0f, warmth = 0.0f, hold = 0.0f, space = 0.0f;
+    float air = 0.0f, mud = 0.0f, ess = 0.0f, tune = 0.0f, grain = 0.0f, breath = 0.0f;
     int sessions = 0;
-    bool any() const noexcept { return presence != 0.0f || warmth != 0.0f || hold != 0.0f || space != 0.0f; }
+    bool any() const noexcept
+    {
+        return presence != 0.0f || warmth != 0.0f || hold != 0.0f || space != 0.0f || air != 0.0f || mud != 0.0f || ess != 0.0f
+            || tune != 0.0f || grain != 0.0f || breath != 0.0f;
+    }
 
     juce::String describe() const
     {
-        juce::StringArray s;
         auto u8 = [] (const char* t) { return juce::String::fromUTF8 (t); };
-        if (hold > 0) s.add (u8 ("tu compresses plus tes voix")); else if (hold < 0) s.add (u8 ("tu les compresses moins"));
-        if (space > 0) s.add (u8 ("tu leur donnes plus d'espace")); else if (space < 0) s.add (u8 ("tu leur donnes moins d'espace"));
-        if (presence > 0) s.add (u8 ("tu les veux plus présentes")); else if (presence < 0) s.add (u8 ("tu les veux plus douces"));
-        if (warmth > 0) s.add (u8 ("plus chaudes")); else if (warmth < 0) s.add (u8 ("plus légères dans le bas"));
-        if (s.isEmpty()) return {};
-        const auto last = s[s.size() - 1];
-        s.remove (s.size() - 1);
-        return u8 ("D'habitude, ") + (s.isEmpty() ? last : s.joinIntoString (", ") + " et " + last) + ".";
+        // les plus marquées d'abord (rapportées à leur seuil), quatre au plus : la phrase reste lisible
+        std::vector<std::pair<float, juce::String>> s;
+        auto add = [&] (float v, float thr, const char* more, const char* less) { if (v != 0.0f) s.push_back ({ std::abs (v) / thr, u8 (v > 0 ? more : less) }); };
+        add (hold, 15.0f, "tu compresses plus tes voix", "tu compresses moins tes voix");
+        add (space, 15.0f, "tu leur donnes plus d'espace", "tu leur donnes moins d'espace");
+        add (presence, 15.0f, "tu les veux plus présentes", "tu les veux plus douces");
+        add (warmth, 15.0f, "tu leur donnes plus de chaleur", "tu leur donnes moins de chaleur");
+        add (air, 1.0f, "tu leur donnes plus d'air", "tu leur donnes moins d'air");
+        add (mud, 1.0f, "tu enlèves plus de mud", "tu gardes plus de mud");
+        add (ess, 8.0f, "tu enlèves plus de S", "tu gardes plus de S");
+        add (tune, 0.4f, "tu veux l'autotune plus marqué", "tu veux l'autotune plus naturel");
+        add (grain, 1.0f, "tu leur donnes plus de grain", "tu leur donnes moins de grain");
+        add (breath, 2.0f, "tu baisses plus les respirations", "tu baisses moins les respirations");
+        if (s.empty()) return {};
+        std::sort (s.begin(), s.end(), [] (const auto& x, const auto& y) { return x.first > y.first; });
+        juce::StringArray parts;
+        for (size_t i = 0; i < std::min<size_t> (4, s.size()); ++i) parts.add (s[i].second);
+        const auto last = parts[parts.size() - 1];
+        parts.remove (parts.size() - 1);
+        return u8 ("D'habitude, ") + (parts.isEmpty() ? last : parts.joinIntoString (", ") + " et " + last) + ".";
     }
 };
 
-inline void recordMix (juce::int64 session, float presence, float warmth, float hold, float space)
+inline void recordMix (juce::int64 session, const MixSample& x)
 {
     const juce::ScopedLock sl (lock());
     auto v = load();
@@ -66,7 +90,9 @@ inline void recordMix (juce::int64 session, float presence, float warmth, float 
     if (auto* a = arr.getArray()) list = *a;
     for (int i = list.size(); --i >= 0;) if ((juce::int64) list[i]["id"] == session) list.remove (i);
     auto* o = new juce::DynamicObject();
-    o->setProperty ("id", session); o->setProperty ("p", presence); o->setProperty ("w", warmth); o->setProperty ("h", hold); o->setProperty ("s", space);
+    o->setProperty ("id", session);
+    o->setProperty ("p", x.p); o->setProperty ("w", x.w); o->setProperty ("h", x.h); o->setProperty ("s", x.s); o->setProperty ("a", x.a);
+    o->setProperty ("m", x.m); o->setProperty ("d", x.d); o->setProperty ("t", x.t); o->setProperty ("g", x.g); o->setProperty ("r", x.r);
     list.add (juce::var (o));
     while (list.size() > kKeep) list.remove (0);
     v.getDynamicObject()->setProperty ("mix", list);
@@ -81,19 +107,23 @@ inline MixHabit mixHabit()
     auto* a = v["mix"].getArray();
     if (a == nullptr || a->size() < kMin) return h;
     h.sessions = a->size();
-    auto dim = [a] (const char* k)
+    // thr : le seuil de la moyenne ; step : l'arrondi ; lo, hi : les bornes
+    auto dim = [a] (const char* k, float thr, float step, float lo, float hi)
     {
         float sum = 0.0f; int pos = 0, neg = 0;
-        for (const auto& e : *a) { const float x = (float) (double) e[k]; sum += x; if (x > 5.0f) ++pos; else if (x < -5.0f) ++neg; }
+        for (const auto& e : *a) { const float x = (float) (double) e[k]; sum += x; if (x > thr / 3.0f) ++pos; else if (x < -thr / 3.0f) ++neg; }
         const float mean = sum / (float) a->size();
         const float agree = (float) std::max (pos, neg) / (float) a->size();
-        if (std::abs (mean) < 15.0f || agree < 0.7f) return 0.0f;
-        return juce::jlimit (-100.0f, 100.0f, std::round (mean / 5.0f) * 5.0f);
+        if (std::abs (mean) < thr || agree < 0.7f) return 0.0f;
+        return juce::jlimit (lo, hi, std::round (mean / step) * step);
     };
-    h.presence = dim ("p"); h.warmth = dim ("w"); h.hold = dim ("h"); h.space = dim ("s");
+    h.presence = dim ("p", 15.0f, 5.0f, -100.0f, 100.0f); h.warmth = dim ("w", 15.0f, 5.0f, -100.0f, 100.0f);
+    h.hold = dim ("h", 15.0f, 5.0f, -100.0f, 100.0f);     h.space = dim ("s", 15.0f, 5.0f, -100.0f, 100.0f);
+    h.air = dim ("a", 1.0f, 0.5f, -10.0f, 10.0f);          h.mud = dim ("m", 1.0f, 0.5f, -10.0f, 10.0f);
+    h.ess = dim ("d", 8.0f, 1.0f, -100.0f, 100.0f);        h.tune = dim ("t", 0.4f, 0.1f, -3.0f, 3.0f);
+    h.grain = dim ("g", 1.0f, 0.5f, -10.0f, 10.0f);        h.breath = dim ("r", 2.0f, 1.0f, -30.0f, 30.0f);
     return h;
 }
-
 // ---- un module : les réglages d'une séance (identifiants du premier exemplaire)
 inline void recordModule (int type, const juce::String& sessionKey, const std::map<juce::String, float>& values)
 {

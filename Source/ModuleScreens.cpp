@@ -2894,6 +2894,50 @@ private:
             }
             done.add (name + (v > 0 ? " +" : utf8 (" −")) + juce::String (juce::roundToInt (std::abs (v))));
         }
+
+        // les retouches des modules : sur ceux de la chaîne qui les portent (le premier de chaque type)
+        auto instanceOf = [this] (int type)
+        {
+            for (int c : processor.getChain()) if (modules::typeOf (c) == type) return modules::instanceOf (c);
+            return -1;
+        };
+        auto nudge = [this] (int k, const char* id, float delta, bool ratio)
+        {
+            auto* prm = processor.apvts.getParameter (ids::inst (id, k));
+            if (prm == nullptr) return;
+            const auto& range = prm->getNormalisableRange();
+            const float now = processor.apvts.getRawParameterValue (ids::inst (id, k))->load();
+            const float v = juce::jlimit (range.start, range.end, ratio ? now * delta : now + delta);
+            prm->beginChangeGesture();
+            prm->setValueNotifyingHost (prm->convertTo0to1 (v));
+            prm->endChangeGesture();
+        };
+        auto signedText = [] (float v, int decimals) { return (v > 0 ? juce::String ("+") : utf8 ("−")) + juce::String (std::abs (v), decimals); };
+        if (habit.air != 0.0f)
+        {
+            if (const int k = instanceOf (modules::analog); k >= 0) { nudge (k, ids::air, habit.air, false); done.add ("AIR " + signedText (habit.air, 1)); }
+            else if (auto* prm = processor.apvts.getParameter (ids::macroPresence))
+            {
+                // pas d'EQ ANALOG : l'air passe par PRÉSENCE (qui monte aussi l'aigu à 11 kHz)
+                const float v = juce::jlimit (-100.0f, 100.0f, processor.apvts.getRawParameterValue (ids::macroPresence)->load() + 10.0f * habit.air);
+                prm->setValueNotifyingHost (prm->convertTo0to1 (v));
+                done.add (utf8 ("AIR PAR PRÉSENCE"));
+            }
+        }
+        if (habit.mud != 0.0f)
+            if (const int k = instanceOf (modules::analog); k >= 0) { nudge (k, ids::mud, habit.mud, false); done.add ("MUD " + signedText (habit.mud, 1)); }
+        if (habit.ess != 0.0f)
+            if (const int k = instanceOf (modules::deess); k >= 0) { nudge (k, ids::deessAmt, habit.ess, false); done.add ("DE-ESSER " + signedText (habit.ess, 0) + " %"); }
+        if (habit.tune != 0.0f)
+            if (const int k = instanceOf (modules::tuner); k >= 0)
+            { nudge (k, ids::tuneRetune, std::pow (2.0f, -habit.tune), true); done.add (habit.tune > 0 ? utf8 ("AUTOTUNE PLUS MARQUÉ") : utf8 ("AUTOTUNE PLUS NATUREL")); }
+        if (habit.grain != 0.0f)
+        {
+            if (const int k = instanceOf (modules::preamp); k >= 0) { nudge (k, ids::preampGain, 6.0f * habit.grain, false); done.add ("GRAIN " + signedText (habit.grain, 1)); }
+            else if (const int s = instanceOf (modules::sat); s >= 0) { nudge (s, ids::drive, habit.grain, false); done.add ("GRAIN " + signedText (habit.grain, 1)); }
+        }
+        if (habit.breath != 0.0f)
+            if (const int k = instanceOf (modules::debreath); k >= 0) { nudge (k, ids::dbrReduction, habit.breath, false); done.add ("RESPIRATIONS " + signedText (-habit.breath, 0) + " dB"); }
         habit = {};
         habitYes.setVisible (false); habitNo.setVisible (false);
         understood = true;
