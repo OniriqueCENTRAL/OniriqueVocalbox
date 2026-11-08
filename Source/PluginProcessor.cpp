@@ -42,10 +42,24 @@ OniriqueVocalBoxAudioProcessor::~OniriqueVocalBoxAudioProcessor()
     apvts.removeParameterListener (onirique::ids::oversampling, this);
     onirique::registry::remove (this);
     habitTick (true);   // les dernières retouches de la séance
+    // la chaîne construite à la main dans cette séance (ONR Neural Learning allumé) : gardée, elle partira à la prochaine
+    // ouverture ; elle apprend à AUTO MIX les styles de mixage que les gens montent eux-mêmes
+    if (manualChainPending && onirique::learning::enabled() && chainSnapshot().size() >= 2)
+    {
+        auto* o = new juce::DynamicObject();
+        o->setProperty ("install", onirique::learning::installId());
+        o->setProperty ("version", JucePlugin_VersionString);
+        o->setProperty ("source", "manual");
+        o->setProperty ("role", juce::roundToInt (apvts.getRawParameterValue (ids::voiceRole)->load()));
+        o->setProperty ("modules", chainSnapshot());
+        const auto f = onirique::learning::file().getSiblingFile ("chain-pending-" + juce::String (habitSession) + ".json");
+        f.getParentDirectory().createDirectory();
+        f.replaceWithText (juce::JSON::toString (juce::var (o), true));
+    }
     // un mix sans note ni 10 minutes de retouches : son retour est gardé et partira à la prochaine ouverture
     if (learnPending() && onirique::learning::enabled())
     {
-        const auto f = onirique::learning::file().getSiblingFile ("learn-pending.json");
+        const auto f = onirique::learning::file().getSiblingFile ("learn-pending-" + juce::String (habitSession) + ".json");
         f.getParentDirectory().createDirectory();
         f.replaceWithText (juce::JSON::toString (learnFinal(), true));
     }
@@ -215,11 +229,20 @@ void OniriqueVocalBoxAudioProcessor::learnSend (int rating)
 // un retour gardé à la fermeture du projet (le mix n'avait ni note ni 10 minutes) : il part à la prochaine ouverture
 void OniriqueVocalBoxAudioProcessor::sendPendingFromDisk()
 {
-    const auto f = onirique::learning::file().getSiblingFile ("learn-pending.json");
-    if (! f.existsAsFile()) return;
-    const auto v = juce::JSON::parse (f);
-    f.deleteFile();
-    if (v.isObject() && onirique::learning::enabled()) onirique::learning::postFeedback (v);
+    // un fichier par VOCALBOX fermée (plusieurs dans un même projet) : les retours de mix, puis les chaînes construites à la main
+    const auto dir = onirique::learning::file().getParentDirectory();
+    for (const auto& f : dir.findChildFiles (juce::File::findFiles, false, "learn-pending*.json;chain-pending*.json"))
+    {
+        // pris d'abord (renommé) : une autre VOCALBOX qui s'ouvre en même temps ne l'enverra pas une seconde fois
+        const auto mine = f.getSiblingFile (f.getFileNameWithoutExtension() + ".sending-" + juce::Uuid().toString());
+        if (! f.moveFileTo (mine)) continue;
+        const auto v = juce::JSON::parse (mine);
+        const bool chainFile = f.getFileName().startsWith ("chain-");
+        mine.deleteFile();
+        if (! v.isObject() || ! onirique::learning::enabled()) continue;
+        if (chainFile) onirique::learning::postChain (v);
+        else onirique::learning::postFeedback (v);
+    }
 }
 
 void OniriqueVocalBoxAudioProcessor::setWhy (const std::map<int, juce::String>& w)
@@ -301,6 +324,7 @@ void OniriqueVocalBoxAudioProcessor::habitTick (bool now)
             {
                 habits::recordChain (juce::String (habitSession) + "-chain", types);
                 habitChainWritten = types;
+                manualChainPending = true;   // ONR Neural Learning : elle partira à la fermeture, avec ses réglages finaux
             }
         }
         // un module que l'utilisateur a touché : une empreinte par séance
@@ -552,5 +576,44 @@ bool OniriqueVocalBoxAudioProcessor::buildUsualChain()
     if (n == 0) return false;
     setWhy ({});
     setChain (c);
+    return true;
+}
+
+bool OniriqueVocalBoxAudioProcessor::loadCommunityChain (const juce::var& c)
+{
+    auto* list = c["modules"].getArray();
+    if (list == nullptr || list->isEmpty()) return false;
+    learnFlush ("library");
+    auto set = [this] (const juce::String& id, float v)
+    {
+        if (auto* p = apvts.getParameter (id)) p->setValueNotifyingHost (p->convertTo0to1 (v));
+    };
+    modules::Chain chainNow {};
+    std::map<int, juce::String> why;
+    const juce::String reason = juce::String::fromUTF8 ("Chaîne de la communauté « ") + c["name"].toString() + juce::String::fromUTF8 (" »");
+    size_t n = 0;
+    for (const auto& m : *list)
+    {
+        int type = -1;
+        for (int t = 0; t < modules::numTypes; ++t) if (m["type"].toString().equalsIgnoreCase (modules::info (t).name)) type = t;
+        const int k = juce::jlimit (0, kInstances - 1, (int) m.getProperty ("instance", 0));
+        if (type < 0 || n >= chainNow.size()) continue;
+        const int code = modules::code (type, k);
+        if (std::find (chainNow.begin(), chainNow.begin() + (long) n, code) != chainNow.begin() + (long) n) continue;
+        // réglages d'usine, puis ceux de la chaîne (seulement les identifiants que ce module connaît)
+        const auto known = modules::paramIds (type);
+        for (const auto& id : known)
+            if (auto* p = apvts.getParameter (ids::inst (id.toRawUTF8(), k))) p->setValueNotifyingHost (p->getDefaultValue());
+        set (ids::inst (modules::info (type).onId, k), (bool) m.getProperty ("on", true) ? 1.0f : 0.0f);
+        if (auto* o = m["params"].getDynamicObject())
+            for (const auto& prm : o->getProperties())
+                if (std::find (known.begin(), known.end(), prm.name.toString()) != known.end()) set (ids::inst (prm.name.toString().toRawUTF8(), k), (float) (double) prm.value);
+        chainNow[n++] = code;
+        why[code] = reason;
+    }
+    if (n == 0) return false;
+    setChain (chainNow);
+    setWhy (why);
+    if (const int id = (int) c.getProperty ("id", 0); id > 0) learnPool.addJob ([id] { onirique::learning::chainUsed (id); });
     return true;
 }

@@ -184,3 +184,7 @@ std::unique_ptr<ModulePanel> createModulePanel (OniriqueVocalBoxAudioProcessor&,
 std::unique_ptr<ModulePanel> createGenericPanel (OniriqueVocalBoxAudioProcessor&, int code);  // tous ses réglages en potards
 // l'écran AUTO MIX (après le mix) : les 4 macros, affiner en mots, le rôle de la voix et sa place, un nouveau mix
 std::unique_ptr<ModulePanel> createMixPage (OniriqueVocalBoxAudioProcessor&, std::function<void()> onNewMix);
+// MON PROFIL (bouton en haut à droite) : ce que VOCALBOX a retenu de l'utilisateur, par-dessus le plugin ; onClose quand il se ferme
+std::unique_ptr<juce::Component> createProfileCard (OniriqueVocalBoxAudioProcessor&, std::function<void()> onClose, std::function<void()> onNewMix);
+// LES CHAÎNES DE LA COMMUNAUTÉ (bouton CHAÎNES) : la bibliothèque, cherchée par nom ; CHARGER monte la chaîne
+std::unique_ptr<juce::Component> createLibraryCard (OniriqueVocalBoxAudioProcessor&, std::function<void()> onClose);

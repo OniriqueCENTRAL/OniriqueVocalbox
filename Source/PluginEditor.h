@@ -156,6 +156,24 @@ private:
     bool lit, hover = false;
 };
 
+// MON PROFIL, en haut à droite du plugin (dans la barre, à gauche de la pastille ACTIVÉ) : gélule de verre, silhouette braise
+class ProfileTopButton : public juce::Component
+{
+public:
+    ProfileTopButton (juce::String text, bool chainIcon) : label (std::move (text)), chains (chainIcon)
+    { setMouseCursor (juce::MouseCursor::PointingHandCursor); setTitle (label); }
+    std::function<void()> onClick;
+    bool open = false;
+    void paint (juce::Graphics&) override;
+    void mouseEnter (const juce::MouseEvent&) override { hover = true; repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { hover = false; repaint(); }
+    void mouseUp (const juce::MouseEvent& e) override { if (getLocalBounds().contains (e.getPosition()) && onClick) onClick(); }
+private:
+    bool hover = false;
+    juce::String label;
+    bool chains = false;   // le pictogramme : trois maillons (CHAÎNES) ou une silhouette (MON PROFIL)
+};
+
 // AUTO MIX, en haut à droite de la chaîne : ouvre l'écran des macros (et « affiner en mots ») ; allumé quand il est affiché
 class MixPageButton : public juce::Component
 {
@@ -185,6 +203,8 @@ public:
     void resized() override;
     void mouseDown (const juce::MouseEvent&) override;
     void mouseMove (const juce::MouseEvent&) override;
+    // NOUVEAU MIX (page AUTO MIX, MON PROFIL) : le retour du mix part, la chaîne est vidée, l'écran de départ revient
+    void startNewMix();
 
 private:
     void timerCallback() override;
@@ -247,6 +267,9 @@ private:
     VocalBoxView view;
     onirique::nuit::Bar bar;
     std::unique_ptr<onirique::license::Overlay> licenseOverlay;
+    // MON PROFIL, dans la barre du haut à gauche de la pastille de licence ; sa carte s'ouvre par-dessus tout le plugin
+    ProfileTopButton profileTop { "MON PROFIL", false }, libraryTop { juce::String::fromUTF8 ("CHAÎNES"), true };
+    std::unique_ptr<juce::Component> profileCard, libraryCard;
     bool restoringSize = true;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OniriqueVocalBoxAudioProcessorEditor)

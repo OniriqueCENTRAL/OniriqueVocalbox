@@ -1047,6 +1047,12 @@ void TextPill::paint (juce::Graphics& g)
     g.drawText (text, r, juce::Justification::centred, false);
 }
 
+void VocalBoxView::startNewMix()
+{
+    juce::Component::SafePointer<VocalBoxView> safe (this);
+    juce::MessageManager::callAsync ([safe] { if (safe != nullptr) { safe->mixPage = false; safe->processor.learnFlush ("newmix"); safe->processor.setChain ({}); } });
+}
+
 // l'écran AUTO MIX : les macros, affiner en mots, le rôle ; NOUVEAU MIX vide la chaîne (l'écran de départ revient)
 void VocalBoxView::openMixPage()
 {
@@ -1057,11 +1063,7 @@ void VocalBoxView::openMixPage()
     mixButton.repaint();
     strip.setSelected (0);
     if (panel != nullptr) removeChildComponent (panel.get());
-    panel = createMixPage (processor, [this]
-    {
-        juce::Component::SafePointer<VocalBoxView> safe (this);
-        juce::MessageManager::callAsync ([safe] { if (safe != nullptr) { safe->mixPage = false; safe->processor.learnFlush ("newmix"); safe->processor.setChain ({}); } });
-    });
+    panel = createMixPage (processor, [this] { startNewMix(); });
     addAndMakeVisible (*panel);
     panel->toBehind (&picker);
     panelFade = 0.0f;
@@ -1352,6 +1354,34 @@ OniriqueVocalBoxAudioProcessorEditor::OniriqueVocalBoxAudioProcessorEditor (Onir
     setOpaque (true);
     addAndMakeVisible (view);
     addAndMakeVisible (bar);
+    // MON PROFIL : en haut à droite, sa carte par-dessus le plugin (sous la page de licence)
+    profileCard = createProfileCard (processor, [this] { profileTop.open = false; profileTop.repaint(); }, [this] { view.startNewMix(); });
+    addChildComponent (*profileCard);
+    addAndMakeVisible (profileTop);
+    // CHAÎNES : la bibliothèque de la communauté, juste à gauche de MON PROFIL
+    libraryCard = createLibraryCard (processor, [this] { libraryTop.open = false; libraryTop.repaint(); });
+    addChildComponent (*libraryCard);
+    addAndMakeVisible (libraryTop);
+    // une carte à la fois : ouvrir l'une ferme l'autre
+    auto toggle = [this] (juce::Component& card, ProfileTopButton& button, juce::Component& other, ProfileTopButton& otherButton)
+    {
+        const bool show = ! card.isVisible();
+        other.setVisible (false);
+        otherButton.open = false;
+        otherButton.repaint();
+        card.setVisible (show);
+        if (show) { card.toFront (false); if (licenseOverlay != nullptr) card.toBehind (licenseOverlay.get()); }
+        button.open = show;
+        button.repaint();
+    };
+    profileTop.onClick = [this, toggle] { toggle (*profileCard, profileTop, *libraryCard, libraryTop); };
+    libraryTop.onClick = [this, toggle] { toggle (*libraryCard, libraryTop, *profileCard, profileTop); };
+   #if ONIRIQUE_UI_TEST
+    if (juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_PROFILE", {}).isNotEmpty())
+        juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<OniriqueVocalBoxAudioProcessorEditor> (this)] { if (safe != nullptr) safe->profileTop.onClick(); });
+    if (juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_LIBRARY", {}).isNotEmpty())
+        juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<OniriqueVocalBoxAudioProcessorEditor> (this)] { if (safe != nullptr) safe->libraryTop.onClick(); });
+   #endif
 
     // le titre de la démo (l'étoile à quatre branches, ONIRIQUE VOCALBOX) à la place de la marque de la barre
     bar.setBrand (juce::roundToInt (titleWidth()), [this] (juce::Graphics& g, juce::Rectangle<float> area) { paintTitle (g, area); });
@@ -1413,6 +1443,16 @@ void OniriqueVocalBoxAudioProcessorEditor::resized()
     bar.place (b, getLocalBounds());
     if (licenseOverlay != nullptr)
         licenseOverlay->fit (getLocalBounds(), b, bar.getPillArea(), juce::Justification::centredRight);
+    {
+        // MON PROFIL : à gauche de la pastille de licence, à sa hauteur (repère de la barre, mis à l'échelle)
+        const auto pill = bar.getPillArea().toFloat();
+        const float w = 132.0f, gap = 8.0f;
+        profileTop.setBounds (juce::Rectangle<float> (pill.getX() - gap - w, pill.getY(), w, pill.getHeight()).transformedBy (juce::AffineTransform::scale (b)).toNearestInt());
+        const float lw = 112.0f;
+        libraryTop.setBounds (juce::Rectangle<float> (pill.getX() - gap - w - gap - lw, pill.getY(), lw, pill.getHeight()).transformedBy (juce::AffineTransform::scale (b)).toNearestInt());
+    }
+    if (profileCard != nullptr) profileCard->setBounds (view.getBounds());
+    if (libraryCard != nullptr) libraryCard->setBounds (view.getBounds());
 
     if (! restoringSize)
         window::remember (processor.apvts.state, getWidth(), getHeight());   // taille mémorisée avec le projet
@@ -1517,4 +1557,34 @@ void RateChip::paint (juce::Graphics& g)
         g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.14f));
         g.drawText (k == 0 ? "OUI" : "BOF", b, juce::Justification::centred, false);
     }
+}
+
+//==============================================================================
+void ProfileTopButton::paint (juce::Graphics& g)
+{
+    const auto r = getLocalBounds().toFloat().reduced (1.0f);
+    const float h = r.getHeight(), rad = h * 0.5f;
+    g.setColour ((open ? onirique::look::ember : juce::Colours::white).withAlpha (open ? 0.22f : hover ? 0.07f : 0.04f));
+    g.fillRoundedRectangle (r, rad);
+    g.setColour ((open ? onirique::look::emberLit : juce::Colour (255, 220, 225)).withAlpha (open ? 0.6f : hover ? 0.26f : 0.16f));
+    g.drawRoundedRectangle (r, rad, 1.0f);
+    const juce::Point<float> c (r.getX() + h * 0.62f, r.getCentreY());
+    g.setColour (onirique::look::emberPink);
+    if (chains)
+    {
+        // trois maillons : la chaîne de modules
+        for (int i = -1; i <= 1; ++i)
+            g.drawRoundedRectangle (juce::Rectangle<float> (h * 0.16f, h * 0.16f).withCentre ({ c.x + (float) i * h * 0.22f, c.y }), h * 0.04f, h * 0.05f);
+    }
+    else
+    {
+        // la silhouette : une tête et des épaules, en braise
+        g.fillEllipse (juce::Rectangle<float> (h * 0.22f, h * 0.22f).withCentre ({ c.x, c.y - h * 0.1f }));
+        juce::Path s;
+        s.addCentredArc (c.x, c.y + h * 0.24f, h * 0.2f, h * 0.15f, 0.0f, -juce::MathConstants<float>::halfPi, juce::MathConstants<float>::halfPi, true);
+        g.strokePath (s, juce::PathStrokeType (h * 0.07f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    }
+    g.setColour (open || hover ? juce::Colours::white : juce::Colour (0xffe9dcde));
+    g.setFont (ui::css (ui::Face::mono, h * 0.32f, 0.14f));
+    g.drawText (label, r.withTrimmedLeft (h * 1.05f).withTrimmedRight (h * 0.45f), juce::Justification::centred, false);
 }

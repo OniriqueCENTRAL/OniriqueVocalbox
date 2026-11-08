@@ -6,6 +6,7 @@
 #include <thread>
 
 using namespace onirique;
+namespace onirique::ui { void drawModuleIcon (juce::Graphics&, int type, juce::Rectangle<float> r, juce::Colour, float thickness); }
 
 /*  Les écrans des modules, recopiés de la démo validée (Main.dc.html) : mêmes mesures, mêmes couleurs, mêmes textes.
     Les visuels se dessinent dans le repère de la démo (1400 x 360, mis à l'échelle comme un SVG « meet ») ; ils montrent le
@@ -2692,14 +2693,42 @@ private:
     bool hover = false;
 };
 
-/*  MON PROFIL (page AUTO MIX) : ce que VOCALBOX a retenu de tes mix, en clair. Tout reste sur l'ordinateur (habits.json) ;
-    EFFACER MES HABITUDES le vide (deux clics : le second confirme). */
+// PARTAGER À LA COMMUNAUTÉ (ONR Neural Learning allumé) : la chaîne telle qu'elle est, la demande ou le style écrit, les artistes
+// reconnus ; rien d'autre. done (true si le serveur l'a reçue) est appelé sur le fil de l'interface.
+void shareChainToCommunity (OniriqueVocalBoxAudioProcessor& p, const juce::String& request, const juce::StringArray& artists, std::function<void (bool)> done)
+{
+    auto* o = new juce::DynamicObject();
+    o->setProperty ("install", onirique::learning::installId());
+    o->setProperty ("version", JucePlugin_VersionString);
+    o->setProperty ("request", request.substring (0, 300));
+    juce::Array<juce::var> arts;
+    for (const auto& a : artists) arts.add (a);
+    o->setProperty ("artists", arts);
+    o->setProperty ("role", juce::roundToInt (p.apvts.getRawParameterValue (ids::voiceRole)->load()));
+    juce::Array<juce::var> styles;
+    for (const auto& w : onirique::mix::styleWords (request)) styles.add (w);
+    o->setProperty ("styles", styles);
+    o->setProperty ("source", "shared");
+    o->setProperty ("modules", p.chainSnapshot());
+    const juce::var payload (o);
+    juce::Thread::launch ([payload, done]
+    {
+        const bool ok = onirique::learning::postChain (payload);
+        juce::MessageManager::callAsync ([done, ok] { if (done) done (ok); });
+    });
+}
+
+/*  MON PROFIL (bouton en haut à droite du plugin) : ce que VOCALBOX a retenu de toi, en clair, avec les pictogrammes des
+    modules. Tout reste sur l'ordinateur (habits.json) ; EFFACER MES HABITUDES le vide (deux clics : le second confirme).
+    - après AUTO MIX : ta correction habituelle, et celle de chaque rôle (LEAD, BACKS, ADLIBS, DOUBLES) ;
+    - ta chaîne habituelle (les chaînes construites à la main), dessinée module par module, et les modules que tu mets le plus ;
+    - tes modules réglés à la main : leur progression vers « prêt » (3 séances) et leurs réglages habituels. */
 class ProfileCard final : public juce::Component
 {
 public:
-    ProfileCard()
+    explicit ProfileCard (OniriqueVocalBoxAudioProcessor& p) : processor (p)
     {
-        wipe.lit = false;
+        wipe.lit = false; usual.lit = false;
         close.onClick = [this] { setVisible (false); if (onClose) onClose(); };
         wipe.onClick = [this]
         {
@@ -2708,129 +2737,772 @@ public:
             armed = false;
             wipe.setText (utf8 ("EFFACER MES HABITUDES"));
             refresh();
-            note = utf8 ("Tes habitudes sont effacées. VOCALBOX recommence à apprendre à partir de ton prochain mix.");
-            resized();
+            note = utf8 ("Tes habitudes sont effacées : VOCALBOX recommence à apprendre dès ton prochain mix.");
             repaint();
         };
+        usual.onClick = [this] { if (onBuildUsual && onBuildUsual()) close.onClick(); };
         addAndMakeVisible (wipe);
         addAndMakeVisible (close);
-        usual.lit = false;
-        usual.onClick = [this] { if (onBuildUsual && onBuildUsual()) { setVisible (false); if (onClose) onClose(); } };
         addChildComponent (usual);
-        setInterceptsMouseClicks (true, true);
+        // PARTAGER TA CHAÎNE ACTUELLE : celle du plugin, qu'elle vienne d'AUTO MIX ou de tes mains, avec l'artiste ou le style visé
+        shareText.setMultiLine (false);
+        shareText.setReturnKeyStartsNewLine (false);
+        shareText.setColour (juce::TextEditor::backgroundColourId, juce::Colours::transparentBlack);
+        shareText.setColour (juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
+        shareText.setColour (juce::TextEditor::focusedOutlineColourId, juce::Colours::transparentBlack);
+        shareText.setColour (juce::TextEditor::textColourId, cBone);
+        shareText.setColour (juce::TextEditor::highlightColourId, cEmber.withAlpha (0.35f));
+        shareText.setColour (juce::CaretComponent::caretColourId, cEmber);
+        shareText.setTextToShowWhenEmpty (utf8 ("Le nom de ta chaîne, visible par tous : Damso mix, voix drill sombre…"), cHaze);
+        shareText.onReturnKey = [this] { share(); };
+        saveBtn.lit = false; shareBtn.lit = false; newMixBtn.lit = false;
+        // ENREGISTRER MA CHAÎNE : gardée comme preset, pour tous les projets
+        saveBtn.onClick = [this]
+        {
+            int n = 0;
+            for (int c : processor.getChain()) if (modules::valid (c)) ++n;
+            if (n == 0) { shareNote = utf8 ("Ta chaîne est vide : ajoute des modules avant de l'enregistrer."); repaint(); return; }
+            lastSaved = processor.presets.save (utf8 ("Ma chaîne ") + juce::Time::getCurrentTime().formatted ("%d-%m-%Y %Hh%M"));
+            shareNote = utf8 ("Chaîne enregistrée : « ") + lastSaved + utf8 (" », dans tes presets, pour tous tes projets.");
+            repaint();
+        };
+        // PARTAGER : un fichier pour un ami, ou à la communauté (avec l'artiste ou le style écrit dans le champ)
+        shareBtn.onClick = [this]
+        {
+            juce::PopupMenu m;
+            m.setLookAndFeel (&getLookAndFeel());
+            m.addItem (1, utf8 ("UN FICHIER POUR UN AMI"));
+            m.addItem (2, learning ? utf8 ("À LA COMMUNAUTÉ (ONR NEURAL LEARNING)") : utf8 ("À LA COMMUNAUTÉ · ALLUME ONR NEURAL LEARNING DANS LE MENU ⋯"), learning);
+            juce::Component::SafePointer<ProfileCard> safe (this);
+            m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&shareBtn).withMinimumWidth (shareBtn.getWidth()), [safe] (int r)
+            {
+                if (safe == nullptr) return;
+                if (r == 1) safe->shareFile();
+                if (r == 2) safe->share();
+            });
+        };
+        // NOUVEAU MIX : la chaîne vidée, l'écran de départ revient (la carte se ferme)
+        newMixBtn.onClick = [this] { if (onNewMix) { setVisible (false); if (onClose) onClose(); onNewMix(); } };
+        addAndMakeVisible (shareText);
+        addAndMakeVisible (saveBtn);
+        addAndMakeVisible (shareBtn);
+        addAndMakeVisible (newMixBtn);
+    }
+    std::function<void()> onNewMix;
+
+    void shareFile()
+    {
+        if (lastSaved.isEmpty()) saveBtn.onClick();
+        if (lastSaved.isEmpty()) return;
+        const auto file = processor.presets.getFolder().getChildFile (lastSaved + processor.presets.getExtension());
+        chooser = std::make_unique<juce::FileChooser> (utf8 ("Partager ma chaîne"),
+                      juce::File::getSpecialLocation (juce::File::userDesktopDirectory).getChildFile (file.getFileName()), "*" + processor.presets.getExtension());
+        juce::Component::SafePointer<ProfileCard> safe (this);
+        chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting,
+                              [safe, file] (const juce::FileChooser& fc)
+        {
+            if (safe == nullptr) return;
+            const auto dest = fc.getResult();
+            if (dest == juce::File() || ! file.copyFileTo (dest)) return;
+            safe->shareNote = utf8 ("Fichier prêt à envoyer : ") + dest.getFileName() + utf8 (". Ton ami l'ouvre avec « Import Presets… » dans le menu de la barre.");
+            safe->repaint();
+        });
     }
     std::function<void()> onClose;
     std::function<bool()> onBuildUsual;   // monte la chaîne habituelle (true si elle a été montée)
 
+    void visibilityChanged() override { if (isVisible()) { note.clear(); shareNote.clear(); armed = false; wipe.setText (utf8 ("EFFACER MES HABITUDES")); refresh(); } }
+
+    void share()
+    {
+        int n = 0;
+        for (int c : processor.getChain()) if (modules::valid (c)) ++n;
+        if (! learning) { shareNote = utf8 ("Allume ONR Neural Learning dans le menu ⋯ (HELP VOCALBOX LEARN) pour partager ta chaîne."); repaint(); return; }
+        if (n == 0) { shareNote = utf8 ("Ta chaîne est vide : ajoute des modules avant de la partager."); repaint(); return; }
+        const auto text = shareText.getText().trim();
+        if (text.length() < 2) { shareNote = utf8 ("Donne un nom à ta chaîne (Damso mix, voix drill sombre…) : c'est lui qu'on cherche dans CHAÎNES."); shareText.grabKeyboardFocus(); repaint(); return; }
+        const auto artists = onirique::mix::parseHints (text).artists;
+        shareNote = utf8 ("Envoi de ta chaîne…");
+        shareBtn.setEnabled (false);
+        repaint();
+        juce::Component::SafePointer<ProfileCard> safe (this);
+        shareChainToCommunity (processor, text, artists, [safe, artists] (bool ok)
+        {
+            if (safe == nullptr) return;
+            safe->shareBtn.setEnabled (true);
+            safe->shareNote = ! ok ? utf8 ("Le serveur ne répond pas : réessaie plus tard.")
+                            : artists.isEmpty() ? utf8 ("Merci, ta chaîne est partagée, anonyme. Avec un artiste, elle pourra devenir une proposition d'AUTO MIX.")
+                                                : utf8 ("Merci, ta chaîne pour ") + artists.joinIntoString (", ") + utf8 (" est partagée, anonyme. Avec celles des autres, elle pourra devenir une proposition d'AUTO MIX.");
+            if (ok) safe->shareText.clear();
+            safe->repaint();
+        });
+    }
+
     void refresh()
     {
-        lines.clear();
-        note.clear();
-        auto add = [this] (juce::String head, juce::String text) { lines.push_back ({ std::move (head), std::move (text) }); };
-        // AUTO MIX : l'habitude générale, puis celle de chaque rôle qui en a une à lui
-        const int total = onirique::habits::mixSessions();
-        const auto general = onirique::habits::mixHabit (-1);
-        add ("AUTO MIX", total == 0 ? utf8 ("Aucun mix suivi pour l'instant. Après AUTO MIX, tes retouches sont retenues ici.")
-                         : juce::String (total) + (total > 1 ? utf8 (" mix suivis. ") : utf8 (" mix suivi. "))
-                           + (general.any() ? general.describe() : utf8 ("Pas encore d'habitude : il faut au moins 3 mix retouchés dans le même sens.")));
-        static const char* roleName[4] { "LEAD", "BACKS", "ADLIBS", "DOUBLES" };
-        for (int r = 0; r < 4; ++r)
-        {
-            const auto h = onirique::habits::mixHabit (r);
-            if (h.role == r && h.any()) add (roleName[r], h.describe() + " (" + juce::String (h.sessions) + " mix)");
-        }
-        // les modules réglés à la main : prêts quand il y a 3 séances
-        juce::StringArray ready, learning;
+        totalMix = onirique::habits::mixSessions();
+        general = onirique::habits::mixHabit (-1);
+        for (int r = 0; r < 4; ++r) { roles[(size_t) r] = onirique::habits::mixHabit (r); roleCount[(size_t) r] = onirique::habits::mixSessions (r); }
+        chain = onirique::habits::chainHabit();
+        learning = onirique::learning::enabled();
+        mods.clear();
         for (const auto& [type, n] : onirique::habits::moduleSessions())
         {
             if (type < 0 || type >= modules::numTypes || n <= 0) continue;
-            const juce::String name (modules::info (type).name);
-            (n >= onirique::habits::kMin ? ready : learning).add (name + " (" + juce::String (n) + ")");
+            Mod m { type, n, {} };
+            // ses réglages habituels : les deux qui s'écartent le plus du réglage d'usine
+            std::vector<std::pair<float, juce::String>> devs;
+            for (const auto& [id, v] : onirique::habits::moduleHabit (type))
+                if (auto* prm = processor.apvts.getParameter (ids::inst (id.toRawUTF8(), 0)))
+                {
+                    const float nv = prm->convertTo0to1 (v), dev = std::abs (nv - prm->getDefaultValue());
+                    if (dev < 0.02f) continue;
+                    const auto label = prm->getLabel();
+                    const auto text = prm->getText (nv, 8).trim();
+                    const bool hasUnit = label.isEmpty() || text.endsWithIgnoreCase (label.trim());   // « 42 % » : pas « 42 % % »
+                    devs.push_back ({ dev, prm->getName (16).toUpperCase() + "  " + text + (hasUnit ? juce::String() : " " + label) });
+                }
+            std::sort (devs.begin(), devs.end(), [] (const auto& a, const auto& b) { return a.first > b.first; });
+            for (size_t i = 0; i < std::min<size_t> (2, devs.size()); ++i) m.settings.add (devs[i].second);
+            mods.push_back (m);
         }
-        add ("MODULES", ready.isEmpty() && learning.isEmpty() ? utf8 ("Aucun module réglé à la main pour l'instant.")
-                        : (ready.isEmpty() ? juce::String() : utf8 ("Réglages habituels prêts : ") + ready.joinIntoString (", ") + ". ")
-                          + (learning.isEmpty() ? juce::String() : utf8 ("En cours d'apprentissage : ") + learning.joinIntoString (", ") + "."));
-        // les chaînes construites à la main : sa chaîne habituelle, et les modules qu'il met le plus
-        {
-            const auto ch = onirique::habits::chainHabit();
-            juce::StringArray usualNames, often;
-            for (int t : ch.usual) usualNames.add (modules::info (t).name);
-            for (const auto& [t, share] : ch.often) often.add (juce::String (modules::info (t).name) + " " + juce::String (juce::roundToInt (share * 100.0f)) + " %");
-            add (utf8 ("CHAÎNES À LA MAIN"), ch.chains == 0 ? utf8 ("Aucune chaîne construite à la main pour l'instant (sans AUTO MIX). Elles seront retenues ici.")
-                 : ch.any() ? utf8 ("Tu montes d'habitude : ") + usualNames.joinIntoString (utf8 (" → ")) + " (" + juce::String (ch.chains) + utf8 (" chaînes). Le plus souvent : ") + often.joinIntoString (", ") + "."
-                 : juce::String (ch.chains) + utf8 (ch.chains > 1 ? " chaînes construites. " : " chaîne construite. ") + utf8 ("Ta chaîne habituelle apparaîtra après 3 chaînes qui se ressemblent.")
-                   + (often.isEmpty() ? juce::String() : utf8 (" Le plus souvent : ") + often.joinIntoString (", ") + "."));
-            usual.setVisible (ch.any() && onBuildUsual != nullptr);
-        }
-        add ("ONR NEURAL LEARNING", onirique::learning::enabled()
-                 ? utf8 ("Allumé : tes mix aident AUTO MIX à progresser pour tout le monde, de façon anonyme et sans jamais envoyer de son.")
-                 : utf8 ("Éteint : rien ne quitte ton ordinateur. Tu peux l'allumer dans le menu ⋯ (HELP VOCALBOX LEARN)."));
+        std::sort (mods.begin(), mods.end(), [] (const Mod& a, const Mod& b) { return a.n > b.n; });
+        usual.setVisible (chain.any() && onBuildUsual != nullptr);
+        resized();
         repaint();
     }
 
     void resized() override
     {
         const float u = ui::unitOf (*this);
-        const auto card = cardArea();
-        const float cw = close.idealWidth(), ww = wipe.idealWidth();
-        close.setBounds (juce::Rectangle<float> (card.getRight() - 28.0f * u - cw, card.getBottom() - 58.0f * u, cw, 38.0f * u).toNearestInt());
-        wipe.setBounds (juce::Rectangle<float> ((float) close.getX() - 12.0f * u - ww, card.getBottom() - 58.0f * u, ww, 38.0f * u).toNearestInt());
-        const float uw = usual.idealWidth();
-        usual.setBounds (juce::Rectangle<float> (card.getX() + 28.0f * u, card.getBottom() - 58.0f * u, uw, 38.0f * u).toNearestInt());
+        auto r = footArea();
+        const float h = 38.0f * u;
+        auto at = [&] (PillButton& b)
+        {
+            const float w = b.idealWidth();
+            b.setBounds (r.removeFromRight (w).withSizeKeepingCentre (w, h).toNearestInt());
+            r.removeFromRight (10.0f * u);
+        };
+        at (close);
+        at (wipe);
+        if (usual.isVisible()) at (usual);
+        // la bande de ta chaîne actuelle : son nom à gauche, le champ « pour quel artiste », puis ENREGISTRER, PARTAGER, NOUVEAU MIX
+        r = stripArea().reduced (16.0f * u, 0.0f);
+        r.removeFromLeft (200.0f * u);
+        at (newMixBtn);
+        at (shareBtn);
+        at (saveBtn);
+        shareText.setBounds (r.reduced (0.0f, (r.getHeight() - 36.0f * u) * 0.5f).withTrimmedLeft (40.0f * u).withTrimmedRight (6.0f * u).toNearestInt());
+        shareText.setFont (ui::css (ui::Face::body, 14.0f * u));
+        shareText.applyFontToAllText (ui::css (ui::Face::body, 14.0f * u));
+        shareText.setIndents (0, juce::roundToInt (std::max (0.0f, ((float) shareText.getHeight() - 14.0f * u * 1.25f) * 0.5f)));
     }
 
     void paint (juce::Graphics& g) override
     {
         const float u = ui::unitOf (*this);
-        g.fillAll (juce::Colour (0xff0b0709).withAlpha (0.72f));
+        g.fillAll (juce::Colour (0xff0b0709).withAlpha (0.78f));
         const auto card = cardArea();
-        g.setColour (juce::Colour (0xff120c0e).withAlpha (0.96f));
-        g.fillRoundedRectangle (card, 22.0f * u);
-        ui::drawDemoGlass (g, card, 22.0f * u, u, true);
-        auto r = card.reduced (34.0f * u, 26.0f * u);
-        g.setColour (cBone);
-        g.setFont (ui::css (ui::Face::display, 24.0f * u, 0.01f));
-        g.drawText (utf8 ("Mon profil"), r.removeFromTop (34.0f * u), juce::Justification::centredLeft, false);
-        g.setColour (cHaze);
-        g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.14f));
-        g.drawText (utf8 ("CE QUE VOCALBOX A RETENU DE TES MIX · TOUT RESTE SUR TON ORDINATEUR"), r.removeFromTop (20.0f * u), juce::Justification::centredLeft, false);
-        r.removeFromTop (14.0f * u);
-        r.removeFromBottom (64.0f * u);
-        const float rowH = juce::jmin (64.0f * u, r.getHeight() / (float) juce::jmax<size_t> (1, lines.size()));
-        for (const auto& [head, text] : lines)
+        ui::softGlowRect (g, card, 24.0f * u, cEmber.withAlpha (0.12f), 40.0f * u);
+        g.setColour (juce::Colour (0xff120c0e).withAlpha (0.97f));
+        g.fillRoundedRectangle (card, 24.0f * u);
+        ui::drawDemoGlass (g, card, 24.0f * u, u, true);
+
+        auto r = card.reduced (34.0f * u, 28.0f * u);
+        // ---- l'en-tête : le titre, et quatre chiffres
+        auto head = r.removeFromTop (64.0f * u);
         {
-            auto row = r.removeFromTop (rowH);
-            auto left = row.removeFromLeft (190.0f * u);
-            g.setColour (cEmber);
-            g.fillEllipse (juce::Rectangle<float> (6.0f * u, 6.0f * u).withCentre ({ left.getX() + 4.0f * u, left.getY() + 11.0f * u }));
+            auto t = head;
             g.setColour (cBone);
-            g.setFont (ui::css (ui::Face::mono, 11.0f * u, 0.14f));
-            g.drawText (head, left.withTrimmedLeft (18.0f * u).withHeight (22.0f * u), juce::Justification::centredLeft, true);
-            g.setColour (juce::Colour (0xffd9c6c9));
-            g.setFont (ui::css (ui::Face::body, 14.0f * u));
-            g.drawFittedText (text, row.toNearestInt().withTrimmedTop (2), juce::Justification::topLeft, 3, 1.0f);
+            g.setFont (ui::css (ui::Face::display, 26.0f * u, 0.01f));
+            g.drawText (utf8 ("Mon profil"), t.removeFromTop (36.0f * u), juce::Justification::centredLeft, false);
+            g.setColour (cHaze);
+            g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.14f));
+            g.drawText (utf8 ("CE QUE VOCALBOX A RETENU DE TES MIX · TOUT RESTE SUR TON ORDINATEUR"), t.removeFromTop (18.0f * u), juce::Justification::centredLeft, false);
+            const std::pair<juce::String, juce::String> stats[4] {
+                { juce::String (totalMix), utf8 ("MIX SUIVIS") }, { juce::String ((int) mods.size()), utf8 ("MODULES RÉGLÉS") },
+                { juce::String (chain.chains), utf8 ("CHAÎNES À LA MAIN") }, { learning ? utf8 ("ON") : utf8 ("OFF"), utf8 ("NEURAL LEARNING") } };
+            auto s = head.removeFromRight (4.0f * 132.0f * u + 3.0f * 10.0f * u);
+            for (int i = 0; i < 4; ++i)
+            {
+                auto chip = s.removeFromLeft (132.0f * u).withTrimmedBottom (6.0f * u);
+                s.removeFromLeft (10.0f * u);
+                box (g, chip, u, i == 3 && learning);
+                g.setColour (i == 3 && learning ? juce::Colours::white : cBone);
+                g.setFont (ui::css (ui::Face::display, 20.0f * u));
+                g.drawText (stats[i].first, chip.withTrimmedTop (6.0f * u).withHeight (28.0f * u), juce::Justification::centred, false);
+                g.setColour (cHaze);
+                g.setFont (ui::css (ui::Face::mono, 8.5f * u, 0.12f));
+                g.drawText (stats[i].second, chip.withTrimmedTop (34.0f * u).withHeight (14.0f * u), juce::Justification::centred, false);
+            }
         }
-        if (note.isNotEmpty())
+        r.removeFromTop (14.0f * u);
+        r.removeFromBottom (footArea().getHeight() + 10.0f * u);
+        r.removeFromBottom (stripArea().getHeight() + 12.0f * u);
+
+        // ---- ta chaîne actuelle : à garder, à partager (à un ami ou à la communauté, même sans AUTO MIX), ou à refaire
         {
-            g.setColour (juce::Colour (0xffd9b8bd));
-            g.setFont (ui::css (ui::Face::body, 13.0f * u));
-            g.drawText (note, card.reduced (34.0f * u, 0.0f).withTop ((float) wipe.getY()).withHeight ((float) wipe.getHeight()).withRight ((float) wipe.getX() - 16.0f * u),
-                        juce::Justification::centredLeft, true);
+            const auto st = stripArea();
+            box (g, st, u, true);
+            auto l = st.reduced (18.0f * u, 0.0f).withWidth (190.0f * u);
+            int n = 0;
+            for (int c : processor.getChain()) if (modules::valid (c)) ++n;
+            g.setColour (juce::Colours::white);
+            g.setFont (ui::css (ui::Face::mono, 10.5f * u, 0.14f));
+            g.drawText (utf8 ("TA CHAÎNE ACTUELLE"), l.withTrimmedTop (st.getHeight() * 0.5f - 18.0f * u).withHeight (16.0f * u), juce::Justification::centredLeft, false);
+            g.setColour (cHaze);
+            g.setFont (ui::css (ui::Face::mono, 8.5f * u, 0.1f));
+            g.drawText (n == 0 ? utf8 ("VIDE") : juce::String (n) + (n > 1 ? utf8 (" MODULES") : utf8 (" MODULE")),
+                        l.withTrimmedTop (st.getHeight() * 0.5f + 2.0f * u).withHeight (14.0f * u), juce::Justification::centredLeft, false);
+            // le champ : une gélule de verre, l'étoile d'AUTO MIX devant
+            const auto f = shareText.getBounds().toFloat().withTrimmedLeft (-34.0f * u).expanded (0.0f, 1.0f * u);
+            g.setColour (juce::Colour (0xff120d0f).withAlpha (0.9f));
+            g.fillRoundedRectangle (f, f.getHeight() * 0.5f);
+            g.setColour (juce::Colour (255, 220, 225).withAlpha (shareText.hasKeyboardFocus (true) ? 0.3f : 0.14f));
+            g.drawRoundedRectangle (f.reduced (0.5f), f.getHeight() * 0.5f, 1.0f * u);
+            g.setColour (cEmber);
+            g.fillPath (ui::starPath ({ f.getX() + 18.0f * u, f.getCentreY() }, 6.0f * u));
         }
+
+        // ---- deux blocs : après AUTO MIX, et ta chaîne habituelle
+        auto top = r.removeFromTop (juce::jmin (230.0f * u, r.getHeight() * 0.48f));
+        r.removeFromTop (14.0f * u);
+        auto left = top.removeFromLeft ((top.getWidth() - 14.0f * u) * 0.5f);
+        top.removeFromLeft (14.0f * u);
+        paintAutoMix (g, left, u);
+        paintChain (g, top, u);
+        // ---- tes modules
+        paintModules (g, r, u);
+
+        // ---- le pied : l'état d'ONR Neural Learning (ou la confirmation de l'effacement)
+        const auto foot = footArea();
+        g.setColour (note.isNotEmpty() || shareNote.isNotEmpty() ? juce::Colour (0xffd9b8bd) : cHaze);
+        g.setFont (ui::css (ui::Face::body, 13.0f * u));
+        const float right = (float) (usual.isVisible() ? usual.getX() : wipe.getX()) - 18.0f * u;
+        g.drawFittedText (note.isNotEmpty() ? note : shareNote.isNotEmpty() ? shareNote
+                          : learning ? utf8 ("ONR Neural Learning est allumé : tes mix aident AUTO MIX à progresser pour tout le monde, anonymement, sans jamais envoyer de son.")
+                                     : utf8 ("ONR Neural Learning est éteint : rien ne quitte ton ordinateur. Tu peux l'allumer dans le menu ⋯ (HELP VOCALBOX LEARN)."),
+                          foot.withRight (right).toNearestInt(), juce::Justification::centredLeft, 2, 1.0f);
     }
     void mouseDown (const juce::MouseEvent& e) override { if (! cardArea().contains (e.position)) close.onClick(); }
 
 private:
+    struct Mod { int type, n; juce::StringArray settings; };
+
     juce::Rectangle<float> cardArea() const
     {
         const float u = ui::unitOf (*this);
         const auto b = getLocalBounds().toFloat();
-        return juce::Rectangle<float> (juce::jmin (980.0f * u, b.getWidth() - 40.0f * u), juce::jmin (580.0f * u, b.getHeight() - 20.0f * u)).withCentre (b.getCentre());
+        return juce::Rectangle<float> (juce::jmin (1360.0f * u, b.getWidth() - 40.0f * u), juce::jmin (780.0f * u, b.getHeight() - 24.0f * u)).withCentre (b.getCentre());
     }
-    std::vector<std::pair<juce::String, juce::String>> lines;
+    juce::Rectangle<float> footArea() const
+    {
+        const float u = ui::unitOf (*this);
+        return cardArea().reduced (34.0f * u, 24.0f * u).removeFromBottom (44.0f * u);
+    }
+    // la bande de ta chaîne actuelle, juste au-dessus du pied
+    juce::Rectangle<float> stripArea() const
+    {
+        const float u = ui::unitOf (*this);
+        const auto f = footArea();
+        return juce::Rectangle<float> (f.getX(), f.getY() - 10.0f * u - 64.0f * u, f.getWidth(), 64.0f * u);
+    }
+    // un bloc de verre discret, ou braise (lit)
+    static void box (juce::Graphics& g, juce::Rectangle<float> r, float u, bool lit = false)
+    {
+        g.setColour (lit ? cEmber.withAlpha (0.16f) : juce::Colours::white.withAlpha (0.03f));
+        g.fillRoundedRectangle (r, 14.0f * u);
+        g.setColour (lit ? cEmber.withAlpha (0.45f) : juce::Colour (255, 220, 225).withAlpha (0.10f));
+        g.drawRoundedRectangle (r.reduced (0.5f), 14.0f * u, 1.0f * u);
+    }
+    static void heading (juce::Graphics& g, juce::Rectangle<float>& r, const juce::String& t, float u)
+    {
+        auto line = r.removeFromTop (22.0f * u);
+        g.setColour (cEmber);
+        g.fillEllipse (juce::Rectangle<float> (6.0f * u, 6.0f * u).withCentre ({ line.getX() + 3.0f * u, line.getCentreY() }));
+        g.setColour (cBone);
+        g.setFont (ui::css (ui::Face::mono, 10.5f * u, 0.14f));
+        g.drawText (t, line.withTrimmedLeft (16.0f * u), juce::Justification::centredLeft, false);
+        r.removeFromTop (8.0f * u);
+    }
+    // le carré d'un module : verre, pictogramme braise
+    static void tile (juce::Graphics& g, juce::Rectangle<float> r, int type, float u, bool lit)
+    {
+        g.setColour (lit ? cEmber.withAlpha (0.18f) : juce::Colours::white.withAlpha (0.045f));
+        g.fillRoundedRectangle (r, 10.0f * u);
+        g.setColour (lit ? cEmber.withAlpha (0.55f) : juce::Colour (255, 220, 225).withAlpha (0.14f));
+        g.drawRoundedRectangle (r.reduced (0.5f), 10.0f * u, 1.0f * u);
+        const float s = r.getHeight() * 0.48f;
+        onirique::ui::drawModuleIcon (g, type, r.withSizeKeepingCentre (s, s), onirique::look::emberPink.interpolatedWith (juce::Colours::white, lit ? 0.6f : 0.35f), 1.6f * u);
+    }
+    // la progression vers une habitude : trois points (3 séances)
+    static void dots (juce::Graphics& g, juce::Point<float> at, int n, float u)
+    {
+        for (int i = 0; i < 3; ++i)
+        {
+            const auto d = juce::Rectangle<float> (7.0f * u, 7.0f * u).withCentre ({ at.x + (float) i * 11.0f * u, at.y });
+            if (i < n) { g.setColour (cEmber); g.fillEllipse (d); }
+            else { g.setColour (juce::Colours::white.withAlpha (0.18f)); g.drawEllipse (d, 1.0f * u); }
+        }
+    }
+
+    void paintAutoMix (juce::Graphics& g, juce::Rectangle<float> r, float u) const
+    {
+        box (g, r, u);
+        r = r.reduced (18.0f * u, 16.0f * u);
+        heading (g, r, utf8 ("APRÈS AUTO MIX"), u);
+        auto roleRow = r.removeFromBottom (54.0f * u);
+        g.setColour (cBone);
+        g.setFont (ui::css (ui::Face::body, 15.0f * u));
+        if (general.any()) g.drawFittedText (general.describe(), r.toNearestInt(), juce::Justification::topLeft, 4, 1.0f);
+        else
+        {
+            g.drawFittedText (totalMix == 0 ? utf8 ("Pas encore de mix suivi. Après AUTO MIX, ce que tu retouches est retenu ici.")
+                                            : utf8 ("Pas encore d'habitude : il faut au moins 3 mix retouchés dans le même sens."),
+                              r.removeFromTop (44.0f * u).toNearestInt(), juce::Justification::topLeft, 2, 1.0f);
+            dots (g, { r.getX() + 4.0f * u, r.getY() + 10.0f * u }, juce::jmin (3, totalMix), u);
+        }
+        // les quatre rôles : leurs mix, et leur habitude propre quand ils en ont une
+        static const char* names[4] { "LEAD", "BACKS", "ADLIBS", "DOUBLES" };
+        const float w = (roleRow.getWidth() - 3.0f * 8.0f * u) / 4.0f;
+        for (int i = 0; i < 4; ++i)
+        {
+            auto c = roleRow.removeFromLeft (w);
+            roleRow.removeFromLeft (8.0f * u);
+            const bool own = roles[(size_t) i].role == i && roles[(size_t) i].any();
+            box (g, c, u, own);
+            g.setColour (own ? juce::Colours::white : cBone);
+            g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.14f));
+            g.drawText (names[i], c.withTrimmedTop (8.0f * u).withHeight (16.0f * u), juce::Justification::centred, false);
+            g.setColour (cHaze);
+            g.setFont (ui::css (ui::Face::mono, 8.5f * u, 0.1f));
+            g.drawText (own ? utf8 ("HABITUDE À LUI") : juce::String (roleCount[(size_t) i]) + " MIX", c.withTrimmedTop (28.0f * u).withHeight (14.0f * u),
+                        juce::Justification::centred, false);
+        }
+    }
+
+    void paintChain (juce::Graphics& g, juce::Rectangle<float> r, float u) const
+    {
+        box (g, r, u);
+        r = r.reduced (18.0f * u, 16.0f * u);
+        heading (g, r, utf8 ("TA CHAÎNE HABITUELLE · CONSTRUITE À LA MAIN"), u);
+        auto often = r.removeFromBottom (54.0f * u);
+        if (chain.any())
+        {
+            // la chaîne, module par module : carré, nom dessous, flèche entre deux
+            const int n = (int) chain.usual.size();
+            const float arrow = 18.0f * u;
+            const float side = juce::jmin (58.0f * u, (r.getWidth() - (float) (n - 1) * arrow) / (float) n - 6.0f * u);
+            float x = r.getX();
+            for (int i = 0; i < n; ++i)
+            {
+                const auto t = juce::Rectangle<float> (x + 3.0f * u, r.getY(), side, side);
+                tile (g, t, chain.usual[(size_t) i], u, true);
+                g.setColour (cBone);
+                g.setFont (ui::css (ui::Face::mono, 8.0f * u, 0.06f));
+                g.drawFittedText (modules::info (chain.usual[(size_t) i]).name, t.withY (t.getBottom() + 4.0f * u).withHeight (24.0f * u).expanded (4.0f * u, 0.0f).toNearestInt(),
+                                  juce::Justification::centredTop, 2, 0.8f);
+                x += side + 6.0f * u;
+                if (i < n - 1)
+                {
+                    g.setColour (cHaze);
+                    juce::Path a;
+                    const float cy = t.getCentreY(), ax = x + 2.0f * u;
+                    a.startNewSubPath (ax, cy); a.lineTo (ax + arrow - 6.0f * u, cy);
+                    a.startNewSubPath (ax + arrow - 10.0f * u, cy - 4.0f * u); a.lineTo (ax + arrow - 6.0f * u, cy); a.lineTo (ax + arrow - 10.0f * u, cy + 4.0f * u);
+                    g.strokePath (a, juce::PathStrokeType (1.4f * u, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+                    x += arrow;
+                }
+            }
+        }
+        else
+        {
+            g.setColour (cBone);
+            g.setFont (ui::css (ui::Face::body, 15.0f * u));
+            g.drawFittedText (chain.chains == 0 ? utf8 ("Pas encore de chaîne construite à la main (sans AUTO MIX). Elles seront retenues ici.")
+                                                : utf8 ("Ta chaîne habituelle apparaîtra après 3 chaînes qui se ressemblent."),
+                              r.removeFromTop (44.0f * u).toNearestInt(), juce::Justification::topLeft, 2, 1.0f);
+            dots (g, { r.getX() + 4.0f * u, r.getY() + 10.0f * u }, juce::jmin (3, chain.chains), u);
+        }
+        // les modules que tu mets le plus : pictogramme, nom, part de tes chaînes
+        if (! chain.often.empty())
+        {
+            const int k = (int) std::min<size_t> (4, chain.often.size());
+            const float w = (often.getWidth() - (float) (k - 1) * 8.0f * u) / (float) k;
+            for (int i = 0; i < k; ++i)
+            {
+                auto c = often.removeFromLeft (w);
+                often.removeFromLeft (8.0f * u);
+                box (g, c, u);
+                const auto ic = c.removeFromLeft (c.getHeight()).reduced (9.0f * u);
+                tile (g, ic, chain.often[(size_t) i].first, u, false);
+                g.setColour (cBone);
+                g.setFont (ui::css (ui::Face::mono, 8.5f * u, 0.06f));
+                g.drawText (modules::info (chain.often[(size_t) i].first).name, c.withTrimmedTop (9.0f * u).withHeight (14.0f * u).withTrimmedRight (40.0f * u), juce::Justification::centredLeft, true);
+                g.setColour (cHaze);
+                g.drawText (juce::String (juce::roundToInt (chain.often[(size_t) i].second * 100.0f)) + " %", c.withTrimmedTop (9.0f * u).withHeight (14.0f * u).withTrimmedRight (12.0f * u),
+                            juce::Justification::centredRight, false);
+                const auto bar = c.withTrimmedTop (30.0f * u).withHeight (5.0f * u).withTrimmedRight (12.0f * u);
+                g.setColour (juce::Colours::white.withAlpha (0.08f));
+                g.fillRoundedRectangle (bar, 2.5f * u);
+                g.setColour (cEmber);
+                g.fillRoundedRectangle (bar.withWidth (juce::jmax (3.0f * u, bar.getWidth() * chain.often[(size_t) i].second)), 2.5f * u);
+            }
+        }
+    }
+
+    void paintModules (juce::Graphics& g, juce::Rectangle<float> r, float u) const
+    {
+        box (g, r, u);
+        r = r.reduced (18.0f * u, 16.0f * u);
+        heading (g, r, utf8 ("TES MODULES · RÉGLÉS À LA MAIN"), u);
+        if (mods.empty())
+        {
+            g.setColour (cBone);
+            g.setFont (ui::css (ui::Face::body, 15.0f * u));
+            g.drawFittedText (utf8 ("Aucun module réglé à la main pour l'instant. Après 3 séances, VOCALBOX te propose tes réglages habituels quand tu ajoutes le module."),
+                              r.toNearestInt(), juce::Justification::topLeft, 2, 1.0f);
+            return;
+        }
+        const int cols = juce::jlimit (2, 4, (int) (r.getWidth() / (250.0f * u)));
+        const float gap = 10.0f * u, cw = (r.getWidth() - (float) (cols - 1) * gap) / (float) cols, ch = 74.0f * u;
+        const int rows = juce::jmax (1, (int) ((r.getHeight() + gap) / (ch + gap)));
+        for (int i = 0; i < (int) mods.size() && i < cols * rows; ++i)
+        {
+            const auto& m = mods[(size_t) i];
+            const bool ready = m.n >= onirique::habits::kMin;
+            auto c = juce::Rectangle<float> (r.getX() + (float) (i % cols) * (cw + gap), r.getY() + (float) (i / cols) * (ch + gap), cw, ch);
+            box (g, c, u, ready);
+            auto in = c.reduced (10.0f * u);
+            tile (g, in.removeFromLeft (in.getHeight()), m.type, u, ready);
+            in.removeFromLeft (12.0f * u);
+            g.setColour (ready ? juce::Colours::white : cBone);
+            g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.08f));
+            g.drawText (modules::info (m.type).name, in.removeFromTop (16.0f * u), juce::Justification::centredLeft, true);
+            g.setColour (ready ? cEmber.interpolatedWith (juce::Colours::white, 0.4f) : cHaze);
+            g.setFont (ui::css (ui::Face::mono, 8.5f * u, 0.1f));
+            g.drawText (ready ? utf8 ("PRÊT · ") + juce::String (m.n) + utf8 (" SÉANCES") : juce::String (m.n) + utf8 (" / 3 SÉANCES"),
+                        in.removeFromTop (14.0f * u), juce::Justification::centredLeft, true);
+            if (! ready) dots (g, { in.getX() + 4.0f * u, in.getY() + 8.0f * u }, m.n, u);
+            else
+            {
+                g.setColour (juce::Colour (0xffd9c6c9));
+                g.setFont (ui::css (ui::Face::mono, 8.5f * u, 0.04f));
+                g.drawFittedText (m.settings.isEmpty() ? utf8 ("RÉGLAGES D'USINE") : m.settings.joinIntoString (utf8 ("   ·   ")), in.toNearestInt(),
+                                  juce::Justification::centredLeft, 2, 0.8f);
+            }
+        }
+    }
+
+    OniriqueVocalBoxAudioProcessor& processor;
+    int totalMix = 0;
+    onirique::habits::MixHabit general;
+    std::array<onirique::habits::MixHabit, 4> roles {};
+    std::array<int, 4> roleCount {};
+    onirique::habits::ChainHabit chain;
+    std::vector<Mod> mods;
+    bool learning = false, armed = false;
     juce::String note;
-    bool armed = false;
     PillButton wipe { utf8 ("EFFACER MES HABITUDES") }, close { utf8 ("FERMER") }, usual { utf8 ("MONTER MA CHAÎNE HABITUELLE") };
+    juce::TextEditor shareText;
+    PillButton saveBtn { utf8 ("ENREGISTRER MA CHAÎNE") }, shareBtn { utf8 ("PARTAGER") }, newMixBtn { utf8 ("NOUVEAU MIX") };
+    juce::String shareNote, lastSaved;
+    std::unique_ptr<juce::FileChooser> chooser;
+};
+
+/*  LES CHAÎNES DE LA COMMUNAUTÉ (bouton CHAÎNES, en haut à droite) : la bibliothèque des chaînes partagées par les
+    utilisateurs, cherchées par leur nom (« damso », « drill sombre ») ; CHARGER monte la chaîne dans le plugin. Une simple
+    lecture du serveur, pour tous ; partager la sienne se fait dans MON PROFIL (ONR Neural Learning allumé). */
+class LibraryCard final : public juce::Component, private juce::Timer
+{
+public:
+    explicit LibraryCard (OniriqueVocalBoxAudioProcessor& p) : processor (p)
+    {
+        field.setMultiLine (false);
+        field.setReturnKeyStartsNewLine (false);
+        field.setColour (juce::TextEditor::backgroundColourId, juce::Colours::transparentBlack);
+        field.setColour (juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
+        field.setColour (juce::TextEditor::focusedOutlineColourId, juce::Colours::transparentBlack);
+        field.setColour (juce::TextEditor::textColourId, cBone);
+        field.setColour (juce::TextEditor::highlightColourId, cEmber.withAlpha (0.35f));
+        field.setColour (juce::CaretComponent::caretColourId, cEmber);
+        field.setTextToShowWhenEmpty (utf8 ("Cherche une chaîne : damso, drill sombre, voix R&B…"), cHaze);
+        field.onReturnKey = [this] { search(); };
+        field.onTextChange = [this] { startTimer (450); };   // la recherche part quand on s'arrête de taper
+        go.onClick = [this] { search(); };
+        close.lit = false;
+        close.onClick = [this] { setVisible (false); if (onClose) onClose(); };
+        prev.lit = false; next.lit = false;
+        prev.onClick = [this] { offset = juce::jmax (0, offset - kRows); layoutRows(); repaint(); };
+        next.onClick = [this] { if (offset + kRows < (int) results.size()) offset += kRows; layoutRows(); repaint(); };
+        addAndMakeVisible (field);
+        addAndMakeVisible (go);
+        addAndMakeVisible (close);
+        addChildComponent (prev);
+        addChildComponent (next);
+        for (int i = 0; i < kRows; ++i)
+        {
+            auto& b = load[(size_t) i];
+            b.onClick = [this, i] { pick (offset + i); };
+            addChildComponent (b);
+        }
+    }
+    std::function<void()> onClose;
+
+    void visibilityChanged() override
+    {
+        if (! isVisible()) return;
+        note.clear();
+        if (results.empty()) search();
+        field.grabKeyboardFocus();
+    }
+
+    void resized() override
+    {
+        const float u = ui::unitOf (*this);
+        const auto bar = barArea();
+        const float gw = go.idealWidth();
+        go.setBounds (juce::Rectangle<float> (bar.getRight() - 8.0f * u - gw, bar.getY() + 8.0f * u, gw, bar.getHeight() - 16.0f * u).toNearestInt());
+        field.setBounds (bar.withTrimmedLeft (50.0f * u).withRight ((float) go.getX() - 12.0f * u).reduced (0.0f, 12.0f * u).toNearestInt());
+        field.setFont (ui::css (ui::Face::body, 16.0f * u));
+        field.applyFontToAllText (ui::css (ui::Face::body, 16.0f * u));
+        field.setIndents (0, juce::roundToInt (std::max (0.0f, ((float) field.getHeight() - 16.0f * u * 1.25f) * 0.5f)));
+        auto f = footArea();
+        const float cw = close.idealWidth();
+        close.setBounds (f.removeFromRight (cw).withSizeKeepingCentre (cw, 38.0f * u).toNearestInt());
+        f.removeFromRight (10.0f * u);
+        const float nw = next.idealWidth(), pw = prev.idealWidth();
+        next.setBounds (f.removeFromRight (nw).withSizeKeepingCentre (nw, 38.0f * u).toNearestInt());
+        f.removeFromRight (10.0f * u);
+        prev.setBounds (f.removeFromRight (pw).withSizeKeepingCentre (pw, 38.0f * u).toNearestInt());
+        layoutRows();
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        const float u = ui::unitOf (*this);
+        g.fillAll (juce::Colour (0xff0b0709).withAlpha (0.78f));
+        const auto card = cardArea();
+        ui::softGlowRect (g, card, 24.0f * u, cEmber.withAlpha (0.12f), 40.0f * u);
+        g.setColour (juce::Colour (0xff120c0e).withAlpha (0.97f));
+        g.fillRoundedRectangle (card, 24.0f * u);
+        ui::drawDemoGlass (g, card, 24.0f * u, u, true);
+        auto r = card.reduced (34.0f * u, 28.0f * u);
+        g.setColour (cBone);
+        g.setFont (ui::css (ui::Face::display, 26.0f * u, 0.01f));
+        g.drawText (utf8 ("Chaînes de la communauté"), r.removeFromTop (36.0f * u), juce::Justification::centredLeft, false);
+        g.setColour (cHaze);
+        g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.14f));
+        g.drawText (utf8 ("LES CHAÎNES DE VOIX PARTAGÉES PAR LES UTILISATEURS · LES PLUS UTILISÉES D'ABORD"), r.removeFromTop (18.0f * u), juce::Justification::centredLeft, false);
+
+        // la barre de recherche : gélule de verre, étoile braise
+        const auto bar = barArea();
+        juce::Path pill; pill.addRoundedRectangle (bar, bar.getHeight() * 0.5f);
+        ui::softGlow (g, pill, cEmber.withAlpha (field.hasKeyboardFocus (true) ? 0.28f : 0.14f), 22.0f * u);
+        g.setColour (juce::Colour (0xff120d0f).withAlpha (0.95f));
+        g.fillPath (pill);
+        ui::drawDemoGlass (g, bar, bar.getHeight() * 0.5f, u, false);
+        g.setColour (cEmber);
+        g.fillPath (ui::starPath ({ bar.getX() + 27.0f * u, bar.getCentreY() }, 8.0f * u));
+
+        // les résultats
+        const auto list = listArea();
+        if (busy || results.empty())
+        {
+            g.setColour (cHaze);
+            g.setFont (ui::css (ui::Face::body, 15.0f * u));
+            g.drawFittedText (busy ? utf8 ("Recherche…") : note.isNotEmpty() ? note
+                              : utf8 ("Aucune chaîne pour l'instant. Partage la tienne depuis MON PROFIL : elle apparaîtra ici pour tout le monde."),
+                              list.withHeight (60.0f * u).toNearestInt(), juce::Justification::centred, 2, 1.0f);
+        }
+        for (int i = 0; i < kRows && offset + i < (int) results.size(); ++i) paintRow (g, rowArea (i), results[(size_t) (offset + i)], u);
+
+        // le pied : où partager la sienne ; la page
+        g.setColour (cHaze);
+        g.setFont (ui::css (ui::Face::body, 13.0f * u));
+        const float right = (float) (prev.isVisible() ? prev.getX() : close.getX()) - 18.0f * u;
+        g.drawFittedText (note.isNotEmpty() && ! results.empty() ? note
+                          : utf8 ("Pour partager la tienne : MON PROFIL → TA CHAÎNE ACTUELLE → donne-lui un nom → PARTAGER → À LA COMMUNAUTÉ."),
+                          footArea().withRight (right).toNearestInt(), juce::Justification::centredLeft, 2, 1.0f);
+    }
+    void mouseDown (const juce::MouseEvent& e) override { if (! cardArea().contains (e.position)) close.onClick(); }
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails& w) override
+    {
+        if (w.deltaY < 0 && next.isVisible()) next.onClick();
+        else if (w.deltaY > 0 && prev.isVisible()) prev.onClick();
+    }
+
+private:
+    static constexpr int kRows = 6;
+    struct Hit { int id = 0; juce::String name; juce::StringArray artists; int role = 0, uses = 0; bool official = false; std::vector<int> types; juce::var chain; };
+
+    juce::Rectangle<float> cardArea() const
+    {
+        const float u = ui::unitOf (*this);
+        const auto b = getLocalBounds().toFloat();
+        return juce::Rectangle<float> (juce::jmin (1360.0f * u, b.getWidth() - 40.0f * u), juce::jmin (780.0f * u, b.getHeight() - 24.0f * u)).withCentre (b.getCentre());
+    }
+    juce::Rectangle<float> barArea() const
+    {
+        const float u = ui::unitOf (*this);
+        return cardArea().reduced (34.0f * u, 28.0f * u).withTrimmedTop (70.0f * u).withHeight (58.0f * u);
+    }
+    juce::Rectangle<float> footArea() const
+    {
+        const float u = ui::unitOf (*this);
+        return cardArea().reduced (34.0f * u, 24.0f * u).removeFromBottom (44.0f * u);
+    }
+    juce::Rectangle<float> listArea() const
+    {
+        const float u = ui::unitOf (*this);
+        const auto top = barArea().getBottom() + 18.0f * u;
+        return juce::Rectangle<float> (barArea().getX(), top, barArea().getWidth(), footArea().getY() - 14.0f * u - top);
+    }
+    juce::Rectangle<float> rowArea (int i) const
+    {
+        const float u = ui::unitOf (*this);
+        const auto l = listArea();
+        const float h = juce::jmin (78.0f * u, (l.getHeight() - (float) (kRows - 1) * 10.0f * u) / (float) kRows);
+        return { l.getX(), l.getY() + (float) i * (h + 10.0f * u), l.getWidth(), h };
+    }
+    void layoutRows()
+    {
+        const float u = ui::unitOf (*this);
+        for (int i = 0; i < kRows; ++i)
+        {
+            auto& b = load[(size_t) i];
+            const bool on = ! busy && offset + i < (int) results.size();
+            b.setVisible (on);
+            if (! on) continue;
+            const auto r = rowArea (i);
+            const float w = b.idealWidth();
+            b.setBounds (juce::Rectangle<float> (r.getRight() - 16.0f * u - w, r.getCentreY() - 19.0f * u, w, 38.0f * u).toNearestInt());
+        }
+        prev.setVisible (! busy && offset > 0);
+        next.setVisible (! busy && offset + kRows < (int) results.size());
+    }
+    void paintRow (juce::Graphics& g, juce::Rectangle<float> r, const Hit& h, float u) const
+    {
+        g.setColour (juce::Colours::white.withAlpha (0.03f));
+        g.fillRoundedRectangle (r, 14.0f * u);
+        g.setColour (juce::Colour (255, 220, 225).withAlpha (0.10f));
+        g.drawRoundedRectangle (r.reduced (0.5f), 14.0f * u, 1.0f * u);
+        auto in = r.reduced (18.0f * u, 10.0f * u);
+        in.removeFromRight (load[0].idealWidth() + 16.0f * u);
+        // le nom, puis l'artiste, le rôle, les utilisations
+        auto text = in.removeFromLeft (juce::jmin (420.0f * u, in.getWidth() * 0.42f));
+        g.setColour (cBone);
+        g.setFont (ui::css (ui::Face::body, 17.0f * u));
+        g.drawText (h.name, text.withHeight (text.getHeight() * 0.55f), juce::Justification::bottomLeft, true);
+        static const char* roles[4] { "LEAD", "BACKS", "ADLIBS", "DOUBLES" };
+        juce::StringArray meta;
+        if (! h.artists.isEmpty()) meta.add (h.artists.joinIntoString (", ").toUpperCase());
+        meta.add (roles[juce::jlimit (0, 3, h.role)]);
+        meta.add (juce::String (h.uses) + (h.uses > 1 ? utf8 (" UTILISATIONS") : utf8 (" UTILISATION")));
+        // le tag : OFFICIELLE (marquée par les fondateurs d'ONIRIQUE, en braise) ou UTILISATEUR
+        auto line = text.withTrimmedTop (text.getHeight() * 0.6f).withHeight (16.0f * u);
+        {
+            const auto label = h.official ? utf8 ("OFFICIELLE") : utf8 ("UTILISATEUR");
+            g.setFont (ui::css (ui::Face::mono, 8.5f * u, 0.14f));
+            const float tw = ui::textWidth (ui::css (ui::Face::mono, 8.5f * u, 0.14f), label) + 16.0f * u;
+            const auto tag = line.removeFromLeft (tw).withSizeKeepingCentre (tw, 16.0f * u);
+            line.removeFromLeft (10.0f * u);
+            if (h.official)
+            {
+                g.setColour (cEmber.withAlpha (0.85f));
+                g.fillRoundedRectangle (tag, 8.0f * u);
+                g.setColour (juce::Colours::white);
+            }
+            else
+            {
+                g.setColour (juce::Colours::white.withAlpha (0.07f));
+                g.fillRoundedRectangle (tag, 8.0f * u);
+                g.setColour (juce::Colour (255, 220, 225).withAlpha (0.18f));
+                g.drawRoundedRectangle (tag.reduced (0.5f), 8.0f * u, 1.0f * u);
+            }
+            g.setColour (h.official ? juce::Colours::white : cHaze);
+            g.drawText (label, tag, juce::Justification::centred, false);
+        }
+        g.setColour (cHaze);
+        g.setFont (ui::css (ui::Face::mono, 9.0f * u, 0.12f));
+        g.drawText (meta.joinIntoString (utf8 ("  ·  ")), line, juce::Justification::centredLeft, true);
+        // la chaîne : les pictogrammes de ses modules, dans l'ordre
+        const float side = juce::jmin (in.getHeight(), 44.0f * u), gap = 6.0f * u;
+        float x = in.getX() + 10.0f * u;
+        for (size_t k = 0; k < h.types.size(); ++k)
+        {
+            if (x + side > in.getRight()) { g.setColour (cHaze); g.drawText ("+" + juce::String ((int) (h.types.size() - k)), juce::Rectangle<float> (x, in.getY(), 40.0f * u, in.getHeight()), juce::Justification::centredLeft, false); break; }
+            const auto t = juce::Rectangle<float> (x, in.getCentreY() - side * 0.5f, side, side);
+            g.setColour (juce::Colours::white.withAlpha (0.045f));
+            g.fillRoundedRectangle (t, 9.0f * u);
+            g.setColour (juce::Colour (255, 220, 225).withAlpha (0.14f));
+            g.drawRoundedRectangle (t.reduced (0.5f), 9.0f * u, 1.0f * u);
+            onirique::ui::drawModuleIcon (g, h.types[k], t.withSizeKeepingCentre (side * 0.5f, side * 0.5f), onirique::look::emberPink.interpolatedWith (juce::Colours::white, 0.4f), 1.5f * u);
+            x += side + gap;
+        }
+    }
+
+    void timerCallback() override { stopTimer(); search(); }
+    void search()
+    {
+        stopTimer();
+        const auto q = field.getText().trim();
+        const int ticket = ++searches;
+        busy = true;
+        offset = 0;
+        note.clear();
+        layoutRows();
+        repaint();
+        juce::Component::SafePointer<LibraryCard> safe (this);
+        juce::Thread::launch ([safe, q, ticket]
+        {
+            const auto r = onirique::learning::searchChains (q);
+            juce::MessageManager::callAsync ([safe, r, q, ticket]
+            {
+                if (safe == nullptr || ticket != safe->searches) return;   // une recherche plus récente est partie
+                safe->busy = false;
+                safe->results.clear();
+                if (auto* a = r["chains"].getArray())
+                    for (const auto& c : *a)
+                    {
+                        Hit h;
+                        h.id = (int) c.getProperty ("id", 0);
+                        h.name = c["name"].toString();
+                        if (auto* ar = c["artists"].getArray()) for (const auto& x : *ar) h.artists.add (x.toString());
+                        h.role = (int) c.getProperty ("role", 0);
+                        h.uses = (int) c.getProperty ("uses", 0);
+                        h.official = (bool) c.getProperty ("official", false);
+                        if (auto* ms = c["modules"].getArray())
+                            for (const auto& m : *ms)
+                                for (int t = 0; t < modules::numTypes; ++t)
+                                    if (m["type"].toString().equalsIgnoreCase (modules::info (t).name) && (bool) m.getProperty ("on", true)) { h.types.push_back (t); break; }
+                        h.chain = c;
+                        if (! h.types.empty()) safe->results.push_back (h);
+                    }
+                safe->note = ! r.isObject() ? utf8 ("Le serveur ne répond pas : réessaie plus tard.")
+                           : safe->results.empty() && q.isNotEmpty() ? utf8 ("Aucune chaîne trouvée pour « ") + q + utf8 (" ». Essaie un autre mot, ou partage la tienne depuis MON PROFIL.")
+                           : juce::String();
+                safe->layoutRows();
+                safe->repaint();
+            });
+        });
+    }
+    void pick (int i)
+    {
+        if (i < 0 || i >= (int) results.size()) return;
+        if (processor.loadCommunityChain (results[(size_t) i].chain)) close.onClick();
+        else { note = utf8 ("Cette chaîne n'a pas pu être chargée."); repaint(); }
+    }
+
+    OniriqueVocalBoxAudioProcessor& processor;
+    juce::TextEditor field;
+    PillButton go { utf8 ("CHERCHER") }, close { utf8 ("FERMER") }, prev { utf8 ("PRÉCÉDENTES") }, next { utf8 ("SUIVANTES") };
+    std::array<PillButton, kRows> load { PillButton { utf8 ("CHARGER") }, PillButton { utf8 ("CHARGER") }, PillButton { utf8 ("CHARGER") },
+                                         PillButton { utf8 ("CHARGER") }, PillButton { utf8 ("CHARGER") }, PillButton { utf8 ("CHARGER") } };
+    std::vector<Hit> results;
+    juce::String note;
+    int offset = 0, searches = 0;
+    bool busy = false;
 };
 } // namespace
 
@@ -2885,24 +3557,7 @@ public:
         habitNo.onClick = [this] { nextOffer(); };
         addChildComponent (habitYes);
         addChildComponent (habitNo);
-        profileBtn.lit = false;
-        profileBtn.onClick = [this] { profile.refresh(); profile.setVisible (true); profile.toFront (false); };
-        addAndMakeVisible (profileBtn);
-        addChildComponent (profile);
-        profile.onBuildUsual = [this]
-        {
-            if (! processor.buildUsualChain()) return false;
-            endOffers();
-            understood = true;
-            feedbackText = utf8 ("TA CHAÎNE HABITUELLE EST MONTÉE, AVEC TES RÉGLAGES HABITUELS");
-            resized();
-            repaint();
-            return true;
-        };
         pickOffer();
-       #if ONIRIQUE_UI_TEST
-        if (juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_PROFILE", {}).isNotEmpty()) { profile.refresh(); profile.setVisible (true); }
-       #endif
     }
 
     void tick() override
@@ -2922,12 +3577,6 @@ public:
         field.setFont (ui::css (ui::Face::body, 16.0f * u));
         field.applyFontToAllText (ui::css (ui::Face::body, 16.0f * u));
         feedback = r.removeFromTop ((offer != Offer::none ? 48.0f : 34.0f) * u);
-        {
-            // MON PROFIL, au bout de la ligne ; la proposition (et ses boutons) prend le reste
-            const float pw = profileBtn.idealWidth();
-            profileBtn.setBounds (juce::Rectangle<float> (feedback.getRight() - pw, feedback.getCentreY() - 15.0f * u, pw, 30.0f * u).toNearestInt());
-            feedback.setRight ((float) profileBtn.getX() - 14.0f * u);
-        }
         if (offer != Offer::none)
         {
             auto fb = feedback.reduced (0.0f, 6.0f * u);
@@ -2936,7 +3585,6 @@ public:
             fb.removeFromRight (10.0f * u);
             habitYes.setBounds (fb.removeFromRight (yw).toNearestInt());
         }
-        profile.setBounds (getLocalBounds());
         auto bottom = r.removeFromBottom (116.0f * u);
         r.removeFromBottom (12.0f * u);
         // les quatre macros, grandes, côte à côte
@@ -3177,31 +3825,17 @@ private:
     }
     void shareCommunity()
     {
-        auto* o = new juce::DynamicObject();
-        o->setProperty ("install", onirique::learning::installId());
-        o->setProperty ("version", JucePlugin_VersionString);
-        o->setProperty ("request", processor.lastRequest.substring (0, 300));
-        juce::Array<juce::var> arts;
-        for (const auto& a : processor.lastArtists) arts.add (a);
-        o->setProperty ("artists", arts);
-        o->setProperty ("role", juce::roundToInt (processor.apvts.getRawParameterValue (ids::voiceRole)->load()));
-        o->setProperty ("modules", processor.chainSnapshot());
-        const juce::var payload (o);
         understood = true;
         feedbackText = utf8 ("ENVOI DE TA CHAÎNE À LA COMMUNAUTÉ…");
         repaint();
         juce::Component::SafePointer<MixPage> safe (this);
-        juce::Thread::launch ([payload, safe]
+        shareChainToCommunity (processor, processor.lastRequest, processor.lastArtists, [safe] (bool ok)
         {
-            const bool ok = onirique::learning::postChain (payload);
-            juce::MessageManager::callAsync ([safe, ok]
-            {
-                if (safe == nullptr) return;
-                safe->understood = ok;
-                safe->feedbackText = ok ? utf8 ("MERCI : TA CHAÎNE EST PARTAGÉE, ANONYME. AVEC CELLES DES AUTRES, ELLE POURRA DEVENIR UNE PROPOSITION D'AUTO MIX")
+            if (safe == nullptr) return;
+            safe->understood = ok;
+            safe->feedbackText = ok ? utf8 ("MERCI : TA CHAÎNE EST PARTAGÉE, ANONYME. AVEC CELLES DES AUTRES, ELLE POURRA DEVENIR UNE PROPOSITION D'AUTO MIX")
                                         : utf8 ("LE SERVEUR NE RÉPOND PAS : RÉESSAIE PLUS TARD");
-                safe->repaint();
-            });
+            safe->repaint();
         });
     }
 
@@ -3240,6 +3874,9 @@ private:
     {
         if (offer == Offer::habit) return habit.describe() + utf8 (" Appliquer les réglages qui s'en rapprochent le plus ?");
         if (offer == Offer::voice) return utf8 ("Ta voix ressemble à celle de ") + offerArtist + utf8 (". Essayer sa chaîne, avec la même prise ?");
+        if (offer == Offer::chain && offerChain.hasProperty ("name") && ! offerChain.hasProperty ("artist"))
+            return utf8 ("La communauté a un style de mixage « ") + offerChain["name"].toString() + utf8 (" »")
+                 + (offerChain.hasProperty ("installs") ? utf8 (" (") + offerChain["installs"].toString() + utf8 (" postes)") : juce::String()) + utf8 (". L'essayer ?");
         if (offer == Offer::chain)
             return utf8 ("La communauté a une chaîne pour ") + offerChain["artist"].toString()
                  + (offerChain.hasProperty ("installs") ? utf8 (" (") + offerChain["installs"].toString() + utf8 (" postes)") : juce::String())
@@ -3272,8 +3909,6 @@ private:
 
     onirique::habits::MixHabit habit;
     PillButton habitYes { utf8 ("APPLIQUER") }, habitNo { utf8 ("NON MERCI") };
-    PillButton profileBtn { utf8 ("MON PROFIL") };
-    ProfileCard profile;
     PillButton refineGo, again;
     GlassTabs role;
     std::vector<StarKnob*> macros;
@@ -3287,6 +3922,22 @@ private:
 std::unique_ptr<ModulePanel> createMixPage (OniriqueVocalBoxAudioProcessor& p, std::function<void()> onNewMix)
 {
     return std::make_unique<MixPage> (p, std::move (onNewMix));
+}
+
+std::unique_ptr<juce::Component> createLibraryCard (OniriqueVocalBoxAudioProcessor& p, std::function<void()> onClose)
+{
+    auto c = std::make_unique<LibraryCard> (p);
+    c->onClose = std::move (onClose);
+    return c;
+}
+
+std::unique_ptr<juce::Component> createProfileCard (OniriqueVocalBoxAudioProcessor& p, std::function<void()> onClose, std::function<void()> onNewMix)
+{
+    auto c = std::make_unique<ProfileCard> (p);
+    c->onClose = std::move (onClose);
+    c->onNewMix = std::move (onNewMix);
+    c->onBuildUsual = [&p] { return p.buildUsualChain(); };
+    return c;
 }
 
 //==============================================================================

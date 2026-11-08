@@ -177,7 +177,8 @@ Refine parseRefine (const juce::String& text);
     - modelFeatures : les mesures que le modèle lit (les mêmes que le serveur, brainlearn.js). */
 struct VoiceMatch { juce::String artist; float distance = 99.0f; };
 VoiceMatch nearestVoice (const Profile& source);
-juce::var communityChain (const juce::StringArray& artists);
+juce::var communityChain (const juce::StringArray& artists, const juce::String& request = {});   // ou un style de la communauté nommé dans la demande
+juce::StringArray styleWords (const juce::String& request);   // les mots de style compris (sans les artistes)
 std::array<float, 8> modelFeatures (const Profile&);
 bool applyLearnedModel (Hints&, const Profile&);
 } // namespace onirique::mix

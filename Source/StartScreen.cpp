@@ -590,7 +590,7 @@ void StartScreen::apply()
 void StartScreen::computeOffers()
 {
     nextOfferVoice.clear();
-    nextOfferChain = mix::communityChain (hints.artists);
+    nextOfferChain = mix::communityChain (hints.artists, requestText);
     if (lastProfile.valid && refState.load() != 2 && hints.voiceOf.isEmpty())
     {
         const auto vm = mix::nearestVoice (lastProfile);
@@ -609,7 +609,7 @@ void StartScreen::remix (const juce::String& text)
     mix::applyLearnedModel (hints, lastProfile);
     plan = mix::buildPlan (lastProfile, lastTarget, hints);
     nextOfferVoice.clear();                                  // pas de nouvelle proposition de voix : c'est déjà un essai
-    nextOfferChain = mix::communityChain (hints.artists);
+    nextOfferChain = mix::communityChain (hints.artists, requestText);
     apply();
 }
 
@@ -621,7 +621,8 @@ void StartScreen::applyChain (const juce::var& c)
     mix::Plan p;
     p.inputDb = plan.inputDb;   // le niveau d'entrée de la prise, et les réglages généraux du mix d'avant
     p.globals = plan.globals;
-    const juce::String why = utf8 ("Chaîne de la communauté pour ") + c["artist"].toString()
+    const juce::String why = (c.hasProperty ("artist") ? utf8 ("Chaîne de la communauté pour ") + c["artist"].toString()
+                                                       : utf8 ("Style de mixage de la communauté « ") + c["name"].toString() + utf8 (" »"))
                              + (c.hasProperty ("installs") ? utf8 (" (") + c["installs"].toString() + utf8 (" postes)") : juce::String());
     for (const auto& m : *list)
     {

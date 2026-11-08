@@ -1520,21 +1520,49 @@ VoiceMatch nearestVoice (const Profile& src)
     return best;
 }
 
-juce::var communityChain (const juce::StringArray& artists)
+juce::var communityChain (const juce::StringArray& artists, const juce::String& request)
 {
-    const auto chains = brainCorrections()["chains"];
-    if (! chains.isObject()) return {};
-    for (const auto& name : artists)
-    {
-        const auto c = chains[juce::Identifier (plainText (name).isEmpty() ? juce::String ("_") : plainText (name))];
-        if (c.isObject() && c["modules"].isArray() && c["modules"].getArray()->size() > 0)
+    const auto corr = brainCorrections();
+    // 1. la chaîne de la communauté d'un artiste demandé
+    if (const auto chains = corr["chains"]; chains.isObject())
+        for (const auto& name : artists)
         {
-            auto out = c;
-            if (out.getDynamicObject() != nullptr && ! out.hasProperty ("artist")) out.getDynamicObject()->setProperty ("artist", name);
-            return out;
+            const auto c = chains[juce::Identifier (plainText (name).isEmpty() ? juce::String ("_") : plainText (name))];
+            if (c.isObject() && c["modules"].isArray() && c["modules"].getArray()->size() > 0)
+            {
+                auto out = c;
+                if (out.getDynamicObject() != nullptr && ! out.hasProperty ("artist")) out.getDynamicObject()->setProperty ("artist", name);
+                return out;
+            }
+        }
+    // 2. un STYLE DE MIXAGE de la communauté (des chaînes construites ou partagées par beaucoup de gens, nommé par les
+    //    fondateurs) : tous ses mots sont dans la demande (« drill sombre », « rap fr en avant »)
+    if (auto* styles = corr["styles"].getArray(); styles != nullptr && request.isNotEmpty())
+    {
+        // les mots de la demande, et ceux qu'AUTO MIX y a compris (« aéré » → « aérée »)
+        juce::StringArray words;
+        words.addTokens (plainText (request + " " + styleWords (request).joinIntoString (" ")), " ,;:.!?/()+-\"'", "");
+        words.removeEmptyStrings();
+        for (const auto& s : *styles)
+        {
+            auto* w = s["words"].getArray();
+            if (w == nullptr || w->isEmpty() || ! s["modules"].isArray() || s["modules"].getArray()->isEmpty()) continue;
+            bool all = true;
+            for (const auto& x : *w) all = all && words.contains (plainText (x.toString()));
+            if (all) return s;
         }
     }
     return {};
+}
+
+// les mots de style compris dans une demande (« rap », « sombre », « aérée »…), sans les artistes : ce qui regroupe les chaînes
+// partagées en styles de mixage
+juce::StringArray styleWords (const juce::String& request)
+{
+    juce::StringArray out;
+    for (const auto& w : parseHints (request).understood)
+        if (! w.startsWith (juce::String::fromUTF8 ("façon "))) out.add (w);
+    return out;
 }
 
 std::array<float, 8> modelFeatures (const Profile& p)

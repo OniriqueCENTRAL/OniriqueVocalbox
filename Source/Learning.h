@@ -69,6 +69,24 @@ inline bool postChain (const juce::var& payload)
     return false;
 }
 
+/** LA BIBLIOTHÈQUE DE LA COMMUNAUTÉ (pour tous, une simple lecture) : les chaînes partagées dont le nom contient ces mots,
+ *  les plus utilisées d'abord : {"chains": [{id, name, artists, role, modules, uses}]} ; vide si pas de réponse. */
+inline juce::var searchChains (const juce::String& query)
+{
+    const auto url = juce::URL (juce::String (kServer) + "/api/vocalbox/chains").withParameter ("q", query.substring (0, 80));
+    const auto opts = juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress).withConnectionTimeoutMs (6000);
+    if (auto in = url.createInputStream (opts)) return juce::JSON::parse (in->readEntireStreamAsString());
+    return {};
+}
+/** Une chaîne de la bibliothèque a été chargée : elle remonte dans la liste. */
+inline void chainUsed (int id)
+{
+    const auto url = juce::URL (juce::String (kServer) + "/api/vocalbox/chains/" + juce::String (id) + "/use").withPOSTData ("{}");
+    const auto opts = juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inPostData)
+                          .withConnectionTimeoutMs (6000).withExtraHeaders ("Content-Type: application/json");
+    url.createInputStream (opts);
+}
+
 /** Le dernier cerveau publié (ONR Neural Learning : le fichier livré enrichi par les retours des utilisateurs). Demandé une
  *  fois par jour au plus, à tous (rien n'est envoyé : une simple lecture, comme une mise à jour) ; vide si pas de réponse. */
 inline juce::var fetchBrain()

@@ -131,6 +131,8 @@ public:
     juce::var chainSnapshot() const;
     // MON PROFIL : monte la chaîne habituelle de l'utilisateur (Habits.h), chaque module avec ses réglages habituels s'il en a
     bool buildUsualChain();
+    // LA BIBLIOTHÈQUE : monte une chaîne de la communauté (modules, exemplaires, réglages) à la place de la chaîne actuelle
+    bool loadCommunityChain (const juce::var& chain);
 
 private:
     std::atomic<float>* pBypass = nullptr;
@@ -165,6 +167,7 @@ private:
     bool habitStarted = false;                  // la chaîne trouvée à l'ouverture (projet rouvert) : pas une construction
     onirique::modules::Chain habitStartChain {};
     std::vector<int> habitChainWritten;
+    bool manualChainPending = false;            // une chaîne construite à la main dans cette séance (pour ONR Neural Learning)
     std::atomic<int> compareCount { 0 };        // COMPARER allumé, depuis l'ouverture
     onirique::modules::Chain learnChain {};     // la chaîne montée par AUTO MIX (ce que l'utilisateur en garde)
     int learnCompares = 0;
