@@ -512,6 +512,17 @@ void OniriqueVocalBoxAudioProcessor::setStateInformation (const void* data, int 
                 for (int k = 0; k < kSlots; ++k) setParam (ids::slot[k], c[(size_t) k]);
             }
 
+            // CREATIVE FX séparé en DOUBLER, CHORUS, FLANGER, PHONE (mêmes réglages, même ordre : le son ne change pas)
+            {
+                modules::Chain c {};
+                for (int k = 0; k < kSlots; ++k)
+                    if (const auto* e = findParam (ids::slot[k])) c[(size_t) k] = juce::roundToInt (e->getDoubleAttribute ("value"));
+                if (modules::splitCreative (c,
+                        [&] (const juce::String& id, float def) { const auto* e = findParam (id); return e != nullptr ? (float) e->getDoubleAttribute ("value") : def; },
+                        [&] (const juce::String& id, float v) { setParam (id, v); }))
+                    for (int k = 0; k < kSlots; ++k) setParam (ids::slot[k], c[(size_t) k]);
+            }
+
             auto state = juce::ValueTree::fromXml (*xml);
             // un projet enregistré avec l'ancienne barre : le nom de son preset suit
             if (! state.hasProperty ("preset") && state.hasProperty ("presetName"))

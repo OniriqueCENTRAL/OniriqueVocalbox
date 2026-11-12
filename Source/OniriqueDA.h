@@ -27,11 +27,45 @@ inline const juce::Colour night { 0xff09080A }, deep { 0xff120c0e }, bone { 0xff
 inline const juce::Colour& ember = onirique::look::ember;      // la couleur de l'interface (menu ⋯)
 inline const juce::Colour& pink = onirique::look::emberPink;
 
-/** Une lueur floue et douce autour d'une forme (box-shadow / drop-shadow). */
+/** Une lueur floue et douce autour d'une forme (box-shadow / drop-shadow). Le flou d'une forme est calculé une fois (en blanc,
+    à la résolution de l'écran) et gardé : à chaque image il est seulement teint de la couleur voulue. Même rendu, bien moins
+    de calcul quand l'interface s'anime. Le plugin vide ces flous à la fermeture de son interface (clearGlowCache) : une image
+    ne doit jamais survivre au déchargement du plugin. */
+inline juce::HashMap<juce::String, juce::Image>& glowCacheStore() { static juce::HashMap<juce::String, juce::Image> c; return c; }
+inline void clearGlowCache() { glowCacheStore().clear(); }
 inline void softGlow (juce::Graphics& g, const juce::Path& p, juce::Colour c, float radius, float dy = 0.0f)
 {
     if (c.getAlpha() == 0 || radius < 0.5f || p.isEmpty()) return;
-    juce::DropShadow (c, std::max (1, juce::roundToInt (radius)), { 0, juce::roundToInt (dy) }).drawForPath (g, p);
+    const int rr = std::max (1, juce::roundToInt (radius));
+    const auto b = p.getBounds();
+    const float sc = juce::jlimit (1.0f, 4.0f, g.getInternalContext().getPhysicalPixelScaleFactor());
+    juce::Path local (p);
+    local.applyTransform (juce::AffineTransform::translation (-b.getX(), -b.getY()));
+    const bool soft = dynamic_cast<juce::LowLevelGraphicsSoftwareRenderer*> (&g.getInternalContext()) != nullptr;   // image en mémoire : logicielle
+    const auto tint = c.withAlpha ((juce::uint8) 255);   // floutée dans sa teinte, posée avec son opacité (marche aussi dans un calque)
+    const auto key = local.toString() + "|" + juce::String (rr) + "|" + juce::String (sc, 2) + (soft ? "|s|" : "|n|") + tint.toString();
+    auto& cache = glowCacheStore();   // fil de l'interface seulement
+    const float pad = 2.0f * (float) rr;
+    if (! cache.contains (key))
+    {
+        if (cache.size() > 600) cache.clear();
+        juce::Image img (juce::Image::ARGB, std::max (1, juce::roundToInt ((b.getWidth() + 2.0f * pad) * sc)),
+                         std::max (1, juce::roundToInt ((b.getHeight() + 2.0f * pad) * sc)), true, juce::SoftwareImageType());
+        {
+            juce::Graphics ig (img);
+            ig.addTransform (juce::AffineTransform::scale (sc));
+            juce::Path shifted (local);
+            shifted.applyTransform (juce::AffineTransform::translation (pad, pad));
+            juce::DropShadow (tint, rr, { 0, 0 }).drawForPath (ig, shifted);
+        }
+        if (! soft) img = juce::NativeImageType().convert (img);   // à l'écran : gardée par la carte graphique
+        cache.set (key, img);
+    }
+    const auto img = cache[key];
+    juce::Graphics::ScopedSaveState state (g);
+    g.setOpacity (c.getFloatAlpha());
+    g.drawImage (img, juce::Rectangle<float> (b.getX() - pad, b.getY() - pad + dy, (float) img.getWidth() / sc, (float) img.getHeight() / sc),
+                 juce::RectanglePlacement::stretchToFit, false);
 }
 inline void softGlowRect (juce::Graphics& g, juce::Rectangle<float> r, float corner, juce::Colour c, float radius, float dy = 0.0f)
 {

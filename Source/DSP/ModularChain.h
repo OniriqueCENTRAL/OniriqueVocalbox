@@ -12,6 +12,7 @@
 #include "DeClick.h"
 #include "DeBreath.h"
 #include "DeReverb.h"
+#include "Pitcher.h"     // PITCHER : la voix rejouée par une banque d'harmoniques
 
 namespace onirique
 {
@@ -641,6 +642,39 @@ private:
                        *formant = nullptr, *voice = nullptr, *hard = nullptr, *mix = nullptr;
 };
 
+//------------------------------------------------------------------------------ PITCHER (cadence de l'hôte, sans latence)
+class PitcherM final : public ChainModule
+{
+public:
+    PitcherM (juce::AudioProcessorValueTreeState& s, int k) : ChainModule (s, modules::pitcher, k)
+    {
+        pitch = raw (ids::pchPitch); formant = raw (ids::pchFormant); harm = raw (ids::pchHarmonics); ratio = raw (ids::pchRatio);
+        fm = raw (ids::pchFm); alt = raw (ids::pchAlternator); oct = raw (ids::pchOctave); glide = raw (ids::pchGlide);
+        smear = raw (ids::pchSmear); stereo = raw (ids::pchStereo); detune = raw (ids::pchDetune); snap = raw (ids::pchSnap); mix = raw (ids::pchMix);
+    }
+
+private:
+    fx::Pitcher::Params params() const noexcept
+    {
+        fx::Pitcher::Params p;
+        p.on = true;   // l'interrupteur du module fait déjà le fondu
+        p.pitch = f (pitch); p.formant = f (formant); p.harmonics = f (harm); p.ratio = f (ratio); p.fm = f (fm) * 0.01f;
+        p.alternator = f (alt); p.octave = f (oct); p.glideMs = f (glide); p.smear = f (smear) * 0.01f; p.stereo = f (stereo) * 0.01f;
+        p.detune = f (detune); p.snap = b (snap); p.mix = f (mix) * 0.01f;
+        return p;
+    }
+    void prepareEngine (double rate, int, int maxBlock) override { engine.set (params()); engine.prepare (rate, maxBlock); }
+    void updateEngine (bool, bool) noexcept override { engine.set (params()); }
+    void processEngine (float* const* ch, int numCh, int n) noexcept override { engine.process (ch, numCh, n); }
+    void resetEngine() noexcept override { engine.reset(); }
+    fx::Pitcher engine;
+public:
+    float noteIn() const noexcept { return engine.shownIn(); }
+    float noteOut() const noexcept { return engine.shownOut(); }
+    std::atomic<float> *pitch = nullptr, *formant = nullptr, *harm = nullptr, *ratio = nullptr, *fm = nullptr, *alt = nullptr, *oct = nullptr,
+                       *glide = nullptr, *smear = nullptr, *stereo = nullptr, *detune = nullptr, *snap = nullptr, *mix = nullptr;
+};
+
 //------------------------------------------------------------------------------ DE-CLICK, DE-BREATH, DE-REVERB (cadence de l'hôte)
 class DeClickM final : public ChainModule
 {
@@ -961,6 +995,7 @@ public:
             put (modules::declick, new DeClickM (s, k));
             put (modules::debreath, new DeBreathM (s, k));
             put (modules::dereverb, new DeReverbM (s, k));
+            put (modules::pitcher, new PitcherM (s, k));
             static_cast<CreativeFx*> (module (modules::creative, k))->setParts (module (modules::doubler, k), module (modules::chorus, k),
                                                                               module (modules::flanger, k), module (modules::phone, k));
         }

@@ -1,4 +1,6 @@
 #include "ModulePanels.h"
+#include "PaintProfile.h"
+#include <unordered_map>
 
 using namespace onirique;
 
@@ -88,6 +90,7 @@ void StarKnob::tick()
 
 void StarKnob::paint (juce::Graphics& g)
 {
+    ONIRIQUE_PAINT_SCOPE ("StarKnob");
     const float uu = ui::unitOf (*this);
     const auto k = knobArea();
     const float d = k.getWidth(), u = d / 100.0f;
@@ -404,6 +407,7 @@ void ModulePanel::prune (std::vector<StarKnob*>& ks) const
         case modules::flanger:   keep = { ids::flangerDepth, ids::flangerMix }; break;
         case modules::cl1b:      keep = { ids::cl1bThreshold, ids::cl1bGain, ids::cl1bMix }; break;
         case modules::tuner:     keep = { ids::tuneRetune, ids::tuneHumanize }; break;
+        case modules::pitcher:   keep = { ids::pchPitch, ids::pchFormant, ids::pchMix }; break;
         default: return;
     }
     std::vector<StarKnob*> out;
@@ -527,10 +531,53 @@ void ui::drawDemoGlass (juce::Graphics& g, juce::Rectangle<float> r, float corne
 }
 
 // le .seg de la démo : rayon 10 ; allumé : dégradé braise (.6), liseré rose (.5) et lueur de 18 ; survol : blanc .05
+// les flous gardés : vidés à la fermeture de l'interface (clearGlowCache), une image ne doit jamais survivre au déchargement
+static std::unordered_map<std::string, juce::Image>& glowCacheStore() { static std::unordered_map<std::string, juce::Image> c; return c; }
+void ui::clearGlowCache() { glowCacheStore().clear(); }
+
+/*  Les lueurs douces : un flou recalculé à chaque image coûte cher (des dizaines par image : carrés de la chaîne, LED, mètres,
+    boutons allumés). Chaque forme est floutée UNE fois, dans sa teinte (opaque), à la résolution de l'écran, puis gardée : à
+    chaque image l'image du flou est posée avec la transparence voulue (une simple opacité : elle marche partout, même dans un
+    calque transparent, où « teindre une image » ne marche pas). Les teintes sont peu nombreuses (les braises). Même rendu. */
 void ui::softGlow (juce::Graphics& g, const juce::Path& p, juce::Colour c, float radius, float dy)
 {
     if (c.getAlpha() == 0 || radius < 0.5f) return;
-    juce::DropShadow (c, std::max (1, juce::roundToInt (radius)), { 0, juce::roundToInt (dy) }).drawForPath (g, p);
+    const int rr = std::max (1, juce::roundToInt (radius));
+    const auto b = p.getBounds();
+    if (b.isEmpty()) return;
+    const float sc = juce::jlimit (1.0f, 4.0f, g.getInternalContext().getPhysicalPixelScaleFactor());
+    juce::Path local (p);
+    local.applyTransform (juce::AffineTransform::translation (-b.getX(), -b.getY()));
+    // dessiné à l'écran : une image native (gardée par la carte graphique) ; dans une image en mémoire (capture, potard gardé en
+    // image) : une image logicielle
+    const bool soft = dynamic_cast<juce::LowLevelGraphicsSoftwareRenderer*> (&g.getInternalContext()) != nullptr;
+    const auto tint = c.withAlpha ((juce::uint8) 255);
+    const auto key = (local.toString() + "|" + juce::String (rr) + "|" + juce::String (sc, 2) + (soft ? "|s|" : "|n|") + tint.toString()).toStdString();
+
+    auto& cache = glowCacheStore();   // fil de l'interface seulement ; vidé à la fermeture de l'interface (jamais d'image gardée au déchargement)
+    auto it = cache.find (key);
+    if (it == cache.end())
+    {
+        if (cache.size() > 600) cache.clear();   // des formes qui changent sans arrêt (un glisser) : on repart à zéro
+        const float pad = 2.0f * (float) rr;
+        juce::Image img (juce::Image::ARGB, std::max (1, juce::roundToInt ((b.getWidth() + 2.0f * pad) * sc)),
+                         std::max (1, juce::roundToInt ((b.getHeight() + 2.0f * pad) * sc)), true, juce::SoftwareImageType());
+        {
+            juce::Graphics ig (img);
+            ig.addTransform (juce::AffineTransform::scale (sc));
+            juce::Path shifted (local);
+            shifted.applyTransform (juce::AffineTransform::translation (pad, pad));
+            juce::DropShadow (tint, rr, { 0, 0 }).drawForPath (ig, shifted);
+        }
+        if (! soft) img = ui::gpuImage (img);   // gardée par la carte graphique : elle ne lui est plus renvoyée à chaque image
+        it = cache.emplace (key, img).first;
+    }
+    const auto& img = it->second;
+    const float pad = 2.0f * (float) rr;
+    juce::Graphics::ScopedSaveState state (g);
+    g.setOpacity (c.getFloatAlpha());
+    g.drawImage (img, juce::Rectangle<float> (b.getX() - pad, b.getY() - pad + dy, (float) img.getWidth() / sc, (float) img.getHeight() / sc),
+                 juce::RectanglePlacement::stretchToFit, false);
 }
 void ui::softGlowRect (juce::Graphics& g, juce::Rectangle<float> r, float corner, juce::Colour c, float radius, float dy)
 {

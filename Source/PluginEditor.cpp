@@ -1,4 +1,6 @@
 #include "PluginEditor.h"
+#include "PaintProfile.h"
+#include "OniriqueDA.h"
 #include "Learning.h"
 #include "Habits.h"
 #include "OniriqueWindowSize.h"
@@ -67,6 +69,7 @@ const char* iconPath (int type)
         "M2 12h6l1.5-6 1.5 12 1.5-6h9.5M17 5l3 3M20 5l-3 3",                                                  // de-click (le clic barré)
         "M3 9c3 0 4-2 7-2s4 2 7 2h4M3 15c3 0 4-2 7-2s3 1 5 1",                                                // de-breath (le souffle)
         "M3 19a9 9 0 0 1 18 0M8 19a4 4 0 0 1 8 0M4 4l16 16",                                                  // de-reverb (la réverbe barrée)
+        "M2 16c2.5-5 5-5 7.5 0s5 5 7.5 0M19 3v9M16 6l3-3 3 3",                                                // pitcher (la voix et la flèche qui la monte)
     };
     return p[juce::jlimit (0, (int) modules::numTypes - 1, type)];
 }
@@ -241,26 +244,27 @@ void ChainStrip::tick()
         moved |= ui::approach (t.hover, i == hoverTile ? 1.0f : 0.0f, 0.16f);
         moved |= ui::approach (t.sheen, i == hoverTile ? 1.0f : 0.0f, 0.07f);
     }
-    // les mini-mètres : ce que chaque module retire en ce moment (montée rapide, retombée douce) ; seul le carré qui bouge est
-    // redessiné (pendant la lecture, toute la rangée de verre à chaque image coûterait cher)
-    juce::Rectangle<int> meterDirty;
-    for (auto& t : tiles)
-    {
-        float red = 0.0f;
-        if (auto* m = processor.module (t.code)) red = isOn (t.code) ? m->activityDb() : 0.0f;
-        const float before = t.meter;
-        t.meter = red > t.meter ? t.meter + 0.6f * (red - t.meter) : t.meter + 0.12f * (red - t.meter);
-        if (t.meter < 0.05f) t.meter = 0.0f;
-        if (std::abs (t.meter - before) > 0.03f || (before > 0.0f) != (t.meter > 0.0f))
-            meterDirty = meterDirty.getUnion (tileRect (t.x).expanded (6.0f * u).getSmallestIntegerContainer());
-    }
-    if (! moved && ! meterDirty.isEmpty()) repaint (meterDirty);
+    // les mini-mètres : ce que chaque module retire en ce moment (montée rapide, retombée douce). 30 images par seconde suffisent
+    // à un mètre, et chaque carré qui bouge est redessiné seul : jamais toute la rangée de verre (avec beaucoup de modules, la
+    // zone qui les englobe couvrirait toute la bande à chaque image)
+    if ((++meterFrame & 1) == 0)
+        for (auto& t : tiles)
+        {
+            float red = 0.0f;
+            if (auto* m = processor.module (t.code)) red = isOn (t.code) ? m->activityDb() : 0.0f;
+            const float before = t.meter;
+            t.meter = red > t.meter ? t.meter + 0.6f * (red - t.meter) : t.meter + 0.12f * (red - t.meter);
+            if (t.meter < 0.05f) t.meter = 0.0f;
+            if (! moved && (std::abs (t.meter - before) > 0.03f || (before > 0.0f) != (t.meter > 0.0f)))
+                repaint (tileRect (t.x).expanded (6.0f * u).getSmallestIntegerContainer());
+        }
     moved |= ui::approach (plusGlow, plusHover ? 1.0f : 0.0f, 0.16f);
     if (moved) repaint();
 }
 
 void ChainStrip::paint (juce::Graphics& g)
 {
+    ONIRIQUE_PAINT_SCOPE ("ChainStrip");
     const float u = ui::unitOf (*this);
 
     // les flèches entre les carrés (chevron de 14, trait #6e5a5e)
@@ -268,7 +272,8 @@ void ChainStrip::paint (juce::Graphics& g)
     {
         const auto a = tileRect (slotX (i));
         const auto box = juce::Rectangle<float> (14.0f * u, 14.0f * u).withCentre ({ a.getRight() + 19.0f * u, a.getCentreY() });
-        auto p = juce::Drawable::parseSVGPath ("M9 6l6 6-6 6");
+        static const juce::Path chevron = juce::Drawable::parseSVGPath ("M9 6l6 6-6 6");   // lu une fois
+        auto p = chevron;
         p.applyTransform (juce::AffineTransform::scale (box.getWidth() / 24.0f).translated (box.getX(), box.getY()));
         g.setColour (juce::Colour (0xff6e5a5e));
         g.strokePath (p, juce::PathStrokeType (2.4f * box.getWidth() / 24.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
@@ -284,12 +289,16 @@ void ChainStrip::paint (juce::Graphics& g)
         const int type = modules::typeOf (t.code);
         const auto& inf = modules::info (type);
         const float alpha = (lifted ? 0.9f : 1.0f) * (0.42f + 0.58f * t.on);
+        // hors de la zone à redessiner (un seul mini-mètre a bougé, par exemple) : rien à dessiner pour ce carré
+        if (! g.getClipBounds().toFloat().intersects (r.expanded (40.0f * u))) return;
 
         // sélection : lueur braise de 36 autour, ombre portée
         if (t.sel > 0.01f)
             ui::softGlowRect (g, r, rad, onirique::look::ember.withAlpha (0.55f * t.sel), 36.0f * u);
         juce::Graphics::ScopedSaveState state (g);
-        g.beginTransparencyLayer (alpha);
+        // un calque transparent coûte cher : seulement pour un carré estompé (module coupé, carré soulevé)
+        const bool layer = alpha < 0.999f;
+        if (layer) g.beginTransparencyLayer (alpha);
         g.setColour (juce::Colour (0xff100b0d));
         g.fillRoundedRectangle (r, rad);
         ui::drawDemoGlass (g, r, rad, u, true);
@@ -385,7 +394,7 @@ void ChainStrip::paint (juce::Graphics& g)
         g.setFont (ui::css (ui::Face::mono, 9.0f * u, 0.12f));
         g.drawText (modules::groupName (inf.group), juce::Rectangle<float> (r.getX() + pad, subY, r.getWidth() - 2.0f * pad, subF.getHeight() + 2.0f),
                     juce::Justification::centredLeft, false);
-        g.endTransparencyLayer();
+        if (layer) g.endTransparencyLayer();
     };
 
     for (int i = 0; i < (int) tiles.size(); ++i)
@@ -776,6 +785,7 @@ void GainStrip::tick()
 
 void GainStrip::paint (juce::Graphics& g)
 {
+    ONIRIQUE_PAINT_SCOPE ("GainStrip (IN / OUT)");
     const float u = ui::unitOf (*this);
     const auto r = getLocalBounds().toFloat();
     ui::drawDemoGlass (g, r, 22.0f * u, u, true);
@@ -1162,15 +1172,29 @@ void VocalBoxView::resized()
 
 void VocalBoxView::timerCallback()
 {
-    strip.tick();
+    // LA FENÊTRE BOUGE (on la déplace dans le DAW) : les animations se mettent en pause le temps du déplacement, puis reprennent
+    // un quart de seconde après ; le fil de l'interface reste au DAW, qui déplace la fenêtre sans à-coup (le son ne s'arrête pas)
+    {
+        const auto pos = getScreenPosition();
+        const double now = juce::Time::getMillisecondCounterHiRes();
+        if (pos != lastScreenPos) { lastScreenPos = pos; movingUntil = now + 250.0; }
+        if (now < movingUntil) return;
+    }
+   #if ONIRIQUE_UI_TEST
+    // essais de performance : ONIRIQUE_UI_NOTICK=strip,panel,io,start (parties de l'interface qui ne s'animent plus)
+    static const auto noTick = juce::StringArray::fromTokens (juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_NOTICK", {}), ",", "");
+   #else
+    static const juce::StringArray noTick;
+   #endif
+    ONIRIQUE_PAINT_SCOPE ("timerCallback (calculs, sans dessin)");
+    if (! noTick.contains ("strip")) strip.tick();
     {
         // l'écran de départ tant que la chaîne est vide
         const bool empty = ! modules::valid (selected);
         if (start.isVisible() != empty) start.setVisible (empty);
         if (empty) start.tick();
     }
-    inStrip.tick();
-    outStrip.tick();
+    if (! noTick.contains ("io")) { inStrip.tick(); outStrip.tick(); }
     autoGain.tick();
     oversampling.tick();
     picker.tick();
@@ -1185,7 +1209,7 @@ void VocalBoxView::timerCallback()
         const bool cmp = processor.isComparing();
         compare.setState (cmp ? juce::String::fromUTF8 ("AVANT · MÊME VOLUME") : juce::String ("COMPARER"), cmp);
     }
-    if (panel != nullptr) panel->tick();
+    if (panel != nullptr && ! noTick.contains ("panel")) panel->tick();
     {
         const bool ask = modules::valid (selected) && processor.learnPending() && onirique::learning::enabled();
         if (rate.isVisible() != ask) rate.setVisible (ask);
@@ -1219,11 +1243,13 @@ void VocalBoxView::mouseMove (const juce::MouseEvent& e)
 
 void VocalBoxView::paint (juce::Graphics& g)
 {
+    ONIRIQUE_PAINT_SCOPE ("VocalBoxView (fond)");
     const float u = ui::unitOf (*this);
     if (! backdrop.isValid() || backdrop.getWidth() != getWidth() || backdrop.getHeight() != getHeight())
     {
         // le fond de la démo : #09080A et trois taches floues (flou de 90) ; la démo les place sous son en-tête de 64
         backdrop = juce::Image (juce::Image::RGB, std::max (1, getWidth()), std::max (1, getHeight()), true, juce::SoftwareImageType());
+        backdropNative = false;
         juce::Graphics bg (backdrop);
         bg.fillAll (ui::night);
         auto blob = [&] (float x, float y, float w, float h, juce::Colour c)
@@ -1240,6 +1266,8 @@ void VocalBoxView::paint (juce::Graphics& g)
         blob (1600.0f + 200.0f - 640.0f, 1000.0f + 220.0f - 520.0f, 640.0f, 520.0f, onirique::look::emberDeep.withAlpha (0.45f));
         blob (640.0f, 380.0f, 420.0f, 320.0f, onirique::look::emberLit.withAlpha (0.10f));
     }
+    // une image native (gardée par la carte graphique) : sinon le fond entier repart vers elle à chaque image
+    if (backdrop.isValid() && ! backdropNative) { backdrop = ui::gpuImage (backdrop); backdropNative = true; }
     g.drawImageAt (backdrop, 0, 0);
 
     // le libellé de la chaîne et le nombre de modules
@@ -1432,6 +1460,9 @@ OniriqueVocalBoxAudioProcessorEditor::~OniriqueVocalBoxAudioProcessorEditor()
 {
     stopTimer();
     window::rememberOnThisComputer ("ONIRIQUE VOCALBOX", getWidth(), getHeight());
+    // les flous gardés par les lueurs : vidés ici (des images gardées jusqu'au déchargement du plugin le bloqueraient)
+    onirique::ui::clearGlowCache();
+    onirique::da::clearGlowCache();
 }
 
 void OniriqueVocalBoxAudioProcessorEditor::resized()

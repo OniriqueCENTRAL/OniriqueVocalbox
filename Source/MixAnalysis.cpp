@@ -1402,21 +1402,25 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
         }
     }
 
-    // ---- 12. CREATIVE FX : effets demandés
+    // ---- 12. EFFETS demandés : DOUBLER, CHORUS, FLANGER, PHONE, chacun son module (l'ordre de l'ancien CREATIVE FX)
     if (h.phone > 0.0f || h.doubler > 0.0f || h.chorus > 0.0f || h.flanger > 0.0f)
     {
-        Setting s { modules::creative, 0, {} };
-        put (s, ids::doublerOn, h.doubler > 0.0f ? 1.0f : 0.0f); put (s, ids::doublerAmount, 30.0f + 40.0f * h.doubler);
-        put (s, ids::chorusOn, h.chorus > 0.0f ? 1.0f : 0.0f); put (s, ids::chorusMix, 20.0f + 25.0f * h.chorus);
-        put (s, ids::flangerOn, h.flanger > 0.0f ? 1.0f : 0.0f); put (s, ids::flangerMix, 25.0f + 25.0f * h.flanger);
-        put (s, ids::phoneOn, h.phone > 0.0f ? 1.0f : 0.0f); put (s, ids::phoneAmount, 40.0f + 40.0f * h.phone);
-        plan.modules.push_back (tag (s));
+        auto fxModule = [&] (int type, const char* id, float v)
+        {
+            Setting s { type, 0, {} };
+            put (s, id, v);
+            plan.modules.push_back (tag (s));
+        };
+        if (h.doubler > 0.0f) fxModule (modules::doubler, ids::doublerAmount, 30.0f + 40.0f * h.doubler);
+        if (h.chorus > 0.0f)  fxModule (modules::chorus, ids::chorusMix, 20.0f + 25.0f * h.chorus);
+        if (h.flanger > 0.0f) fxModule (modules::flanger, ids::flangerMix, 25.0f + 25.0f * h.flanger);
+        if (h.phone > 0.0f)   fxModule (modules::phone, ids::phoneAmount, 40.0f + 40.0f * h.phone);
         juce::StringArray fx;
         if (h.doubler > 0.0f) fx.add ("doubleur");
         if (h.chorus > 0.0f) fx.add ("chorus");
         if (h.flanger > 0.0f) fx.add ("flanger");
         if (h.phone > 0.0f) fx.add (u8 ("téléphone"));
-        rep.add ("Creative FX : " + fx.joinIntoString (", "));
+        rep.add (u8 ("Effets : ") + fx.joinIntoString (", "));
     }
 
     // LE POURQUOI de chaque module : les lignes du compte rendu écrites entre son arrivée et celle du module suivant (le 1176 et

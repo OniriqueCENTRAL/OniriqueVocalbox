@@ -139,12 +139,19 @@ inline std::vector<PresetBank::Stock> legacyStockPresets()
     des interrupteurs, et les nouveaux interrupteurs reprennent ce qu'on entendait. Le son ne change pas. */
 inline void upgradeSnapshot (juce::ValueTree& s)
 {
-    if (s.hasProperty (ids::slot[0]))
-        return;
-    const auto chain = modules::legacyChain ([&s] (const char* id, float def) { return s.hasProperty (id) ? (float) s[id] : def; },
-                                             [&s] (const char* id, float v) { s.setProperty (id, v, nullptr); });
-    for (int k = 0; k < kSlots; ++k)
-        s.setProperty (ids::slot[k], chain[(size_t) k], nullptr);
+    if (! s.hasProperty (ids::slot[0]))
+    {
+        const auto chain = modules::legacyChain ([&s] (const char* id, float def) { return s.hasProperty (id) ? (float) s[id] : def; },
+                                                 [&s] (const char* id, float v) { s.setProperty (id, v, nullptr); });
+        for (int k = 0; k < kSlots; ++k)
+            s.setProperty (ids::slot[k], chain[(size_t) k], nullptr);
+    }
+    // CREATIVE FX séparé en DOUBLER, CHORUS, FLANGER, PHONE (mêmes réglages : le son ne change pas)
+    modules::Chain c {};
+    for (int k = 0; k < kSlots; ++k) c[(size_t) k] = s.hasProperty (ids::slot[k]) ? juce::roundToInt ((float) s[ids::slot[k]]) : 0;
+    if (modules::splitCreative (c, [&s] (const juce::String& id, float def) { return s.hasProperty (id) ? (float) s[juce::Identifier (id)] : def; },
+                                   [&s] (const juce::String& id, float v) { s.setProperty (juce::Identifier (id), v, nullptr); }))
+        for (int k = 0; k < kSlots; ++k) s.setProperty (ids::slot[k], c[(size_t) k], nullptr);
 }
 
 /** Les presets d'usine : écrits avec les réglages d'avant la refonte, complétés de leur chaîne. */

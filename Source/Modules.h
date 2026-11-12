@@ -19,6 +19,7 @@ enum Type
     doubler, chorus, flanger, phone, delay, reverb, creative,
     preamp, cl1b,   // ajoutés à la fin : les codes des anciennes chaînes ne changent pas
     tuner, declick, debreath, dereverb,
+    pitcher,
     numTypes
 };
 
@@ -63,6 +64,7 @@ inline const Info& info (int type)
         { "DE-CLICK", "DE-CLICK",         "Clics de bouche, salive, lèvres",           0, host,        ids::dclkOn },
         { "BREATH",   "DE-BREATH",        "Respirations baissées, pas coupées",        0, host,        ids::dbrOn },
         { "DE-VERB",  "DE-REVERB",        "La pièce retirée de la voix",               0, host,        ids::drvOn },
+        { "PITCHER",  "PITCHER",          "Hauteur, formants, harmoniques : la voix rejouée", 3, host, ids::pchOn },
     };
     return table[juce::jlimit (0, (int) numTypes - 1, type)];
 }
@@ -113,6 +115,8 @@ inline const std::vector<juce::String>& paramIds (int type)
         add (declick, { ids::dclkOn, ids::dclkSens, ids::dclkAmount, ids::dclkListen });
         add (debreath, { ids::dbrOn, ids::dbrReduction, ids::dbrSens, ids::dbrListen });
         add (dereverb, { ids::drvOn, ids::drvAmount, ids::drvTail, ids::drvAuto, ids::drvListen });
+        add (pitcher, { ids::pchOn, ids::pchPitch, ids::pchFormant, ids::pchHarmonics, ids::pchRatio, ids::pchFm, ids::pchAlternator,
+                        ids::pchOctave, ids::pchGlide, ids::pchSmear, ids::pchStereo, ids::pchDetune, ids::pchSnap, ids::pchMix });
         return t;
     }();
     return table[(size_t) juce::jlimit (0, (int) numTypes - 1, type)];
@@ -124,9 +128,10 @@ inline int typeOf (int c) noexcept { return c > 0 ? (c - 1) / kInstances : -1; }
 inline int instanceOf (int c) noexcept { return c > 0 ? (c - 1) % kInstances : -1; }
 inline bool valid (int c) noexcept { return c > 0 && c <= numTypes * kInstances; }
 
-// les effets que CREATIVE FX regroupe : ils ne se proposent plus seuls dans le +, mais les anciens projets qui les ont les gardent
+// les effets que CREATIVE FX regroupait : de nouveau des modules à part dans le + ; CREATIVE FX ne s'ajoute plus, mais une
+// chaîne qui l'a encore (pas la place de le séparer) le garde et l'entend comme avant
 inline bool inCreative (int type) noexcept { return type == doubler || type == chorus || type == flanger || type == phone; }
-inline bool inPicker (int type) noexcept { return ! inCreative (type); }
+inline bool inPicker (int type) noexcept { return type != creative; }
 
 using Chain = std::array<int, kSlots>;
 
@@ -210,6 +215,44 @@ inline Chain legacyChain (Get&& get, Set&& set)
     if (on (ids::delayOn, false)) push (delay);
     if (on (ids::reverbOn, false)) push (reverb);
     return c;
+}
+
+/*  CREATIVE FX SÉPARÉ : sa case est remplacée par les effets qu'il faisait vraiment tourner (DOUBLER, CHORUS, FLANGER, PHONE
+    du même exemplaire, dans cet ordre, ceux dont l'interrupteur est allumé), avec les mêmes réglages : le son ne change pas.
+    CREATIVE FX coupé : ses effets arrivent coupés. Pas la place dans la chaîne (16 cases) : CREATIVE FX reste, il marche
+    toujours. get (id, défaut) lit un réglage (identifiant de l'exemplaire), set (id, valeur) l'écrit. Rend true si la chaîne
+    a changé. */
+template <typename Get, typename Set>
+inline bool splitCreative (Chain& c, Get&& get, Set&& set)
+{
+    bool changed = false;
+    for (size_t at = 0; at < c.size(); ++at)
+    {
+        if (typeOf (c[at]) != creative) continue;
+        const int k = instanceOf (c[at]);
+        const bool creativeOn = get (ids::inst (ids::creativeOn, k), 1.0f) > 0.5f;
+        std::vector<int> parts;
+        for (int t : { doubler, chorus, flanger, phone })
+            if (get (ids::inst (info (t).onId, k), 0.0f) > 0.5f) parts.push_back (code (t, k));
+        // un effet déjà seul dans la chaîne (ne devrait pas arriver) : on ne touche à rien
+        bool clash = false;
+        for (int p : parts) clash = clash || std::find (c.begin(), c.end(), p) != c.end();
+        const auto used = (size_t) std::count_if (c.begin(), c.end(), [] (int x) { return x != 0; });
+        if (clash || used - 1 + parts.size() > c.size()) continue;
+        if (! creativeOn)
+            for (int p : parts) set (ids::inst (info (typeOf (p)).onId, k), 0.0f);
+        Chain out {};
+        size_t n = 0;
+        for (size_t j = 0; j < c.size(); ++j)
+        {
+            if (j == at) { for (int p : parts) out[n++] = p; continue; }
+            if (c[j] != 0) out[n++] = c[j];
+        }
+        c = out;
+        changed = true;
+        at = (size_t) -1;   // la chaîne a bougé : on repart du début (un autre CREATIVE FX, d'un autre exemplaire)
+    }
+    return changed;
 }
 } // namespace modules
 } // namespace onirique

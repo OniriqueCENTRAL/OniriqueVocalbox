@@ -159,6 +159,11 @@ namespace ids
     inline constexpr const char* dclkOn = "dclkOn", *dclkSens = "dclkSens", *dclkAmount = "dclkAmount", *dclkListen = "dclkListen";
     inline constexpr const char* dbrOn = "dbrOn", *dbrReduction = "dbrReduction", *dbrSens = "dbrSens", *dbrListen = "dbrListen";
     inline constexpr const char* drvOn = "drvOn", *drvAmount = "drvAmount", *drvTail = "drvTail", *drvAuto = "drvAuto", *drvListen = "drvListen";
+    // PITCHER : la voix rejouée par une banque d'harmoniques (hauteur, formants, harmoniques, écart, FM, alternateur, octave...)
+    inline constexpr const char* pchOn = "pchOn", *pchPitch = "pchPitch", *pchFormant = "pchFormant", *pchHarmonics = "pchHarmonics",
+                                 *pchRatio = "pchRatio", *pchFm = "pchFm", *pchAlternator = "pchAlternator", *pchOctave = "pchOctave",
+                                 *pchGlide = "pchGlide", *pchSmear = "pchSmear", *pchStereo = "pchStereo", *pchDetune = "pchDetune",
+                                 *pchSnap = "pchSnap", *pchMix = "pchMix";
     // les macros (après AUTO MIX : 4 gros potards qui pilotent la chaîne, -100 .. +100), le rôle de la voix et sa place
     inline constexpr const char* macroPresence = "macroPresence", *macroWarmth = "macroWarmth", *macroHold = "macroHold",
                                  *macroSpace = "macroSpace", *voiceRole = "voiceRole", *outPan = "outPan";
@@ -763,6 +768,40 @@ inline void addParams (std::vector<std::unique_ptr<juce::RangedAudioParameter>>&
           Attr().withLabel ("s").withStringFromValueFunction ([] (float v, int) { return String (v, 2) + " s"; }))); }
     p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::drvAuto, 1 }, "De-Reverb Auto Tail", true));
     p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::drvListen, 1 }, "De-Reverb Listen", false));
+
+    // ---- PITCHER
+    {
+        auto st = [] (float v, int) { const float r = std::round (v * 100.0f) / 100.0f + 0.0f; return (r > 0.0f ? "+" : "") + String (r, 2) + " st"; };
+        auto sgn = [] (float v, int) { const float r = std::round (v * 100.0f) / 100.0f + 0.0f; return (r > 0.0f ? "+" : "") + String (r, 2); };
+        p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::pchOn, 1 }, "Pitcher On", false));
+        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::pchPitch, 1 }, "Pitcher Pitch", NormalisableRange<float> (-24.0f, 24.0f, 0.01f), 0.0f,
+                                                   Attr().withLabel ("st").withStringFromValueFunction (st)));
+        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::pchFormant, 1 }, "Pitcher Formant", NormalisableRange<float> (-12.0f, 12.0f, 0.01f), 0.0f,
+                                                   Attr().withLabel ("st").withStringFromValueFunction (st)));
+        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::pchHarmonics, 1 }, "Pitcher Harmonics", NormalisableRange<float> (-1.0f, 1.0f, 0.001f), 0.0f,
+                                                   Attr().withStringFromValueFunction (sgn)));
+        { NormalisableRange<float> r (0.25f, 2.0f, 0.001f); r.setSkewForCentre (1.0f);
+          p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::pchRatio, 1 }, "Pitcher Ratio", r, 1.0f,
+                                                     Attr().withStringFromValueFunction ([] (float v, int) { return String (v, 3); }))); }
+        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::pchFm, 1 }, "Pitcher FM", NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f,
+                                                   Attr().withLabel ("%").withStringFromValueFunction (pctText)));
+        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::pchAlternator, 1 }, "Pitcher Alternator", NormalisableRange<float> (-12.0f, 12.0f, 0.01f), 0.0f,
+                                                   Attr().withLabel ("st").withStringFromValueFunction (st)));
+        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::pchOctave, 1 }, "Pitcher Octave", NormalisableRange<float> (-1.0f, 1.0f, 0.001f), 0.0f,
+                                                   Attr().withStringFromValueFunction (sgn)));
+        { NormalisableRange<float> r (0.0f, 1000.0f, 0.1f); r.setSkewForCentre (120.0f);
+          p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::pchGlide, 1 }, "Pitcher Glide", r, 0.0f,
+                                                     Attr().withLabel ("ms").withStringFromValueFunction ([] (float v, int) { return String (juce::roundToInt (v)) + " ms"; }))); }
+        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::pchSmear, 1 }, "Pitcher Smear", NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f,
+                                                   Attr().withLabel ("%").withStringFromValueFunction (pctText)));
+        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::pchStereo, 1 }, "Pitcher Stereo", NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f,
+                                                   Attr().withLabel ("%").withStringFromValueFunction (pctText)));
+        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::pchDetune, 1 }, "Pitcher Detune", NormalisableRange<float> (0.0f, 50.0f, 0.1f), 0.0f,
+                                                   Attr().withLabel ("ct").withStringFromValueFunction ([] (float v, int) { return String (v, 1) + " ct"; })));
+        p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::pchSnap, 1 }, "Pitcher Snap", false));
+        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::pchMix, 1 }, "Pitcher Mix", NormalisableRange<float> (0.0f, 100.0f, 0.1f), 100.0f,
+                                                   Attr().withLabel ("%").withStringFromValueFunction (pctText)));
+    }
 
     // ---- les macros, le rôle de la voix et sa place dans le panoramique (réglages généraux : un seul exemplaire)
     if (k == 0)

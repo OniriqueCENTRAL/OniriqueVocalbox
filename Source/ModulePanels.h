@@ -22,6 +22,16 @@ void drawSeg (juce::Graphics&, juce::Rectangle<float>, float lit, float hover, f
 void softGlow (juce::Graphics&, const juce::Path&, juce::Colour, float radius, float dy = 0.0f);
 void softGlowRect (juce::Graphics&, juce::Rectangle<float>, float corner, juce::Colour, float radius, float dy = 0.0f);
 void softGlowEllipse (juce::Graphics&, juce::Rectangle<float>, juce::Colour, float radius, float dy = 0.0f);
+// les flous gardés par softGlow : à vider à la fermeture de l'interface (une image ne doit pas survivre au déchargement)
+void clearGlowCache();
+// une image passée à la carte graphique (dessinée à chaque image sans y être renvoyée) ; essais : ONIRIQUE_UI_NONATIVE la laisse en mémoire
+inline juce::Image gpuImage (const juce::Image& img)
+{
+   #if ONIRIQUE_UI_TEST
+    if (juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_NONATIVE", {}).isNotEmpty()) return img;
+   #endif
+    return juce::NativeImageType().convert (img);
+}
 
 // verre sombre : le panneau de la nouvelle interface (fond translucide, liseré clair, reflet en haut)
 void drawGlass (juce::Graphics&, juce::Rectangle<float>, float corner, float u, float lit = 0.0f);

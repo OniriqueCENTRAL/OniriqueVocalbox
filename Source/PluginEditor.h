@@ -48,6 +48,7 @@ private:
     OniriqueVocalBoxAudioProcessor& processor;
     std::vector<Tile> tiles;
     int selected = 0, hoverTile = -1, dragTile = -1, dropIndex = -1, hoverButton = -1;
+    int meterFrame = 0;
     bool plusHover = false, dragMoved = false;
     float dragOffset = 0.0f, dragX = 0.0f, plusGlow = 0.0f, scroll = 0.0f, scrollTarget = 0.0f;
     juce::Point<float> downPos;
@@ -208,6 +209,8 @@ public:
 
 private:
     void timerCallback() override;
+    juce::Point<int> lastScreenPos;   // la fenêtre bouge : animations en pause (timerCallback)
+    double movingUntil = 0.0;
     void select (int code);
     void syncSelection();
     void openMixPage();
@@ -242,6 +245,7 @@ private:
     float panelFade = 1.0f, powerLit = 0.0f, powerHover = 0.0f;
     bool overPower = false;
     juce::Image backdrop;   // le fond (taches de braise floues) : dessiné une fois par taille
+    bool backdropNative = false;   // puis passé en image native (gardée par la carte graphique)
 };
 
 //==============================================================================
