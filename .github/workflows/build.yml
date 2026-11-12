@@ -4,7 +4,7 @@ name: Build
 # réussissent, publie la version dans ONIRIQUE CENTRAL (numéro attribué par le serveur, patch + 1).
 on:
   push:
-    branches: [main]
+    branches: [mac-build]
   workflow_dispatch:
 
 env:
@@ -14,8 +14,6 @@ env:
 
 jobs:
   mac:
-    # EN PAUSE (05/11/2026) : le Mac se compile sur une vraie machine Mac de l'équipe ; enlever « if: false » pour le rallumer
-    if: false
     runs-on: macos-15-intel   # les machines Apple Silicon de GitHub sont saturées ; Xcode sort quand même un binaire universel
     steps:
       - uses: actions/checkout@v4
@@ -49,51 +47,3 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: mac-standalone, path: "*Standalone.zip", if-no-files-found: ignore }
 
-  windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Modèle de séparation de la voix (demucs.cpp htdemucs_ft vocals, MIT, 84 Mo)
-        shell: bash
-        run: |
-          mkdir -p Resources/models
-          M=Resources/models/ggml-model-htdemucs_ft_vocals-4s-f16.bin
-          curl -L --fail --retry 3 -o "$M" https://huggingface.co/datasets/Retrobear/demucs.cpp/resolve/main/ggml-model-htdemucs_ft_vocals-4s-f16.bin
-          echo "19186500a45a551a034d96e9500415ebe73c8bd570bf55337ddc8cc8f53a9120  $M" | (command -v sha256sum >/dev/null && sha256sum -c - || shasum -a 256 -c -)
-      - name: Compiler
-        run: |
-          cmake -B build
-          cmake --build build --config Release
-      - name: Empaqueter
-        shell: bash
-        run: |
-          mkdir -p dist/win
-          cp "build/${TARGET}_artefacts/Release/VST3/$PRODUCT.vst3/Contents/x86_64-win/$PRODUCT.vst3" dist/win/
-      - uses: actions/upload-artifact@v4
-        with: { name: win, path: dist/win }
-
-  publish:
-    needs: [windows]
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with: { name: win, path: version/win }
-      # le cerveau d'ONR Neural Learning part avec la version : le site (page des fondateurs) le suit tout seul
-      - uses: actions/checkout@v4
-        with: { path: src, sparse-checkout: Resources/vocalbox-brain.json, sparse-checkout-cone-mode: false }
-      - run: cp src/Resources/vocalbox-brain.json version/brain.json && rm -rf src
-      - name: Publier dans ONIRIQUE CENTRAL
-        env:
-          CLE: ${{ secrets.ONIRIQUE_PUBLISH_KEY }}
-          MESSAGE: ${{ github.event.head_commit.message }}
-        run: |
-          if [ -z "$CLE" ]; then echo "Secret ONIRIQUE_PUBLISH_KEY absent : rien n'est publié."; exit 0; fi
-          # notes de version = message du commit, sans les lignes de signature ni [skip ci]
-          printf '%s\n' "$MESSAGE" | grep -viE '^(co-authored-by|signed-off-by):' | sed -e 's/ *\[skip ci\]//' -e ':a' -e '/^[[:space:]]*$/{$d;N;ba' -e '}' | head -c 4000 > version/notes.txt
-          mkdir -p ~/.ssh
-          printf '%s\n' "$CLE" > ~/.ssh/publish && chmod 600 ~/.ssh/publish
-          # clé du serveur épinglée (SHA256:XHg9Jni6CwZWjPlV3eIzyIm819tA6hwPEZOehfJuVB0)
-          echo "212.227.165.177 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFH55mUNdFgsIuK9wr6/8ioQ22idbndalUSARaSFDaa1" >> ~/.ssh/known_hosts
-          ls -R version
-          tar -C version -cf - . | ssh -i ~/.ssh/publish -o IdentitiesOnly=yes -o BatchMode=yes livraison@212.227.165.177 "publish $SLUG"
