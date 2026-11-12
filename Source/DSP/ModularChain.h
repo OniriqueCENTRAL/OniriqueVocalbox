@@ -706,33 +706,44 @@ private:
 
         const float mixT = f (mix) * 0.01f, driveT = f (drive) * 0.01f;
         const int len = lat + 1;
+        // DRIVE en gain match automatique : on compare l'énergie de la voix décalée avant et après saturation (~80 ms) et on
+        // remet la saturée au même niveau (lissé ~30 ms) ; tourner DRIVE change le grain, pas le volume
+        const float aE = 1.0f - std::exp (-1.0f / (0.08f * (float) fs)), aG = 1.0f - std::exp (-1.0f / (0.03f * (float) fs));
         for (int s = 0; s < n; ++s)
         {
             const float a = (float) s / (float) n;
             const float m = lastMix + (mixT - lastMix) * a, d = lastDrive + (driveT - lastDrive) * a;
-            const float k = 1.0f + 11.0f * d * d, comp = 1.0f / std::tanh (k);   // pleine échelle conservée
+            const float k = 1.0f + 11.0f * d * d;
             const int rpos = (wpos + 1) % len;
+            float pre = 0.0f, post = 0.0f, wet[2] {};
+            for (int c = 0; c < numCh; ++c)
+            {
+                const float w = ch[c][s];
+                const float y = d > 0.0005f ? (1.0f - d) * w + d * std::tanh (k * w) : w;
+                pre += w * w; post += y * y; wet[c] = y;
+            }
+            ePre += aE * (pre - ePre); ePost += aE * (post - ePost);
+            const float target = d > 0.0005f ? juce::jlimit (0.05f, 2.0f, std::sqrt ((ePre + 1.0e-10f) / (ePost + 1.0e-10f))) : 1.0f;
+            match += aG * (target - match);
             for (int c = 0; c < numCh; ++c)
             {
                 auto& line = dry[(size_t) c];
                 line[(size_t) wpos] = tmp.getSample (c, s);
                 const float dl = line[(size_t) rpos];
-                float w = ch[c][s];
-                if (d > 0.0005f) w = (1.0f - d) * w + d * std::tanh (k * w) * comp * 0.9f;
-                ch[c][s] = dl + m * (w - dl);
+                ch[c][s] = dl + m * (wet[c] * match - dl);
             }
             wpos = rpos;
         }
         lastMix = mixT; lastDrive = driveT;
     }
-    void resetEngine() noexcept override { engine.reset(); for (auto& d : dry) std::fill (d.begin(), d.end(), 0.0f); }
+    void resetEngine() noexcept override { engine.reset(); for (auto& d : dry) std::fill (d.begin(), d.end(), 0.0f); ePre = ePost = 0.0f; match = 1.0f; }
 
     tune::TuneEngine engine;
     std::array<std::vector<float>, 2> dry;
     juce::AudioBuffer<float> tmp;
     int lat = 0, wpos = 0;
     bool monoRun = false;
-    float lastMix = 1.0f, lastDrive = 0.0f;
+    float lastMix = 1.0f, lastDrive = 0.0f, ePre = 0.0f, ePost = 0.0f, match = 1.0f;   // gain match du DRIVE
 public:
     std::atomic<float> *pitch = nullptr, *formant = nullptr, *fine = nullptr, *drive = nullptr, *robot = nullptr, *snap = nullptr, *mix = nullptr;
 };

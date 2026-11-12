@@ -1294,7 +1294,7 @@ public:
         fIn = shownIn; fOut = shownOut; wasLive = live;
         const float pitch = get (ids::pchPitch);
         juce::String s = (live ? juce::String() : utf8 ("SANS VOIX · ")) + noteName (fIn) + utf8 ("  →  ") + noteName (fOut)
-                       + "   " + (pitch >= 0.0f ? "+" : "") + juce::String (pitch, 2) + " st";
+                       + "   " + (pitch > 0.0f ? "+" : "") + juce::String (juce::roundToInt (pitch)) + " st";
         if (get (ids::pchRobot) > 0.5f) s << utf8 ("  ·  ROBOT");
         else if (get (ids::pchSnap) > 0.5f) s << utf8 ("  ·  SNAP");
         if (s != stat) { stat = s; changed = true; }

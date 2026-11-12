@@ -769,12 +769,13 @@ inline void addParams (std::vector<std::unique_ptr<juce::RangedAudioParameter>>&
 
     // ---- PITCHER
     {
-        auto st = [] (float v, int) { const float r = std::round (v * 100.0f) / 100.0f + 0.0f; return (r > 0.0f ? "+" : "") + String (r, 2) + " st"; };
+        // PITCH et FORMANT par demi-ton entier (le réglage fin passe par FINE)
+        auto st = [] (float v, int) { const int r = juce::roundToInt (v); return (r > 0 ? "+" : "") + String (r) + " st"; };
         // la vraie voix décalée (PSOLA du TUNER, sans correction) : PITCH, FORMANT, réglage fin, ROBOT, SNAP au demi-ton, DRIVE
         p.push_back (mkParam<AudioParameterBool> (k, ParameterID { ids::pchOn, 1 }, "Pitcher On", false));
-        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::pchPitch, 1 }, "Pitcher Pitch", NormalisableRange<float> (-24.0f, 24.0f, 0.01f), 0.0f,
+        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::pchPitch, 1 }, "Pitcher Pitch", NormalisableRange<float> (-24.0f, 24.0f, 1.0f), 0.0f,
                                                    Attr().withLabel ("st").withStringFromValueFunction (st)));
-        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::pchFormant, 1 }, "Pitcher Formant", NormalisableRange<float> (-12.0f, 12.0f, 0.01f), 0.0f,
+        p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::pchFormant, 1 }, "Pitcher Formant", NormalisableRange<float> (-12.0f, 12.0f, 1.0f), 0.0f,
                                                    Attr().withLabel ("st").withStringFromValueFunction (st)));
         p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::pchDetune, 1 }, "Pitcher Fine", NormalisableRange<float> (-50.0f, 50.0f, 0.1f), 0.0f,
                                                    Attr().withLabel ("ct").withStringFromValueFunction ([] (float v, int) { const float r = std::round (v * 10.0f) / 10.0f + 0.0f; return (r > 0.0f ? "+" : "") + String (r, 1) + " ct"; })));
