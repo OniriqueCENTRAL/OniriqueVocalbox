@@ -64,7 +64,7 @@ inline const Info& info (int type)
         { "DE-CLICK", "DE-CLICK",         "Clics de bouche, salive, lèvres",           0, host,        ids::dclkOn },
         { "BREATH",   "DE-BREATH",        "Respirations baissées, pas coupées",        0, host,        ids::dbrOn },
         { "DE-VERB",  "DE-REVERB",        "La pièce retirée de la voix",               0, host,        ids::drvOn },
-        { "PITCHER",  "PITCHER",          "Hauteur, formants, harmoniques : la voix rejouée", 3, host, ids::pchOn },
+        { "PITCHER",  "PITCHER",          "Ta voix décalée : hauteur, formants, robot", 3, host, ids::pchOn },
     };
     return table[juce::jlimit (0, (int) numTypes - 1, type)];
 }
@@ -115,8 +115,8 @@ inline const std::vector<juce::String>& paramIds (int type)
         add (declick, { ids::dclkOn, ids::dclkSens, ids::dclkAmount, ids::dclkListen });
         add (debreath, { ids::dbrOn, ids::dbrReduction, ids::dbrSens, ids::dbrListen });
         add (dereverb, { ids::drvOn, ids::drvAmount, ids::drvTail, ids::drvAuto, ids::drvListen });
-        add (pitcher, { ids::pchOn, ids::pchPitch, ids::pchFormant, ids::pchHarmonics, ids::pchRatio, ids::pchFm, ids::pchAlternator,
-                        ids::pchOctave, ids::pchGlide, ids::pchSmear, ids::pchStereo, ids::pchDetune, ids::pchSnap, ids::pchMix });
+        add (pitcher, { ids::pchOn, ids::pchPitch, ids::pchFormant, ids::pchDetune, ids::pchDrive, ids::pchRobot,
+                        ids::pchSnap, ids::pchMix });
         return t;
     }();
     return table[(size_t) juce::jlimit (0, (int) numTypes - 1, type)];

@@ -12,7 +12,7 @@
 #include "DeClick.h"
 #include "DeBreath.h"
 #include "DeReverb.h"
-#include "Pitcher.h"     // PITCHER : la voix rejouée par une banque d'harmoniques
+
 
 namespace onirique
 {
@@ -642,37 +642,99 @@ private:
                        *formant = nullptr, *voice = nullptr, *hard = nullptr, *mix = nullptr;
 };
 
-//------------------------------------------------------------------------------ PITCHER (cadence de l'hôte, sans latence)
+//------------------------------------------------------------------------------ PITCHER (le moteur du TUNER, sans correction)
+/*  PITCHER : ta vraie voix décalée, comme une pédale de pitch posée sur la voix. Le moteur du TUNER (PSOLA, HQ) sans
+    correction : la voix garde sa justesse et ses inflexions, seulement plus haut ou plus bas. FORMANT déplace le timbre
+    (gorge plus courte ou plus longue) sans toucher à la hauteur. SNAP accroche au demi-ton, ROBOT fige chaque phrase sur
+    sa première note. DRIVE sature la voix décalée seule ; MIX la remet sur la voix d'origine (alignée). Latence fixe. */
 class PitcherM final : public ChainModule
 {
 public:
     PitcherM (juce::AudioProcessorValueTreeState& s, int k) : ChainModule (s, modules::pitcher, k)
     {
-        pitch = raw (ids::pchPitch); formant = raw (ids::pchFormant); harm = raw (ids::pchHarmonics); ratio = raw (ids::pchRatio);
-        fm = raw (ids::pchFm); alt = raw (ids::pchAlternator); oct = raw (ids::pchOctave); glide = raw (ids::pchGlide);
-        smear = raw (ids::pchSmear); stereo = raw (ids::pchStereo); detune = raw (ids::pchDetune); snap = raw (ids::pchSnap); mix = raw (ids::pchMix);
+        pitch = raw (ids::pchPitch); formant = raw (ids::pchFormant); fine = raw (ids::pchDetune); drive = raw (ids::pchDrive);
+        robot = raw (ids::pchRobot); snap = raw (ids::pchSnap); mix = raw (ids::pchMix);
     }
+    int getLatencySamples() const noexcept override { return tune::TuneEngine::latencyFor (fs, true, 1); }
+    bool popFrame (tune::DisplayFrame& fr) noexcept { return engine.popDisplayFrame (fr); }
 
 private:
-    fx::Pitcher::Params params() const noexcept
+    tune::EngineParams params() const noexcept
     {
-        fx::Pitcher::Params p;
-        p.on = true;   // l'interrupteur du module fait déjà le fondu
-        p.pitch = f (pitch); p.formant = f (formant); p.harmonics = f (harm); p.ratio = f (ratio); p.fm = f (fm) * 0.01f;
-        p.alternator = f (alt); p.octave = f (oct); p.glideMs = f (glide); p.smear = f (smear) * 0.01f; p.stereo = f (stereo) * 0.01f;
-        p.detune = f (detune); p.snap = b (snap); p.mix = f (mix) * 0.01f;
+        tune::EngineParams p;
+        p.hq = true;
+        p.inputType = 1;
+        p.transpose = f (pitch) + f (fine) * 0.01f;
+        // FORMANT en demi-tons : + = gorge plus courte (plus clair), - = plus longue (plus sombre)
+        p.formant = true;
+        p.throat = std::pow (2.0f, -f (formant) / 12.0f);
+        if (b (snap) && ! b (robot))
+        {
+            p.correct = true; p.hardTune = true; p.noteMask = 0x0fff; p.retuneMs = 0.0f;   // au demi-ton, sauts francs
+        }
+        else
+        {
+            p.correct = false; p.monotone = b (robot);
+        }
+        p.mix = 1.0f;   // le mélange se fait ici, après le DRIVE
         return p;
     }
-    void prepareEngine (double rate, int, int maxBlock) override { engine.set (params()); engine.prepare (rate, maxBlock); }
-    void updateEngine (bool, bool) noexcept override { engine.set (params()); }
-    void processEngine (float* const* ch, int numCh, int n) noexcept override { engine.process (ch, numCh, n); }
-    void resetEngine() noexcept override { engine.reset(); }
-    fx::Pitcher engine;
+    void prepareEngine (double rate, int, int maxBlock) override
+    {
+        fs = rate;
+        engine.setParams (params());
+        engine.prepare (rate);
+        lat = getLatencySamples();
+        for (auto& d : dry) { d.assign ((size_t) (lat + 1), 0.0f); }
+        wpos = 0;
+        tmp.setSize (2, std::max (1, maxBlock));
+        lastMix = f (mix) * 0.01f; lastDrive = f (drive) * 0.01f;
+    }
+    void updateEngine (bool, bool) noexcept override { engine.setParams (params()); }
+    void processEngine (float* const* ch, int numCh, int n) noexcept override
+    {
+        numCh = std::min (numCh, 2);
+        if (n > tmp.getNumSamples()) return;   // ne doit pas arriver (bloc plus grand que prévu)
+        // la voix d'origine, retardée de la latence du moteur, pour le MIX
+        for (int c = 0; c < numCh; ++c) tmp.copyFrom (c, 0, ch[c], n);
+        bool same = numCh == 2;
+        for (int s = 0; s < n && same; ++s) same = ch[0][s] == ch[1][s];
+        if (! same && monoRun) engine.reset();
+        monoRun = same;
+        engine.process (ch, same ? 1 : numCh, n);
+        if (same) std::copy (ch[0], ch[0] + n, ch[1]);
+
+        const float mixT = f (mix) * 0.01f, driveT = f (drive) * 0.01f;
+        const int len = lat + 1;
+        for (int s = 0; s < n; ++s)
+        {
+            const float a = (float) s / (float) n;
+            const float m = lastMix + (mixT - lastMix) * a, d = lastDrive + (driveT - lastDrive) * a;
+            const float k = 1.0f + 11.0f * d * d, comp = 1.0f / std::tanh (k);   // pleine échelle conservée
+            const int rpos = (wpos + 1) % len;
+            for (int c = 0; c < numCh; ++c)
+            {
+                auto& line = dry[(size_t) c];
+                line[(size_t) wpos] = tmp.getSample (c, s);
+                const float dl = line[(size_t) rpos];
+                float w = ch[c][s];
+                if (d > 0.0005f) w = (1.0f - d) * w + d * std::tanh (k * w) * comp * 0.9f;
+                ch[c][s] = dl + m * (w - dl);
+            }
+            wpos = rpos;
+        }
+        lastMix = mixT; lastDrive = driveT;
+    }
+    void resetEngine() noexcept override { engine.reset(); for (auto& d : dry) std::fill (d.begin(), d.end(), 0.0f); }
+
+    tune::TuneEngine engine;
+    std::array<std::vector<float>, 2> dry;
+    juce::AudioBuffer<float> tmp;
+    int lat = 0, wpos = 0;
+    bool monoRun = false;
+    float lastMix = 1.0f, lastDrive = 0.0f;
 public:
-    float noteIn() const noexcept { return engine.shownIn(); }
-    float noteOut() const noexcept { return engine.shownOut(); }
-    std::atomic<float> *pitch = nullptr, *formant = nullptr, *harm = nullptr, *ratio = nullptr, *fm = nullptr, *alt = nullptr, *oct = nullptr,
-                       *glide = nullptr, *smear = nullptr, *stereo = nullptr, *detune = nullptr, *snap = nullptr, *mix = nullptr;
+    std::atomic<float> *pitch = nullptr, *formant = nullptr, *fine = nullptr, *drive = nullptr, *robot = nullptr, *snap = nullptr, *mix = nullptr;
 };
 
 //------------------------------------------------------------------------------ DE-CLICK, DE-BREATH, DE-REVERB (cadence de l'hôte)

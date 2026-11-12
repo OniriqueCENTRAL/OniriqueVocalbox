@@ -172,11 +172,12 @@ void StartScreen::paint (juce::Graphics& g)
         const auto others = onirique::registry::others (&processor);
         if (! others.empty())
         {
-            static const char* rn[4] { "LEAD", "BACKS", "ADLIBS", "DOUBLES" };
-            juce::StringArray s;
-            for (const auto& e : others) s.add (rn[juce::jlimit (0, 3, e.role)]);
-            g.drawText (utf8 ("AUSSI DANS LE PROJET : ") + s.joinIntoString (utf8 (" · ")),
-                        juce::Rectangle<float> (rb.getX() - 400.0f * u, rb.getBottom() + 6.0f * u, 400.0f * u + rb.getWidth(), 14.0f * u), juce::Justification::centredRight, false);
+            // regroupé par rôle (« 9 LEAD · 2 BACKS ») et tenu à droite du titre : la ligne ne le chevauche jamais
+            const auto text = utf8 ("AUSSI DANS LE PROJET : ") + onirique::registry::summary (others, false);
+            const float maxW = juce::jmin (400.0f * u + rb.getWidth(), rb.getRight() - (b.getCentreX() + 220.0f * u));
+            if (maxW > 80.0f * u)
+                g.drawFittedText (text, juce::Rectangle<float> (rb.getRight() - maxW, rb.getBottom() + 6.0f * u, maxW, 14.0f * u).toNearestInt(),
+                              juce::Justification::centredRight, 1, 0.8f);
         }
     }
 

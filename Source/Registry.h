@@ -61,4 +61,24 @@ inline std::vector<Entry> others (const void* who)
     for (const auto& e : entries()) if (e.who != who) r.push_back (e);
     return r;
 }
+
+// les autres instances, en bref : regroupées par rôle (« 9 LEAD · 2 BACKS »), avec la tonalité d'un rôle quand toutes ses
+// instances la partagent (withKeys). Lisible même avec beaucoup de VOCALBOX dans le projet.
+inline juce::String summary (const std::vector<Entry>& o, bool withKeys)
+{
+    static const char* rn[4] { "LEAD", "BACKS", "ADLIBS", "DOUBLES" };
+    static const char* kn[12] { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+    juce::StringArray parts;
+    for (int r = 0; r < 4; ++r)
+    {
+        int n = 0, key = -2;
+        for (const auto& e : o)
+            if (juce::jlimit (0, 3, e.role) == r) { ++n; key = key == -2 ? e.key : (key == e.key ? key : -1); }
+        if (n == 0) continue;
+        juce::String s = (n > 1 ? juce::String (n) + " " : juce::String()) + rn[r];
+        if (withKeys && key >= 0) s << " (" << kn[key % 12] << (key >= 12 ? "m)" : ")");
+        parts.add (s);
+    }
+    return parts.joinIntoString (juce::String::fromUTF8 (" · "));
+}
 } // namespace onirique::registry

@@ -1259,124 +1259,125 @@ private:
 };
 
 //==============================================================================
-// PITCHER : les harmoniques de la voix (fins traits clairs) et celles qu'il rejoue (barres braise), sur l'axe des fréquences
-// (60 Hz .. 8 kHz) ; on voit tout de suite ce que font PITCH, RATIO, ALTERNATOR, OCTAVE, HARMONICS. La note entendue et la
-// note rejouée en bas.
+// PITCHER : les harmoniques de ta voix (fins traits clairs) et celles de la voix décalée (barres braise), sur l'axe des
+// fréquences (60 Hz .. 8 kHz). Le timbre (l'enveloppe) suit FORMANT, la hauteur suit PITCH : on voit les deux bouger
+// séparément. La note entendue et la note sortie en bas.
 class PitcherViz : public Viz
 {
 public:
     PitcherViz (OniriqueVocalBoxAudioProcessor& p, int code) : processor (p), module (p.module (code)), k (modules::instanceOf (code))
     {
-        title = utf8 ("PITCHER · LA VOIX REJOUÉE PAR SES HARMONIQUES");
-        legend = { { "VOIX", cMist }, { utf8 ("REJOUÉE"), cEmber } };
+        title = utf8 ("PITCHER · TA VOIX, PLUS HAUT OU PLUS BAS");
+        legend = { { "VOIX", cMist }, { utf8 ("DÉCALÉE"), cEmber } };
     }
     void tick() override
     {
-        float in = 0.0f, out = 0.0f;
-        if (auto* m = dynamic_cast<onirique::chainmods::PitcherM*> (module)) { in = m->noteIn(); out = m->noteOut(); }
+        bool got = false;
+        if (auto* m = dynamic_cast<onirique::chainmods::PitcherM*> (module))
+        {
+            onirique::tune::DisplayFrame fr;
+            while (m->popFrame (fr))
+                if (fr.voiced && fr.level > 1.0e-4f) { inMidi = fr.inMidi; outMidi = fr.outMidi; got = true; }
+        }
+        quiet = got ? 0 : quiet + 1;
         // sans voix : une note de démonstration (la3), pour voir l'effet des réglages
-        const bool live = in > 0.0f;
-        const float shownIn = live ? in : 220.0f;
-        float target = shownIn * std::pow (2.0f, get (ids::pchPitch) / 12.0f);
-        if (! live && get (ids::pchSnap) > 0.5f) target = 440.0f * std::pow (2.0f, std::round (12.0f * std::log2 (target / 440.0f)) / 12.0f);
-        const float shownOut = live ? out : target;
+        const bool live = quiet < 30 && inMidi > 0.0f;
+        float shownIn = 220.0f, shownOut;
+        if (live) { shownIn = hz (inMidi); shownOut = hz (outMidi); }
+        else
+        {
+            float st = get (ids::pchPitch) + get (ids::pchDetune) * 0.01f;
+            if (get (ids::pchSnap) > 0.5f) st = std::round (st);
+            shownOut = shownIn * std::pow (2.0f, st / 12.0f);
+        }
         bool changed = std::abs (shownIn - fIn) > 0.5f || std::abs (shownOut - fOut) > 0.5f || live != wasLive;
         fIn = shownIn; fOut = shownOut; wasLive = live;
-        const juce::String s = (live ? juce::String() : utf8 ("SANS VOIX · ")) + noteName (fIn) + utf8 ("  →  ") + noteName (fOut)
-                             + "   " + (get (ids::pchPitch) >= 0.0f ? "+" : "") + juce::String (get (ids::pchPitch), 2) + " st";
+        const float pitch = get (ids::pchPitch);
+        juce::String s = (live ? juce::String() : utf8 ("SANS VOIX · ")) + noteName (fIn) + utf8 ("  →  ") + noteName (fOut)
+                       + "   " + (pitch >= 0.0f ? "+" : "") + juce::String (pitch, 2) + " st";
+        if (get (ids::pchRobot) > 0.5f) s << utf8 ("  ·  ROBOT");
+        else if (get (ids::pchSnap) > 0.5f) s << utf8 ("  ·  SNAP");
         if (s != stat) { stat = s; changed = true; }
-        // les réglages qui changent le dessin
-        float sum = 0.0f, w = 1.0f;
-        for (auto* id : { ids::pchRatio, ids::pchAlternator, ids::pchOctave, ids::pchHarmonics, ids::pchFormant, ids::pchDetune, ids::pchFm })
-            sum += get (id) * (w *= 1.37f);
+        const float sum = get (ids::pchFormant) * 1.37f + get (ids::pchDrive) * 0.011f;
         if (std::abs (sum - lastSum) > 1.0e-4f) { lastSum = sum; changed = true; }
         if (changed) repaint();
     }
 
 private:
     float get (const char* id) const { return processor.apvts.getRawParameterValue (ids::inst (id, k))->load(); }
-    static juce::String noteName (float hz)
+    static float hz (float midi) { return 440.0f * std::pow (2.0f, (midi - 69.0f) / 12.0f); }
+    static juce::String noteName (float f)
     {
-        if (hz <= 0.0f) return "--";
+        if (f <= 0.0f) return "--";
         static const char* n[12] { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
-        const int midi = juce::roundToInt (69.0f + 12.0f * std::log2 (hz / 440.0f));
+        const int midi = juce::roundToInt (69.0f + 12.0f * std::log2 (f / 440.0f));
         return juce::String (n[((midi % 12) + 12) % 12]) + juce::String (midi / 12 - 1);
     }
-    float xOf (float hz) const { return vw * std::log (hz / 60.0f) / std::log (8000.0f / 60.0f); }
+    float xOf (float f) const { return vw * std::log (f / 60.0f) / std::log (8000.0f / 60.0f); }
 
     void draw (juce::Graphics& g) override
     {
         const float base = 318.0f, top = 70.0f;
         // le repère des octaves
         g.setFont (ui::css (ui::Face::mono, 11.0f, 0.1f));
-        for (float hz : { 100.0f, 200.0f, 400.0f, 800.0f, 1600.0f, 3200.0f, 6400.0f })
+        for (float f : { 100.0f, 200.0f, 400.0f, 800.0f, 1600.0f, 3200.0f, 6400.0f })
         {
-            const float x = xOf (hz);
+            const float x = xOf (f);
             g.setColour (juce::Colours::white.withAlpha (0.05f));
             g.drawVerticalLine ((int) x, top, base);
             g.setColour (juce::Colour (0xff7d6a6e));
-            g.drawText (hz >= 1000.0f ? juce::String (hz / 1000.0f, 1) + "k" : juce::String ((int) hz), juce::Rectangle<float> (x - 30.0f, base + 8.0f, 60.0f, 14.0f), juce::Justification::centred, false);
+            g.drawText (f >= 1000.0f ? juce::String (f / 1000.0f, 1) + "k" : juce::String ((int) f), juce::Rectangle<float> (x - 30.0f, base + 8.0f, 60.0f, 14.0f), juce::Justification::centred, false);
         }
         g.setColour (juce::Colours::white.withAlpha (0.12f));
         g.drawHorizontalLine ((int) base, 0.0f, vw);
 
-        // une enveloppe de voix typique (deux formants), décalée par FORMANT : elle donne la hauteur de chaque harmonique
+        // une enveloppe de voix typique (deux formants) : FORMANT la déplace, la hauteur n'y touche pas
         const float fr = std::pow (2.0f, get (ids::pchFormant) / 12.0f);
-        auto env = [] (float hz) { const float a = std::exp (-std::pow (std::log (hz / 600.0f) / 0.7f, 2.0f)), b = 0.7f * std::exp (-std::pow (std::log (hz / 2400.0f) / 0.5f, 2.0f));
-                                   return 0.15f + std::max (a, b); };
+        auto env = [] (float f) { const float a = std::exp (-std::pow (std::log (f / 600.0f) / 0.7f, 2.0f)), b = 0.7f * std::exp (-std::pow (std::log (f / 2400.0f) / 0.5f, 2.0f));
+                                  return 0.15f + std::max (a, b); };
         const float h = base - top;
-        // la voix : ses harmoniques, traits clairs
+        // l'enveloppe de la voix décalée, en fond
+        {
+            juce::Path p;
+            for (int i = 0; i <= 120; ++i)
+            {
+                const float f = 60.0f * std::pow (8000.0f / 60.0f, (float) i / 120.0f), y = base - h * 0.9f * env (f / fr) / 1.15f;
+                if (i == 0) p.startNewSubPath (xOf (f), y); else p.lineTo (xOf (f), y);
+            }
+            g.setColour (cEmber.withAlpha (0.28f));
+            g.strokePath (p, juce::PathStrokeType (1.4f));
+        }
+        // ta voix : ses harmoniques, traits clairs
         for (int n = 1; n <= 60; ++n)
         {
-            const float hz = fIn * (float) n;
-            if (hz > 8000.0f) break;
-            if (hz < 60.0f) continue;
+            const float f = fIn * (float) n;
+            if (f > 8000.0f) break;
+            if (f < 60.0f) continue;
             g.setColour (cMist.withAlpha (0.35f));
-            g.drawLine (xOf (hz), base, xOf (hz), base - h * 0.8f * env (hz), 1.2f);
+            g.drawLine (xOf (f), base, xOf (f), base - h * 0.8f * env (f) / 1.15f, 1.2f);
         }
-        // la voix rejouée : les harmoniques du PITCHER, barres braise (RATIO, ALTERNATOR, DETUNE, HARMONICS, OCTAVE)
-        const float ratio = get (ids::pchRatio), alt = std::pow (2.0f, get (ids::pchAlternator) / 12.0f), harm = get (ids::pchHarmonics);
-        const float tilt = harm >= 0.0f ? 0.8f * harm : 1.6f * harm, oct = get (ids::pchOctave), fm = get (ids::pchFm) * 0.01f;
-        auto layer = [&] (float f0, float gain, float width)
+        // la voix décalée : mêmes harmoniques, à la nouvelle hauteur, sous l'enveloppe déplacée (DRIVE en ajoute dans les aigus)
+        const float drive = get (ids::pchDrive) * 0.01f;
+        for (int n = 1; n <= 48; ++n)
         {
-            float peak = 0.0f;
-            std::vector<std::pair<float, float>> bars;
-            for (int n = 1; n <= 48; ++n)
-            {
-                float hz = f0 * (1.0f + (float) (n - 1) * ratio);
-                if (n % 2 == 0) hz *= alt;
-                if (hz > 8000.0f || hz < 30.0f) continue;
-                const float a = env (hz / fr) * std::pow ((float) n, tilt) / std::sqrt ((float) n);
-                bars.push_back ({ hz, a });
-                peak = std::max (peak, a);
-            }
-            for (const auto& [hz, a] : bars)
-            {
-                if (hz < 60.0f) continue;
-                const float y = base - h * 0.9f * gain * a / std::max (1.0e-6f, peak);
-                const auto r = juce::Rectangle<float> (xOf (hz) - width * 0.5f, y, width, base - y);
-                g.setColour (cEmber.withAlpha (0.25f));
-                g.fillRoundedRectangle (r.expanded (3.0f, 0.0f), 3.0f);
-                g.setGradientFill (emberFill (y, base));
-                g.fillRoundedRectangle (r, 2.0f);
-                // FM : des bandes latérales autour de chaque harmonique
-                if (fm > 0.02f)
-                {
-                    g.setColour (cEmber.withAlpha (0.35f * fm));
-                    for (float side : { 2.0f * f0, -2.0f * f0 })
-                        if (hz + side > 60.0f && hz + side < 8000.0f)
-                            g.drawLine (xOf (hz + side), base, xOf (hz + side), base - (base - y) * 0.45f * fm, 1.5f);
-                }
-            }
-        };
-        layer (fOut, 1.0f, 6.0f);
-        if (std::abs (oct) > 0.01f) layer (fOut * (oct < 0.0f ? 0.5f : 2.0f), std::abs (oct), 3.5f);
+            const float f = fOut * (float) n;
+            if (f > 8000.0f) break;
+            if (f < 60.0f) continue;
+            const float a = std::min (1.0f, env (f / fr) / 1.15f * (1.0f + drive * 0.5f * std::sqrt ((float) n)));
+            const float y = base - h * 0.9f * a;
+            const auto r = juce::Rectangle<float> (xOf (f) - 3.0f, y, 6.0f, base - y);
+            g.setColour (cEmber.withAlpha (0.25f));
+            g.fillRoundedRectangle (r.expanded (3.0f, 0.0f), 3.0f);
+            g.setGradientFill (emberFill (y, base));
+            g.fillRoundedRectangle (r, 2.0f);
+        }
     }
 
     OniriqueVocalBoxAudioProcessor& processor;
     onirique::ChainModule* module = nullptr;
     int k = 0;
-    float fIn = 220.0f, fOut = 220.0f, lastSum = -1.0f;
+    float fIn = 220.0f, fOut = 220.0f, lastSum = -1.0f, inMidi = 0.0f, outMidi = 0.0f;
+    int quiet = 1000;
     bool wasLive = false;
 };
 
@@ -3790,12 +3791,8 @@ private:
     {
         const auto o = onirique::registry::others (&processor);
         if (o.empty()) return utf8 ("SEULE VOCALBOX DU PROJET");
-        static const char* rn[4] { "LEAD", "BACKS", "ADLIBS", "DOUBLES" };
-        static const char* kn[12] { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
-        juce::StringArray s;
-        for (const auto& e : o)
-            s.add (juce::String (rn[juce::jlimit (0, 3, e.role)]) + (e.key >= 0 ? juce::String (" (") + kn[e.key % 12] + (e.key >= 12 ? "m)" : ")") : juce::String()));
-        return utf8 ("AUSSI DANS LE PROJET : ") + s.joinIntoString (utf8 (" · "));
+        // regroupé par rôle (« 9 LEAD (Am) · 2 BACKS ») : lisible même avec beaucoup de VOCALBOX
+        return utf8 ("AUSSI DANS LE PROJET : ") + onirique::registry::summary (o, true);
     }
 
     void refine()
@@ -4245,12 +4242,10 @@ static std::unique_ptr<ModulePanel> buildModulePanel (OniriqueVocalBoxAudioProce
         case modules::pitcher:
         {
             auto s = stdPanel (p, code, std::make_unique<PitcherViz> (p, code));
-            s->topRow = { &s->toggle (ids::pchSnap, "SNAP") };
-            s->note = utf8 ("LES CONSONNES ET LES SOUFFLES PASSENT PAR LA VOIX D'ORIGINE");
-            s->knobs = { &s->knob (ids::pchPitch, "PITCH"), &s->knob (ids::pchFormant, "FORMANT"), &s->knob (ids::pchHarmonics, "HARMONICS"),
-                         &s->knob (ids::pchRatio, "RATIO"), &s->knob (ids::pchFm, "FM"), &s->knob (ids::pchAlternator, "ALTERNATOR"),
-                         &s->knob (ids::pchOctave, "OCTAVE"), &s->knob (ids::pchGlide, "GLIDE"), &s->knob (ids::pchSmear, "SMEAR"),
-                         &s->knob (ids::pchStereo, "STEREO"), &s->knob (ids::pchDetune, "DETUNE"), &s->knob (ids::pchMix, "MIX") };
+            s->topRow = { &s->toggle (ids::pchSnap, "SNAP"), &s->toggle (ids::pchRobot, "ROBOT") };
+            s->note = utf8 ("TA VOIX GARDE SES INFLEXIONS · FORMANT CHANGE LE TIMBRE SANS TOUCHER À LA HAUTEUR");
+            s->knobs = { &s->knob (ids::pchPitch, "PITCH"), &s->knob (ids::pchFormant, "FORMANT"), &s->knob (ids::pchDetune, "FINE"),
+                         &s->knob (ids::pchDrive, "DRIVE"), &s->knob (ids::pchMix, "MIX") };
             return s;
         }
         default: break;

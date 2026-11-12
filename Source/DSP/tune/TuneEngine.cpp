@@ -301,6 +301,7 @@ void TuneEngine::reset() noexcept
     if (! prepared)
         return;
 
+    monoActive = false;
     for (auto& ring : inRing)
         std::fill (ring.begin(), ring.end(), 0.0f);
     std::fill (analysisRing.begin(), analysisRing.end(), 0.0f);
@@ -610,7 +611,16 @@ void TuneEngine::emitControl (const Raw& raw) noexcept
 {
     const double dt = (double) hopFs / fs;
     const double frequency = raw.voiced && raw.period > 0.0f ? fs / (double) raw.period : 0.0;
-    const auto out = corrector.process (raw.voiced, frequency, dt, correctorParams);
+    auto out = corrector.process (raw.voiced, frequency, dt, correctorParams);
+    if (! params.correct && out.voiced)
+    {
+        // PITCHER : on ne corrige rien, on décale la voix telle qu'elle est (ou on la fige sur la première note de la phrase)
+        if (! monoActive) monoNote = std::round (out.inMidi);
+        monoActive = true;
+        out.outMidi = (params.monotone ? monoNote : out.inMidi) + params.transpose;
+        out.pin = params.monotone ? 1.0f : 0.0f;
+    }
+    else if (! out.voiced) monoActive = false;
 
     Control control;
     control.time = raw.time;

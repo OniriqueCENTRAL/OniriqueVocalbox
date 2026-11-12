@@ -33,6 +33,8 @@ struct EngineParams
     float tracking = 0.5f;               // 0..1
     float mix = 1.0f;                    // 0..1
     bool bypass = false;
+    bool correct = true;                 // false = transposition pure : la voix garde sa justesse et ses inflexions (PITCHER)
+    bool monotone = false;               // avec correct = false : chaque phrase reste sur sa première note (effet robot)
 
     bool vocoder = false;
     int vocoderVoicing = 0;              // voir Vocoder::voicingNames
@@ -233,6 +235,8 @@ private:
     int decim = 2, hopFs = 128, latency = 0;
     double minPeriod = 16.0, maxPeriod = 1024.0, unvoicedPeriod = 220.0, analysisDelay = 0.0;
     double formantSpeed = 1.0;
+    float monoNote = 60.0f;      // transposition pure : la note figée de la phrase (monotone)
+    bool monoActive = false;
     bool prepared = false;
 
     // --- signal
