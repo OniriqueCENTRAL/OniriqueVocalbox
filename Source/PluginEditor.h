@@ -211,6 +211,7 @@ private:
     void timerCallback() override;
     juce::Point<int> lastScreenPos;   // la fenêtre bouge : animations en pause (timerCallback)
     double movingUntil = 0.0;
+    double openedAt = juce::Time::getMillisecondCounterHiRes();   // l'ouverture ne compte pas comme un déplacement
     void select (int code);
     void syncSelection();
     void openMixPage();

@@ -962,6 +962,9 @@ VocalBoxView::VocalBoxView (OniriqueVocalBoxAudioProcessor& p)
     else if (o == "chain") processor.offerChain = juce::JSON::parse (R"({"artist":"Tiakola","installs":7,"modules":[]})");
     if (juce::SystemStats::getEnvironmentVariable ("ONIRIQUE_UI_MIXPAGE", {}).isNotEmpty()) openMixPage();
    #endif
+    // l'écran de départ et la chaîne sont là dès la première image, sans attendre le premier tour du minuteur
+    start.setVisible (! modules::valid (selected));
+    strip.tick();
     startTimerHz (60);
 }
 
@@ -1177,7 +1180,9 @@ void VocalBoxView::timerCallback()
     {
         const auto pos = getScreenPosition();
         const double now = juce::Time::getMillisecondCounterHiRes();
-        if (pos != lastScreenPos) { lastScreenPos = pos; movingUntil = now + 250.0; }
+        // à l'ouverture (premières lectures, le DAW place la fenêtre) ce n'est pas un déplacement : rien n'attend
+        if (now - openedAt < 1500.0 || ! isShowing()) lastScreenPos = pos;
+        else if (pos != lastScreenPos) { lastScreenPos = pos; movingUntil = now + 250.0; }
         if (now < movingUntil) return;
     }
    #if ONIRIQUE_UI_TEST
