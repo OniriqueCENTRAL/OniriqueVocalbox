@@ -39,14 +39,8 @@ jobs:
           # Format ONIRIQUE CENTRAL : « NOM.vst3.zip » avec NOM.vst3 et NOM.component à la racine.
           mkdir -p dist/mac
           (cd central && ditto -c -k . "../dist/mac/$PRODUCT.vst3.zip")
-          if [ -d "$OUT/Standalone/$PRODUCT.app" ]; then
-            codesign --force --deep --sign - "$OUT/Standalone/$PRODUCT.app"
-            (cd "$OUT/Standalone" && ditto -c -k --keepParent "$PRODUCT.app" "$GITHUB_WORKSPACE/$PRODUCT Standalone.zip")
-          fi
       - uses: actions/upload-artifact@v4
         with: { name: mac, path: dist/mac }
-      - uses: actions/upload-artifact@v4
-        with: { name: mac-standalone, path: "*Standalone.zip", if-no-files-found: ignore }
 
   windows:
     runs-on: windows-latest
