@@ -29,7 +29,8 @@ jobs:
       - name: Compiler (universel arm64 + x86_64)
         run: |
           cmake -B build -G Xcode
-          cmake --build build --config Release -- -quiet
+          # VST3 et AU seulement (ce que contient le .zip) : l'app autonome range le modèle dans Contents/MacOS, que codesign refuse
+          cmake --build build --config Release --target OniriqueVocalBox_VST3 OniriqueVocalBox_AU -- -quiet
       - name: Signer (ad hoc) et empaqueter
         run: |
           OUT="build/${TARGET}_artefacts/Release"
