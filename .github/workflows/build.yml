@@ -14,8 +14,8 @@ env:
 
 jobs:
   mac:
-    # EN PAUSE (05/11/2026) : le Mac se compile sur une vraie machine Mac de l'équipe ; enlever « if: false » pour le rallumer
-    if: false
+    # Mac à la demande (lancement manuel « Run workflow ») : compile seulement le Mac, le .zip sort en artefact « mac »
+    if: github.event_name == 'workflow_dispatch'
     runs-on: macos-15-intel   # les machines Apple Silicon de GitHub sont saturées ; Xcode sort quand même un binaire universel
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +50,7 @@ jobs:
         with: { name: mac-standalone, path: "*Standalone.zip", if-no-files-found: ignore }
 
   windows:
+    if: github.event_name == 'push'   # Windows et publication : à chaque envoi sur main
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
