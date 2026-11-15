@@ -108,6 +108,8 @@ public:
     // sans réglage : un choix de l'interface (la bande affichée du MULTIBAND...)
     explicit GlassTabs (const juce::StringArray& labels) : labels (labels) { setMouseCursor (juce::MouseCursor::PointingHandCursor); }
     bool round = false;   // en gélule (bords tout ronds), comme la section OS
+    bool vertical = false;  // en colonne, comme les boutons d'un rack (RATIO, METER)
+    bool reversed = false;  // en colonne : le dernier choix en haut (RATIO : ALL, 20, 12, 8, 4)
     std::function<void (int)> onChange;
     void setSelected (int i) { if (i != selected) { selected = i; repaint(); } }
     int getSelected() const noexcept { return selected; }
@@ -119,7 +121,7 @@ public:
     float idealWidth (float height) const;
 
 private:
-    int at (float x) const noexcept;
+    int at (juce::Point<float> p) const noexcept;
     juce::Rectangle<float> segment (int) const;
     juce::RangedAudioParameter* param = nullptr;
     std::unique_ptr<juce::ParameterAttachment> attachment;

@@ -1390,89 +1390,206 @@ public:
 
     void tick() override
     {
-        if (ui::approach (angle, angleFor (read ? read() : -30.0f), 0.16f)) repaint();
+        bool moved = ui::approach (angle, angleFor (read ? read() : -30.0f), 0.16f);
+        // le voyant PEAK : au-delà de 0 VU (niveau de sortie), il s'allume vite et s'éteint doucement
+        moved |= ui::approach (peak, angle > 21.0f ? 1.0f : 0.0f, angle > 21.0f ? 0.5f : 0.06f);
+        if (moved) repaint();
     }
+
+    void resized() override { baseCache = {}; glassCache = {}; }
 
     void paint (juce::Graphics& g) override
     {
         const auto b = getLocalBounds().toFloat();
-        // la boîte : 10 de marge, rayon 16, fond #050405, liseré blanc .12, lueur braise de 30, ombre intérieure
-        // une marge tout autour pour que la lueur tienne dans le composant (sinon elle est coupée net sur les bords)
         const float pad = 22.0f * ui::unitOf (*this);
         const float s = std::min ((b.getWidth() - 2.0f * pad) / 320.0f, (b.getHeight() - 2.0f * pad) / 195.0f);
+        if (s <= 0.0f) return;
         const auto frame = juce::Rectangle<float> (320.0f * s, 195.0f * s).withCentre (b.getCentre());
-        if (! glowCache.isValid() || glowCache.getWidth() != getWidth() || glowCache.getHeight() != getHeight())
-        {
-            // la lueur floue ne change qu'avec la taille : calculée une fois, l'aiguille bouge par-dessus
-            juce::Image soft (juce::Image::ARGB, std::max (1, getWidth()), std::max (1, getHeight()), true, juce::SoftwareImageType());
-            {
-                juce::Graphics cg (soft);
-                ui::softGlowRect (cg, frame, 16.0f * s, onirique::look::ember.withAlpha (0.32f), pad * 0.9f);
-            }
-            glowCache = ui::gpuImage (soft);   // gardée par la carte graphique
-        }
-        g.drawImageAt (glowCache, 0, 0);
-        g.setColour (juce::Colour (0xff050405));
-        g.fillRoundedRectangle (frame, 16.0f * s);
-        g.setColour (juce::Colours::white.withAlpha (0.12f));
-        g.drawRoundedRectangle (frame.reduced (0.5f), 16.0f * s, 1.0f);
-
-        const auto face = frame.reduced (10.0f * s);
+        const auto face = frame.reduced (13.0f * s);
         const float k = face.getWidth() / 300.0f;
+        // le décor ne change qu'avec la taille : dessiné une fois, l'aiguille et le voyant bougent entre les deux couches
+        if (! baseCache.isValid() || baseCache.getWidth() != getWidth() || baseCache.getHeight() != getHeight())
+        {
+            juce::Image base (juce::Image::ARGB, std::max (1, getWidth()), std::max (1, getHeight()), true, juce::SoftwareImageType());
+            juce::Image glass (juce::Image::ARGB, std::max (1, getWidth()), std::max (1, getHeight()), true, juce::SoftwareImageType());
+            { juce::Graphics cg (base); paintBase (cg, frame, face, s, k, pad); }
+            { juce::Graphics cg (glass); paintGlass (cg, face, k); }
+            baseCache = ui::gpuImage (base);
+            glassCache = ui::gpuImage (glass);
+        }
+        g.drawImageAt (baseCache, 0, 0);
+
         auto P = [&] (float x, float y) { return juce::Point<float> (face.getX() + x * k, face.getY() + y * k); };
         auto polar = [&] (float r, float deg) { const float a = deg * kPi / 180.0f; return P (150.0f + r * std::sin (a), 165.0f - r * std::cos (a)); };
-        juce::ColourGradient fg (juce::Colour (0xfffff1c8), P (150, 175).x, P (150, 175).y, juce::Colour (0xffc79a4c), P (150, 175).x + 315.0f * k, P (150, 175).y, true);
-        fg.addColour (0.6, juce::Colour (0xffefcf8e));
-        g.setGradientFill (fg);
-        g.fillRoundedRectangle (face, 10.0f * k);
+        {
+            juce::Graphics::ScopedSaveState st (g);
+            juce::Path clip; clip.addRoundedRectangle (face, 9.0f * k);
+            g.reduceClipRegion (clip);
+            // le voyant PEAK, en haut à droite du cadran
+            const auto led = juce::Rectangle<float> (9.0f * k, 9.0f * k).withCentre (P (276, 20));
+            if (peak > 0.01f)
+                ui::softGlowEllipse (g, led.expanded (2.0f * k), juce::Colour (0xffff3b2a).withAlpha (0.65f * peak), 9.0f * k);
+            g.setGradientFill (juce::ColourGradient (juce::Colour (0xff4a1410).interpolatedWith (juce::Colour (0xffff6a50), peak), led.getCentreX(), led.getY(),
+                                                     juce::Colour (0xff230806).interpolatedWith (juce::Colour (0xffd8241a), peak), led.getCentreX(), led.getBottom(), false));
+            g.fillEllipse (led);
+            g.setColour (juce::Colours::black.withAlpha (0.5f));
+            g.drawEllipse (led, 0.8f * k);
 
-        const juce::Colour ink (0xff2a2016), red (0xffc0301f);
-        auto arc = [&] (float r, float a0, float a1, juce::Colour c, float w)
-        {
-            juce::Path p;
-            for (int i = 0; i <= 40; ++i) { const auto q = polar (r, a0 + (a1 - a0) * (float) i / 40.0f); if (i == 0) p.startNewSubPath (q); else p.lineTo (q); }
-            g.setColour (c);
-            g.strokePath (p, juce::PathStrokeType (w * k));
-        };
-        arc (118.0f, -48.0f, 48.0f, ink, 1.6f);
-        arc (121.2f, 20.0f, 48.0f, red, 5.0f);
-        auto tickAt = [&] (float r1, float r2, float a, juce::Colour c, float w) { g.setColour (c); g.drawLine ({ polar (r1, a), polar (r2, a) }, w * k); };
-        for (float a : { -44.0f, -40.0f, -36.0f, -33.0f, -27.0f, -24.0f, -17.0f, -14.0f, -8.0f, -5.0f, -3.0f, 3.0f, 9.0f, 15.0f, 24.0f, 32.0f, 41.0f, 44.0f })
-            tickAt (118.0f, 124.0f, a, a > 20.0f ? red : ink, 1.0f);
-        const std::pair<const char*, float> major[] { { "20", -48.0f }, { "10", -30.0f }, { "7", -20.0f }, { "5", -11.0f }, { "3", 0.0f }, { "2", 6.0f },
-                                                      { "1", 12.0f }, { "0", 20.0f }, { "+1", 28.0f }, { "+2", 37.0f }, { "+3", 48.0f } };
-        g.setFont (ui::css (ui::Face::body, 11.0f * k));
-        for (const auto& [l, a] : major)
-        {
-            const auto c = a >= 20.0f ? red : ink;
-            tickAt (118.0f, 128.0f, a, c, 1.8f);
-            g.setColour (c);
-            g.drawText (l, juce::Rectangle<float> (30.0f * k, 14.0f * k).withCentre (polar (138.0f, a)), juce::Justification::centred, false);
-        }
-        g.setFont (ui::css (ui::Face::mono, 7.0f * k));
-        for (const auto& [l, a] : std::initializer_list<std::pair<const char*, float>> { { "0", -48.0f }, { "20", -30.0f }, { "40", -14.0f }, { "60", 0.0f }, { "80", 10.0f }, { "100", 20.0f } })
-        {
-            tickAt (110.0f, 115.0f, a, ink, 0.8f);
-            g.setColour (juce::Colour (0xff5a4630));
-            g.drawText (l, juce::Rectangle<float> (24.0f * k, 10.0f * k).withCentre (polar (102.0f, a)), juce::Justification::centred, false);
-        }
-        g.setColour (ink);
-        g.setFont (ui::css (ui::Face::display, 9.0f * k, 0.2f));
-        g.drawText ("GAIN REDUCTION", juce::Rectangle<float> (200.0f * k, 14.0f * k).withCentre (P (150, 146)), juce::Justification::centred, false);
+            // l'aiguille effilée et son ombre portée sur le cadran
+            const auto pivot = P (150, 165);
+            auto needle = [&] (juce::Point<float> off)
+            {
+                const auto tip = polar (117.0f, angle) + off, base = pivot + off;
+                const auto dir = (tip - base) / std::max (1.0e-3f, tip.getDistanceFrom (base));
+                const juce::Point<float> nrm (-dir.y, dir.x);
+                juce::Path p;
+                p.startNewSubPath (base + nrm * (1.6f * k) - dir * (14.0f * k));
+                p.lineTo (tip + nrm * (0.35f * k));
+                p.lineTo (tip - nrm * (0.35f * k));
+                p.lineTo (base - nrm * (1.6f * k) - dir * (14.0f * k));
+                p.closeSubPath();
+                return p;
+            };
+            g.setColour (juce::Colours::black.withAlpha (0.16f));
+            g.fillPath (needle ({ 3.0f * k, 4.0f * k }));
+            g.setColour (juce::Colours::black.withAlpha (0.08f));
+            g.fillPath (needle ({ 5.0f * k, 7.0f * k }));
+            g.setColour (juce::Colour (0xff141010));
+            g.fillPath (needle ({}));
 
-        const auto pivot = P (150, 165), tip = polar (113.0f, angle);
-        g.setColour (juce::Colour (0xff111111));
-        g.drawLine ({ pivot, tip }, 2.2f * k);
-        g.setColour (juce::Colour (0xff1d1d1f));
-        g.fillEllipse (juce::Rectangle<float> (22.0f * k, 22.0f * k).withCentre (pivot));
-        juce::Path glass; glass.addRoundedRectangle (face, 10.0f * k);
-        juce::ColourGradient gl (juce::Colours::white.withAlpha (0.35f), 0.0f, face.getY(), juce::Colours::black.withAlpha (0.2f), 0.0f, face.getBottom(), false);
-        gl.addColour (0.5, juce::Colours::white.withAlpha (0.03f));
-        g.setGradientFill (gl);
-        g.fillPath (glass);
+            // le capot noir du pivot, bombé, en bas du cadran
+            const auto hood = juce::Rectangle<float> (92.0f * k, 52.0f * k).withCentre (P (150, 184));
+            g.setColour (juce::Colours::black.withAlpha (0.22f));
+            g.fillEllipse (hood.expanded (3.0f * k).translated (0.0f, -1.0f * k));
+            g.setGradientFill (juce::ColourGradient (juce::Colour (0xff2c2729), hood.getCentreX(), hood.getY(), juce::Colour (0xff0b0a0b), hood.getCentreX(), hood.getY() + 22.0f * k, false));
+            g.fillEllipse (hood);
+            g.setColour (juce::Colours::white.withAlpha (0.16f));
+            juce::Path rim; rim.addCentredArc (hood.getCentreX(), hood.getCentreY(), hood.getWidth() * 0.5f - 1.0f * k, hood.getHeight() * 0.5f - 1.0f * k, 0.0f, -1.1f, 1.1f, true);
+            g.strokePath (rim, juce::PathStrokeType (1.0f * k));
+            // la vis du pivot
+            const auto screw = juce::Rectangle<float> (8.0f * k, 8.0f * k).withCentre (P (150, 171));
+            g.setGradientFill (juce::ColourGradient (juce::Colour (0xffa9abb2), screw.getX(), screw.getY(), juce::Colour (0xff3d3e43), screw.getRight(), screw.getBottom(), false));
+            g.fillEllipse (screw);
+            g.setColour (juce::Colour (0xff1a1a1c));
+            g.drawLine ({ screw.getX() + 1.5f * k, screw.getCentreY(), screw.getRight() - 1.5f * k, screw.getCentreY() }, 1.0f * k);
+        }
+        g.drawImageAt (glassCache, 0, 0);
     }
 
 private:
+    void paintBase (juce::Graphics& g, juce::Rectangle<float> frame, juce::Rectangle<float> face, float s, float k, float pad)
+    {
+        // la lueur braise autour du boîtier
+        ui::softGlowRect (g, frame, 16.0f * s, onirique::look::ember.withAlpha (0.30f), pad * 0.9f);
+        // le boîtier : noir, un bord à peine plus clair (pas de liseré blanc)
+        g.setGradientFill (juce::ColourGradient (juce::Colour (0xff1a1719), 0.0f, frame.getY(), juce::Colour (0xff060506), 0.0f, frame.getBottom(), false));
+        g.fillRoundedRectangle (frame, 16.0f * s);
+        g.setColour (juce::Colour (0xff2a2427));
+        g.drawRoundedRectangle (frame.reduced (0.5f * s), 16.0f * s, 1.0f * s);
+        // la fenêtre creusée : un rebord sombre autour du cadran
+        g.setColour (juce::Colours::black);
+        g.fillRoundedRectangle (face.expanded (3.0f * k), 11.0f * k);
+
+        auto P = [&] (float x, float y) { return juce::Point<float> (face.getX() + x * k, face.getY() + y * k); };
+        auto polar = [&] (float r, float deg) { const float a = deg * kPi / 180.0f; return P (150.0f + r * std::sin (a), 165.0f - r * std::cos (a)); };
+
+        juce::Graphics::ScopedSaveState st (g);
+        juce::Path clip; clip.addRoundedRectangle (face, 9.0f * k);
+        g.reduceClipRegion (clip);
+        // le cadran crème, éclairé de l'intérieur : une lampe chaude derrière l'échelle, les bords plus sombres
+        juce::ColourGradient fg (juce::Colour (0xfffff3cf), P (150, 120).x, P (150, 120).y, juce::Colour (0xffb98a44), P (150, 120).x + 230.0f * k, P (150, 120).y, true);
+        fg.addColour (0.45, juce::Colour (0xfff3d79c));
+        fg.addColour (0.8, juce::Colour (0xffd9ae68));
+        g.setGradientFill (fg);
+        g.fillRect (face);
+        juce::ColourGradient lamp (juce::Colour (0xffffe9b0).withAlpha (0.55f), P (150, 95).x, P (150, 95).y, juce::Colour (0xffffe9b0).withAlpha (0.0f), P (150, 95).x + 120.0f * k, P (150, 95).y, true);
+        g.setGradientFill (lamp);
+        g.fillRect (face);
+        // une pointe de braise dans les coins du bas, pour la DA
+        for (const float x : { 0.0f, 300.0f })
+        {
+            juce::ColourGradient e (onirique::look::ember.withAlpha (0.16f), P (x, 175).x, P (x, 175).y, onirique::look::ember.withAlpha (0.0f), P (x, 175).x + 90.0f * k, P (x, 175).y, true);
+            g.setGradientFill (e);
+            g.fillRect (face);
+        }
+
+        const juce::Colour ink (0xff2a2016), red (0xffc0301f), soft (0xff6a5236);
+        auto arc = [&] (float r, float a0, float a1, juce::Colour c, float w)
+        {
+            juce::Path p;
+            for (int i = 0; i <= 48; ++i) { const auto q = polar (r, a0 + (a1 - a0) * (float) i / 48.0f); if (i == 0) p.startNewSubPath (q); else p.lineTo (q); }
+            g.setColour (c);
+            g.strokePath (p, juce::PathStrokeType (w * k, juce::PathStrokeType::curved, juce::PathStrokeType::butt));
+        };
+        auto tickAt = [&] (float r1, float r2, float a, juce::Colour c, float w) { g.setColour (c); g.drawLine ({ polar (r1, a), polar (r2, a) }, w * k); };
+
+        // la zone rouge pleine (0 .. +3), puis les deux arcs de l'échelle
+        {
+            juce::Path band;
+            for (int i = 0; i <= 32; ++i) { const auto q = polar (124.0f, 20.0f + 28.0f * (float) i / 32.0f); if (i == 0) band.startNewSubPath (q); else band.lineTo (q); }
+            for (int i = 32; i >= 0; --i) band.lineTo (polar (118.0f, 20.0f + 28.0f * (float) i / 32.0f));
+            band.closeSubPath();
+            g.setColour (red.withAlpha (0.85f));
+            g.fillPath (band);
+        }
+        arc (118.0f, -48.0f, 48.0f, ink, 1.3f);
+        arc (124.0f, -48.0f, 20.0f, ink.withAlpha (0.55f), 0.6f);
+        // les graduations fines : chaque dB jusqu'à -3, chaque demi-dB au-dessus
+        for (float db = -20.0f; db <= 3.001f; db += (db < -3.0f ? 1.0f : 0.5f))
+        {
+            const float a = angleFor (db);
+            tickAt (118.0f, 123.0f, a, db >= 0.0f ? ink.withAlpha (0.8f) : ink, 0.7f);
+        }
+        const std::pair<const char*, float> major[] { { "20", -20.0f }, { "10", -10.0f }, { "7", -7.0f }, { "5", -5.0f }, { "3", -3.0f }, { "2", -2.0f },
+                                                      { "1", -1.0f }, { "0", 0.0f }, { "+1", 1.0f }, { "+2", 2.0f }, { "+3", 3.0f } };
+        g.setFont (ui::css (ui::Face::body, 11.5f * k));
+        for (const auto& [l, db] : major)
+        {
+            const float a = angleFor (db);
+            const auto c = db >= 0.0f ? red : ink;
+            tickAt (114.0f, 130.0f, a, db >= 0.0f ? ink : c, 1.5f);
+            g.setColour (c);
+            g.drawText (l, juce::Rectangle<float> (30.0f * k, 14.0f * k).withCentre (polar (140.0f, a)), juce::Justification::centred, false);
+        }
+        // l'échelle en pourcentage, en dessous
+        arc (104.0f, -48.0f, 20.0f, soft, 0.6f);
+        g.setFont (ui::css (ui::Face::mono, 6.5f * k));
+        for (const auto& [l, a] : std::initializer_list<std::pair<const char*, float>> { { "0", -48.0f }, { "20", -30.0f }, { "40", -14.0f }, { "60", 0.0f }, { "80", 10.0f }, { "100", 20.0f } })
+        {
+            tickAt (101.0f, 107.0f, a, soft, 0.8f);
+            g.setColour (soft);
+            g.drawText (l, juce::Rectangle<float> (24.0f * k, 10.0f * k).withCentre (polar (93.0f, a)), juce::Justification::centred, false);
+        }
+        // VU en grand, et ce que l'aiguille lit
+        g.setColour (ink.withAlpha (0.88f));
+        g.setFont (ui::css (ui::Face::display, 24.0f * k, 0.08f));
+        g.drawText ("VU", juce::Rectangle<float> (80.0f * k, 26.0f * k).withCentre (P (150, 102)), juce::Justification::centred, false);
+        g.setColour (soft);
+        g.setFont (ui::css (ui::Face::mono, 6.5f * k, 0.25f));
+        g.drawText ("GAIN REDUCTION", juce::Rectangle<float> (200.0f * k, 10.0f * k).withCentre (P (150, 122)), juce::Justification::centred, false);
+        g.drawText ("PEAK", juce::Rectangle<float> (40.0f * k, 9.0f * k).withCentre (P (276, 32)), juce::Justification::centred, false);
+    }
+
+    // le verre bombé : un reflet doux en haut, l'ombre des bords de la fenêtre
+    void paintGlass (juce::Graphics& g, juce::Rectangle<float> face, float k)
+    {
+        juce::Graphics::ScopedSaveState st (g);
+        juce::Path clip; clip.addRoundedRectangle (face, 9.0f * k);
+        g.reduceClipRegion (clip);
+        const auto sheen = juce::Rectangle<float> (face.getWidth() * 1.5f, face.getHeight() * 1.1f).withCentre ({ face.getCentreX() - face.getWidth() * 0.12f, face.getY() - face.getHeight() * 0.18f });
+        juce::ColourGradient sg (juce::Colours::white.withAlpha (0.30f), 0.0f, face.getY(), juce::Colours::white.withAlpha (0.0f), 0.0f, sheen.getBottom(), false);
+        g.setGradientFill (sg);
+        g.fillEllipse (sheen);
+        for (int i = 0; i < 4; ++i)
+        {
+            g.setColour (juce::Colours::black.withAlpha (0.14f - 0.03f * (float) i));
+            g.drawRoundedRectangle (face.reduced ((1.0f + 2.0f * (float) i) * k), 9.0f * k, 2.5f * k);
+        }
+        juce::ColourGradient low (juce::Colours::black.withAlpha (0.0f), 0.0f, face.getY() + face.getHeight() * 0.6f, juce::Colours::black.withAlpha (0.18f), 0.0f, face.getBottom(), false);
+        g.setGradientFill (low);
+        g.fillRect (face);
+    }
+
     // dB de VU (-20 .. +3) -> angle de l'aiguille sur l'échelle (0 VU à +20°)
     static float angleFor (float vu)
     {
@@ -1484,8 +1601,8 @@ private:
         return 52.0f;
     }
     std::function<float()> read;
-    float angle = 20.0f;
-    juce::Image glowCache;
+    float angle = 20.0f, peak = 0.0f;
+    juce::Image baseCache, glassCache;
 };
 
 // la compression en direct (bas des façades) : la voix qui entre (pâle), qui sort (blanche), et la réduction en braise
@@ -1578,8 +1695,143 @@ public:
 
     void addRowFirst (const juce::String& label, juce::Component& c) { rows.insert (rows.begin(), { label, &c }); }
 
+    /*  En rack (1176, LA-2A) : la disposition des appareils de studio, dans la DA. 1176 : INPUT et OUTPUT en grand,
+        ATTACK et RELEASE empilés en petit, la colonne RATIO, le VU, la colonne METER. LA-2A : la colonne MODE, GAIN, le
+        VU au centre, PEAK REDUCTION, la colonne METER. Des oreilles de rack vissées sur les côtés, la plaque du modèle
+        sous le VU, la bande de compression en bas. rackKnobs : tous les potards (le mode simple en cache, sans les
+        retirer de la disposition). */
+    enum Rack { none = 0, fetRack, optoRack };
+    Rack rack = none;
+    std::vector<StarKnob*> rackKnobs;
+    GlassTabs* rackTabs = nullptr;    // RATIO (1176) ou MODE (LA-2A)
+
+    void layoutRack()
+    {
+        const float u = ui::unitOf (*this);
+        captions.clear(); seps.clear();
+        auto r = getLocalBounds().toFloat().reduced (66.0f * u, 26.0f * u);
+        strip.setBounds (r.removeFromBottom (84.0f * u).toNearestInt());
+        r.removeFromBottom (14.0f * u);
+        const float gap = 22.0f * u, capH = 24.0f * u;
+        auto sep = [&] { seps.push_back (r.getX() - gap * 0.5f); };
+        // une colonne de boutons : son nom au-dessus, les cases de 40 centrées dessous
+        auto column = [&] (juce::Rectangle<float> col, const juce::String& name, GlassTabs& t, int n)
+        {
+            // le nom collé au-dessus des cases, l'ensemble centré dans la hauteur
+            const float h = std::min (col.getHeight() - capH, (float) n * 44.0f * u + 4.0f * u);
+            auto grp = col.withSizeKeepingCentre (col.getWidth(), capH + 6.0f * u + h);
+            captions.push_back ({ name, grp.removeFromTop (capH) });
+            grp.removeFromTop (6.0f * u);
+            t.setBounds (grp.toNearestInt());
+        };
+        auto vuIn = [&] (juce::Rectangle<float> area)
+        {
+            plate = area.removeFromBottom (44.0f * u);
+            area.removeFromBottom (8.0f * u);
+            float w = std::min (area.getWidth(), 440.0f * u), h = w * 195.0f / 320.0f;
+            if (h > area.getHeight()) { h = area.getHeight(); w = h * 320.0f / 195.0f; }
+            const auto v = juce::Rectangle<float> (w, h).withCentre ({ area.getCentreX(), area.getBottom() - h * 0.5f });
+            vu.setBounds (v.toNearestInt());
+            plate = plate.withSizeKeepingCentre (std::min (plate.getWidth(), std::max (w, 300.0f * u)), plate.getHeight());
+        };
+
+        if (rack == fetRack && rackKnobs.size() >= 4)
+        {
+            const float big = std::min (190.0f * u, r.getWidth() * 0.17f);
+            for (int i = 0; i < 2; ++i)
+            {
+                rackKnobs[(size_t) i]->setBounds (r.removeFromLeft (big).toNearestInt());
+                r.removeFromLeft (gap); sep();
+            }
+            auto ar = r.removeFromLeft (128.0f * u);
+            r.removeFromLeft (gap); sep();
+            rackKnobs[2]->setBounds (ar.removeFromTop (ar.getHeight() * 0.5f).toNearestInt());
+            rackKnobs[3]->setBounds (ar.toNearestInt());
+            column (r.removeFromLeft (96.0f * u), "RATIO", *rackTabs, 5);
+            r.removeFromLeft (gap); sep();
+            auto mc = r.removeFromRight (96.0f * u);
+            r.removeFromRight (gap);
+            seps.push_back (r.getRight() + gap * 0.5f);
+            column (mc, "METER", meter, 4);
+            vuIn (r);
+        }
+        else if (rack == optoRack && rackKnobs.size() >= 2)
+        {
+            column (r.removeFromLeft (130.0f * u), "MODE", *rackTabs, 2);
+            r.removeFromLeft (gap); sep();
+            auto mc = r.removeFromRight (130.0f * u);
+            r.removeFromRight (gap);
+            const float sepRight = r.getRight() + gap * 0.5f;
+            column (mc, "METER", meter, 3);
+            const float big = std::min (240.0f * u, r.getWidth() * 0.27f);
+            rackKnobs[0]->setBounds (r.removeFromLeft (big).toNearestInt());
+            rackKnobs[1]->setBounds (r.removeFromRight (big).toNearestInt());
+            r.reduce (gap, 0.0f);
+            vuIn (r);
+            seps.push_back (sepRight);
+        }
+    }
+
+    void paintRack (juce::Graphics& g)
+    {
+        const float u = ui::unitOf (*this);
+        const auto r = getLocalBounds().toFloat();
+        // les oreilles du rack : deux vis à fente par côté
+        for (const float side : { 0.0f, 1.0f })
+        {
+            const float x = side == 0.0f ? 33.0f * u : r.getRight() - 33.0f * u;
+            for (const float y : { 46.0f * u, r.getBottom() - 46.0f * u })
+            {
+                // la fente oblongue du rack, la vis dedans
+                const auto slot = juce::Rectangle<float> (16.0f * u, 26.0f * u).withCentre ({ x, y });
+                g.setColour (juce::Colours::black.withAlpha (0.55f));
+                g.fillRoundedRectangle (slot, 8.0f * u);
+                g.setColour (juce::Colours::white.withAlpha (0.07f));
+                g.drawRoundedRectangle (slot.translated (0.0f, 0.5f * u), 8.0f * u, 1.0f * u);
+                const auto head = juce::Rectangle<float> (13.0f * u, 13.0f * u).withCentre ({ x, y });
+                g.setGradientFill (juce::ColourGradient (juce::Colour (0xffb9bbc2), head.getX(), head.getY(), juce::Colour (0xff4a4b50), head.getRight(), head.getBottom(), false));
+                g.fillEllipse (head);
+                g.setColour (juce::Colour (0xff1b1b1e));
+                juce::Path cross;
+                cross.startNewSubPath (head.getX() + 3.0f * u, head.getCentreY()); cross.lineTo (head.getRight() - 3.0f * u, head.getCentreY());
+                cross.startNewSubPath (head.getCentreX(), head.getY() + 3.0f * u); cross.lineTo (head.getCentreX(), head.getBottom() - 3.0f * u);
+                g.strokePath (cross, juce::PathStrokeType (1.4f * u));
+            }
+        }
+        // les séparations gravées entre les sections
+        const float top = 34.0f * u, bottom = (float) strip.getY() - 18.0f * u;
+        for (const float x : seps)
+        {
+            g.setColour (juce::Colours::black.withAlpha (0.40f));
+            g.fillRect (juce::Rectangle<float> (x - 0.5f * u, top, 1.0f * u, bottom - top));
+            g.setColour (juce::Colours::white.withAlpha (0.05f));
+            g.fillRect (juce::Rectangle<float> (x + 0.5f * u, top, 1.0f * u, bottom - top));
+        }
+        // les noms des colonnes
+        g.setColour (juce::Colour (0xffe9e9ec));
+        g.setFont (ui::css (ui::Face::display, 12.0f * u, 0.2f));
+        for (auto& [name, area] : captions)
+            g.drawText (name, area, juce::Justification::centred, false);
+        // la plaque du modèle sous le VU : le nom en grand, l'appareil en petit, un liseré argent
+        if (! plate.isEmpty())
+        {
+            g.setColour (juce::Colours::black.withAlpha (0.35f));
+            g.fillRoundedRectangle (plate, 8.0f * u);
+            g.setColour (juce::Colour (0xff8d8f96).withAlpha (0.55f));
+            g.drawRoundedRectangle (plate.reduced (0.5f * u), 8.0f * u, 1.0f * u);
+            auto pr = plate.reduced (16.0f * u, 0.0f);
+            g.setColour (juce::Colour (0xffe9e9ec));
+            g.setFont (ui::css (ui::Face::display, 15.0f * u, 0.3f));
+            g.drawText (title, pr, juce::Justification::centredLeft, false);
+            g.setColour (cEmber.interpolatedWith (juce::Colour (0xffe9e9ec), 0.35f));
+            g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.14f));
+            g.drawText (subtitle, pr, juce::Justification::centredRight, false);
+        }
+    }
+
     void resized() override
     {
+        if (rack != none) { layoutRack(); return; }
         const float u = ui::unitOf (*this);
         // padding 30 / 40 ; la bande de compression (112) en bas, 16 au-dessus ; colonne du VU de 420, 40 d'écart
         auto r = getLocalBounds().toFloat().reduced (40.0f * u, 30.0f * u);
@@ -1620,12 +1872,6 @@ public:
         const float u = ui::unitOf (*this);
         const auto r = getLocalBounds().toFloat();
         const float rad = 22.0f * u;
-        // ombre 0 30 70 noir .6
-        for (int k = 3; k >= 1; --k)
-        {
-            g.setColour (juce::Colours::black.withAlpha (0.15f / (float) k));
-            g.fillRoundedRectangle (r.translated (0.0f, 20.0f * u).expanded (12.0f * u * (float) k), rad + 12.0f * u * (float) k);
-        }
         juce::ColourGradient bg (juce::Colour (0xff24181b), r.getX() + r.getWidth() * 0.2f, r.getY(), juce::Colour (0xff0a090a),
                                  r.getX() + r.getWidth() * 0.2f + r.getWidth() * 1.2f, r.getY(), true);
         bg.addColour (0.45, juce::Colour (0xff121012));
@@ -1654,6 +1900,7 @@ public:
         g.setColour (juce::Colours::white.withAlpha (0.08f));
         g.drawRoundedRectangle (r.reduced (4.5f * u), rad - 4.5f * u, 1.0f * u);
 
+        if (rack != none) { paintRack (g); return; }
         const auto head = juce::Rectangle<float> (40.0f * u, headY, 420.0f * u, 20.0f * u);
         g.setColour (juce::Colour (0xffe9e9ec));
         g.setFont (ui::css (ui::Face::display, 15.0f * u, 0.3f));
@@ -1687,6 +1934,9 @@ private:
     VintageVu vu;
     CompStrip strip;
     float headY = 0.0f;
+    std::vector<std::pair<juce::String, juce::Rectangle<float>>> captions;
+    std::vector<float> seps;
+    juce::Rectangle<float> plate;
 };
 
 //==============================================================================
@@ -4080,8 +4330,15 @@ static std::unique_ptr<ModulePanel> buildModulePanel (OniriqueVocalBoxAudioProce
         {
             auto f = std::make_unique<FacePanel> (p, code, "1176", "FET LIMITING AMPLIFIER", T { "GR", "+8", "+4", "OFF" });
             f->knobs = { &f->knob (ids::fetIn, "INPUT"), &f->knob (ids::fetOut, "OUTPUT"), &f->knob (ids::fetAttack, "ATTACK"), &f->knob (ids::fetRelease, "RELEASE") };
-            f->addRowFirst ("RATIO", f->tabs (ids::fetRatio, T { "4", "8", "12", "20", "ALL" }));
-            for (auto* k : f->knobs) k->setFaceStyle (true);
+            auto& ratio = f->tabs (ids::fetRatio, T { "4", "8", "12", "20", "ALL" });
+            f->addRowFirst ("RATIO", ratio);
+            f->knobs[0]->setFaceStyle (true);
+            f->knobs[1]->setFaceStyle (true);    // ATTACK et RELEASE : les petits potards, nom en petit
+            f->rack = FacePanel::fetRack;
+            f->rackKnobs = f->knobs;
+            f->rackTabs = &ratio;
+            ratio.vertical = true; ratio.reversed = true;
+            f->meter.vertical = true;
             return f;
         }
         case modules::opto:
@@ -4090,8 +4347,14 @@ static std::unique_ptr<ModulePanel> buildModulePanel (OniriqueVocalBoxAudioProce
             f->knobs = { &f->knob (ids::laGain, "GAIN"), &f->knob (ids::laPeak, "PEAK REDUCTION") };
             f->cols = 2;
             f->maxKnob = 300.0f;
-            f->addRowFirst ("MODE", f->tabs (ids::laLimit, T { "COMPRESS", "LIMIT" }));
+            auto& mode = f->tabs (ids::laLimit, T { "COMPRESS", "LIMIT" });
+            f->addRowFirst ("MODE", mode);
             for (auto* k : f->knobs) k->setFaceStyle (true);
+            f->rack = FacePanel::optoRack;
+            f->rackKnobs = f->knobs;
+            f->rackTabs = &mode;
+            mode.vertical = true; mode.reversed = true;   // LIMIT en haut, COMPRESS en bas, comme l'interrupteur
+            f->meter.vertical = true;
             return f;
         }
         case modules::parallel:

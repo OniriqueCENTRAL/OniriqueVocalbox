@@ -291,6 +291,14 @@ juce::Rectangle<float> GlassTabs::segment (int i) const
     const float u = ui::unitOf (*this);
     const auto r = getLocalBounds().toFloat().reduced (4.0f * u);
     const auto f = ui::css (ui::Face::mono, 11.0f * u, 0.14f);
+    if (vertical)
+    {
+        // en colonne : des cases de même hauteur, 4 d'écart
+        const int n = std::max (1, labels.size());
+        const float h = (r.getHeight() - 4.0f * u * (float) (n - 1)) / (float) n;
+        const int pos = reversed ? n - 1 - juce::jlimit (0, n - 1, i) : juce::jlimit (0, n - 1, i);
+        return { r.getX(), r.getY() + (float) pos * (h + 4.0f * u), r.getWidth(), h };
+    }
     std::vector<float> w;
     float total = 0.0f;
     for (auto& l : labels) { w.push_back (ui::textWidth (f, l) + 36.0f * u); total += w.back(); }
@@ -301,10 +309,16 @@ juce::Rectangle<float> GlassTabs::segment (int i) const
     return { x, r.getY(), w[(size_t) juce::jlimit (0, (int) w.size() - 1, i)] * k, r.getHeight() };
 }
 
-int GlassTabs::at (float x) const noexcept
+int GlassTabs::at (juce::Point<float> p) const noexcept
 {
+    if (vertical)
+    {
+        for (int i = 0; i < labels.size(); ++i)
+            if (segment (i).expanded (0.0f, 2.0f).contains (p.withX (segment (i).getCentreX()))) return i;
+        return reversed ? 0 : labels.size() - 1;
+    }
     for (int i = 0; i < labels.size(); ++i)
-        if (x < segment (i).getRight() + 2.0f) return i;
+        if (p.x < segment (i).getRight() + 2.0f) return i;
     return labels.size() - 1;
 }
 
@@ -351,7 +365,7 @@ void GlassTabs::paint (juce::Graphics& g)
 
 void GlassTabs::mouseDown (const juce::MouseEvent& e)
 {
-    const int i = at (e.position.x);
+    const int i = at (e.position);
     if (i == selected) return;
     if (attachment != nullptr) attachment->setValueAsCompleteGesture ((float) i);
     else { selected = i; repaint(); }
@@ -360,7 +374,7 @@ void GlassTabs::mouseDown (const juce::MouseEvent& e)
 
 void GlassTabs::mouseMove (const juce::MouseEvent& e)
 {
-    const int i = at (e.position.x);
+    const int i = at (e.position);
     if (i != hover) { hover = i; repaint(); }
 }
 
