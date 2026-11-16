@@ -65,6 +65,7 @@ namespace ids
     inline constexpr const char* fetAttack = "fetAttack";
     inline constexpr const char* fetRelease = "fetRelease";
     inline constexpr const char* fetRatio  = "fetRatio";
+    inline constexpr const char* fetRev    = "fetRevision";   // 0 BLACK (1176LN, le son d'origine du module), 1 BLUE
     inline constexpr const char* laGain    = "laGain";
     inline constexpr const char* laPeak    = "laPeakReduction";
     inline constexpr const char* laLimit   = "laLimit";
@@ -786,6 +787,9 @@ inline void addParams (std::vector<std::unique_ptr<juce::RangedAudioParameter>>&
         p.push_back (mkParam<AudioParameterFloat> (k, ParameterID { ids::pchMix, 1 }, "Pitcher Mix", NormalisableRange<float> (0.0f, 100.0f, 0.1f), 100.0f,
                                                    Attr().withLabel ("%").withStringFromValueFunction (pctText)));
     }
+
+    // ---- 1176 : la version de l'appareil, ajoutée à la fin (BLACK par défaut : les projets d'avant gardent leur son)
+    p.push_back (mkParam<AudioParameterChoice> (k, ParameterID { ids::fetRev, 1 }, "1176 Revision", StringArray { "BLACK", "BLUE" }, 0));
 
     // ---- les macros, le rôle de la voix et sa place dans le panoramique (réglages généraux : un seul exemplaire)
     if (k == 0)

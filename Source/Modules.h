@@ -92,7 +92,7 @@ inline const std::vector<juce::String>& paramIds (int type)
             add (peq, { ids::peqOn[b], ids::peqType[b], ids::peqFreq[b], ids::peqGain[b], ids::peqQ[b], ids::peqSlope[b], ids::peqDyn[b], ids::peqThr[b] });
         add (analog, { ids::eqOn, ids::low, ids::mud, ids::high, ids::air, ids::lowFreq, ids::lowCut });
         add (sat, { ids::satOn, ids::drive, ids::satType, ids::satMix, ids::satOutput, ids::satTone, ids::satWarmth, ids::satAir, ids::satBias, ids::satDynamics });
-        add (fet, { ids::fetOn, ids::fetIn, ids::fetOut, ids::fetAttack, ids::fetRelease, ids::fetRatio });
+        add (fet, { ids::fetOn, ids::fetIn, ids::fetOut, ids::fetAttack, ids::fetRelease, ids::fetRatio, ids::fetRev });
         add (opto, { ids::optoOn, ids::laGain, ids::laPeak, ids::laLimit });
         add (multi, { ids::mbOn, ids::mbX[0], ids::mbX[1], ids::mbX[2], ids::mbAttack, ids::mbRelease, ids::mbOutput });
         for (int b = 0; b < 4; ++b) add (multi, { ids::mbThr[b], ids::mbGain[b], ids::mbSolo[b] });

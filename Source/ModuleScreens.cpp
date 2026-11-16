@@ -1704,6 +1704,7 @@ public:
     Rack rack = none;
     std::vector<StarKnob*> rackKnobs;
     GlassTabs* rackTabs = nullptr;    // RATIO (1176) ou MODE (LA-2A)
+    GlassTabs* revTabs = nullptr;     // BLACK / BLUE (1176), au-dessus du VU : ne change que le son
 
     void layoutRack()
     {
@@ -1726,12 +1727,15 @@ public:
         };
         auto vuIn = [&] (juce::Rectangle<float> area)
         {
-            plate = area.removeFromBottom (44.0f * u);
-            area.removeFromBottom (8.0f * u);
+            plate = area.removeFromBottom (60.0f * u);
+            area.removeFromBottom (4.0f * u);
+            const float pillH = revTabs != nullptr ? 48.0f * u : 0.0f;   // la version (BLACK / BLUE), au-dessus du VU
             float w = std::min (area.getWidth(), 440.0f * u), h = w * 195.0f / 320.0f;
-            if (h > area.getHeight()) { h = area.getHeight(); w = h * 320.0f / 195.0f; }
+            if (h > area.getHeight() - pillH) { h = area.getHeight() - pillH; w = h * 320.0f / 195.0f; }
             const auto v = juce::Rectangle<float> (w, h).withCentre ({ area.getCentreX(), area.getBottom() - h * 0.5f });
             vu.setBounds (v.toNearestInt());
+            if (revTabs != nullptr)
+                revTabs->setBounds (juce::Rectangle<float> (180.0f * u, 30.0f * u).withCentre ({ v.getCentreX(), v.getY() - 8.0f * u }).toNearestInt());
             plate = plate.withSizeKeepingCentre (std::min (plate.getWidth(), std::max (w, 300.0f * u)), plate.getHeight());
         };
 
@@ -1812,20 +1816,19 @@ public:
         g.setFont (ui::css (ui::Face::display, 12.0f * u, 0.2f));
         for (auto& [name, area] : captions)
             g.drawText (name, area, juce::Justification::centred, false);
-        // la plaque du modèle sous le VU : le nom en grand, l'appareil en petit, un liseré argent
+        // sous le VU : ONIRIQUE, le modèle en grand en braise, l'appareil en petit
         if (! plate.isEmpty())
         {
-            g.setColour (juce::Colours::black.withAlpha (0.35f));
-            g.fillRoundedRectangle (plate, 8.0f * u);
-            g.setColour (juce::Colour (0xff8d8f96).withAlpha (0.55f));
-            g.drawRoundedRectangle (plate.reduced (0.5f * u), 8.0f * u, 1.0f * u);
-            auto pr = plate.reduced (16.0f * u, 0.0f);
-            g.setColour (juce::Colour (0xffe9e9ec));
-            g.setFont (ui::css (ui::Face::display, 15.0f * u, 0.3f));
-            g.drawText (title, pr, juce::Justification::centredLeft, false);
-            g.setColour (cEmber.interpolatedWith (juce::Colour (0xffe9e9ec), 0.35f));
-            g.setFont (ui::css (ui::Face::mono, 10.0f * u, 0.14f));
-            g.drawText (subtitle, pr, juce::Justification::centredRight, false);
+            auto n = plate;
+            g.setFont (ui::css (ui::Face::display, 9.5f * u, 0.3f));
+            g.setColour (juce::Colour (0xffF4ECEC).withAlpha (0.7f));
+            g.drawText ("ONIRIQUE", n.removeFromTop (14.0f * u), juce::Justification::centred, false);
+            g.setFont (ui::css (ui::Face::display, 24.0f * u, 0.12f));
+            g.setColour (cEmber);
+            g.drawText (title, n.removeFromTop (28.0f * u), juce::Justification::centred, false);
+            g.setFont (ui::css (ui::Face::body, 8.5f * u, 0.18f));
+            g.setColour (juce::Colour (0xff8c8d93));
+            g.drawText (subtitle, n, juce::Justification::centred, false);
         }
     }
 
@@ -4339,6 +4342,9 @@ static std::unique_ptr<ModulePanel> buildModulePanel (OniriqueVocalBoxAudioProce
             f->rackTabs = &ratio;
             ratio.vertical = true; ratio.reversed = true;
             f->meter.vertical = true;
+            auto& rev = f->tabs (ids::fetRev, T { "BLACK", "BLUE" });
+            rev.round = true;
+            f->revTabs = &rev;
             return f;
         }
         case modules::opto:

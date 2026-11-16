@@ -36,6 +36,12 @@ namespace onirique
       étouffée ; une réduction qui dure garde son relâchement normal.
     - FER DE SORTIE : le transformateur ne sature que dans le grave (< 120 Hz), un peu plus quand la réduction est forte :
       la voix comprimée garde son poids au lieu de s'amincir.
+
+    DEUX VERSIONS (réglage « 1176 Revision ») :
+    - BLACK : le 1176LN (faible bruit), le son d'origine du module : propre, serré.
+    - BLUE : la première génération (« bluestripe »), plus colorée : plus d'harmonique 2 et un peu de 3 avec la réduction,
+      un étage classe A qui arrondit davantage, un fer qui sature plus tôt, et des médiums un peu en avant (+1.2 dB vers
+      1.8 kHz). Mêmes temps d'attaque et de relâchement.
 */
 class FetCompressor
 {
@@ -50,6 +56,7 @@ public:
         scHp.setCoeffs (BiquadCoeffs::highpass (fs, 90.0, 0.5412));
         scHp2.setCoeffs (BiquadCoeffs::highpass (fs, 90.0, 1.3066));
         scHf.setCoeffs (BiquadCoeffs::highShelf (fs, std::min (4000.0, 0.4 * fs), 0.7, -3.0));
+        mids.setCoeffs (BiquadCoeffs::peaking (fs, std::min (1800.0, 0.4 * fs), 0.8, 1.2));
         slowC = coefFor (0.040);
         briefRel = coefFor (0.025);
         rmsC = coefFor (0.003);
@@ -63,7 +70,7 @@ public:
     void reset() noexcept
     {
         gr = mem = ms = grSlow = 0.0f;
-        dc.reset(); scHp.reset(); scHp2.reset(); scHf.reset();
+        dc.reset(); scHp.reset(); scHp2.reset(); scHf.reset(); mids.reset();
         iron[0] = iron[1] = 0.0f;
         grMeter.store (0.0f, std::memory_order_relaxed);
     }
@@ -85,6 +92,9 @@ public:
         }
     }
 
+    // 0 BLACK, 1 BLUE
+    void setRevision (int r) noexcept { const bool b = r == 1; if (b && ! blue) mids.reset(); blue = b; }
+
     static float attackSeconds (float knob) noexcept  { return 800.0e-6f * std::pow (20.0f / 800.0f, (knob - 1.0f) / 6.0f); }
     static float releaseSeconds (float knob) noexcept { return 1.1f * std::pow (0.05f / 1.1f, (knob - 1.0f) / 6.0f); }
 
@@ -95,7 +105,8 @@ public:
         static constexpr float kKnee[]  { 8.0f, 6.0f, 5.0f, 4.0f, 3.0f };
         const float k = kSlope[ratio], thr = kThr[ratio], knee = kKnee[ratio];
         const bool all = (ratio == 4);
-        const float h2 = all ? 0.16f : 0.07f;
+        const float h2 = blue ? (all ? 0.22f : 0.11f) : (all ? 0.16f : 0.07f);
+        const float h3 = blue ? 0.04f : 0.0f, classA = blue ? 0.10f : 0.06f;
         const float rmsShare = all ? 0.0f : 0.4f;   // ALL : la crête seule
 
         float peakGr = 0.0f;
@@ -143,15 +154,19 @@ public:
 
             const float g = (gr > 1.0e-6f ? dbToGain (-gr) : 1.0f) * gi;
             const float fet = h2 * std::min (1.0f, gr / 12.0f);
-            const float ironDrive = 1.2f + 0.08f * gr;
+            const float ironDrive = blue ? 1.5f + 0.10f * gr : 1.2f + 0.08f * gr;
+            const float odd = h3 * std::min (1.0f, gr / 12.0f);
             for (int c = 0; c < numCh; ++c)
             {
                 float y = ch[c][i] * g;
                 y += fet * y * y;                            // FET : harmonique 2 avec la réduction (DC retiré ensuite)
-                y = y / (1.0f + 0.06f * y * y);              // étage classe A : crêtes arrondies
+                y -= odd * y * y * y;                        // BLUE : un peu d'harmonique 3
+                y = y / (1.0f + classA * y * y);             // étage classe A : crêtes arrondies
                 iron[c] += ironC * (y - iron[c]);            // fer : seul le grave sature
                 y += std::tanh (ironDrive * iron[c]) / ironDrive - iron[c];
-                ch[c][i] = dc.process (y, c) * go;
+                y = dc.process (y, c);
+                if (blue) y = mids.process (y, c);           // BLUE : les médiums un peu en avant
+                ch[c][i] = y * go;
             }
         }
         grMeter.store (peakGr, std::memory_order_relaxed);
@@ -166,7 +181,7 @@ public:
         atk = o.atk; relBase = o.relBase; invRel = o.invRel; gr = o.gr; mem = o.mem; ms = o.ms; grSlow = o.grSlow;
         rmsC = o.rmsC; memUp = o.memUp; memDown = o.memDown; ironC = o.ironC; slowC = o.slowC; briefRel = o.briefRel;
         iron[0] = o.iron[0]; iron[1] = o.iron[1];
-        inS = o.inS; outS = o.outS; dc = o.dc; scHp = o.scHp; scHp2 = o.scHp2; scHf = o.scHf;
+        inS = o.inS; outS = o.outS; dc = o.dc; scHp = o.scHp; scHp2 = o.scHp2; scHf = o.scHf; mids = o.mids; blue = o.blue;
     }
 
 private:
@@ -191,10 +206,11 @@ private:
     double fs = 44100.0;
     float atkKnob = 3.0f, relKnob = 5.0f;
     int ratio = 0;
+    bool blue = false;
     float atk = 0.5f, relBase = 0.2f, invRel = 1.0e-4f, gr = 0.0f, mem = 0.0f, ms = 0.0f, grSlow = 0.0f;
     float rmsC = 0.0f, memUp = 0.0f, memDown = 0.0f, ironC = 0.0f, slowC = 0.0f, briefRel = 0.0f, iron[2] {};
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> inS { 1.0f }, outS { 1.0f };
-    Biquad dc, scHp, scHp2, scHf;
+    Biquad dc, scHp, scHp2, scHf, mids;
     std::atomic<float> grMeter { 0.0f };
 };
 } // namespace onirique

@@ -808,16 +808,17 @@ public:
     Fet (juce::AudioProcessorValueTreeState& s, int k) : ChainModule (s, modules::fet, k)
     {
         in = raw (ids::fetIn); out = raw (ids::fetOut); atk = raw (ids::fetAttack); rel = raw (ids::fetRelease); ratio = raw (ids::fetRatio);
+        rev = raw (ids::fetRev);
     }
     float getReductionDb() const noexcept override { return engine.getGainReductionDb(); }
 
 private:
     void prepareEngine (double rate, int, int) override { engine.prepare (rate); }
-    void updateEngine (bool, bool snap) noexcept override { engine.setParams (juce::jlimit (-12.0f, 36.0f, f (in) + 6.0f * macro (mHold)), f (out), f (atk), f (rel), i (ratio), snap); }
+    void updateEngine (bool, bool snap) noexcept override { engine.setRevision (i (rev)); engine.setParams (juce::jlimit (-12.0f, 36.0f, f (in) + 6.0f * macro (mHold)), f (out), f (atk), f (rel), i (ratio), snap); }
     void processEngine (float* const* ch, int numCh, int n) noexcept override { engine.process (ch, numCh, n); }
     void resetEngine() noexcept override { engine.reset(); }
     FetCompressor engine;
-    std::atomic<float> *in = nullptr, *out = nullptr, *atk = nullptr, *rel = nullptr, *ratio = nullptr;
+    std::atomic<float> *in = nullptr, *out = nullptr, *atk = nullptr, *rel = nullptr, *ratio = nullptr, *rev = nullptr;
 };
 
 class Opto final : public ChainModule

@@ -1194,6 +1194,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
         // rap moderne (SCH, Niro, Damso...) : attaque et relâchement plus rapides encore, la voix reste collée et en avant
         const float fast = h.fast ? 1.0f : 0.0f;
         const float soft = juce::jlimit (0.0f, 1.0f, sung + (h.comp < -0.2f ? 0.4f : 0.0f)) * (1.0f - 0.7f * fast);
+        bool fetBlue = false;
         if (useCl1b)
         {
             // le seuil du CL1B : le niveau (en dB du 0 VU, -18 dBFS) où commence le premier dB ; au-dessus, ratio R
@@ -1221,6 +1222,25 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
             put (fet, ids::fetAttack, std::round (10.0f * atk) / 10.0f);
             put (fet, ids::fetRelease, std::round (10.0f * rel) / 10.0f);
             put (fet, ids::fetRatio, h.comp > 0.6f ? 1.0f : 0.0f);
+            // BLACK ou BLUE, selon la voix. Le BLUE (plus d'harmoniques, médiums en avant) épaissit une voix fine ou terne et
+            // donne du grain quand on en demande, ou au rap qui pousse ; le BLACK, propre, garde une voix déjà dure, sifflante
+            // ou brillante, et le chant naturel.
+            float blue = 0.0f;
+            if (thin) blue += 0.5f;
+            if (src.valid)
+            {
+                auto avg = [] (const auto& b) { return (b[22] + b[23] + b[24] + b[25]) / 4.0f; };   // 3 .. 6 kHz
+                const float hi = avg (src.bands) - avg (target);
+                if (hi < -2.5f) blue += 0.3f;   // terne
+                if (hi > 2.0f) blue -= 0.4f;    // déjà brillante
+                if (src.sibilance > kDefaultSib + 3.0f) blue -= 0.3f;
+                for (int r = 0; r < src.numRes; ++r)
+                    if (src.resFreq[(size_t) r] >= 1500.0f && src.resFreq[(size_t) r] <= 6000.0f && src.resDb[(size_t) r] >= 4.0f) { blue -= 0.4f; break; }
+            }
+            blue += 0.3f * h.sat + 0.3f * h.warm - 0.3f * h.bright - 0.3f * soft
+                    + ((h.fast || h.rapStyle) ? 0.25f : 0.0f) + (h.comp > 0.6f ? 0.15f : 0.0f);
+            fetBlue = blue >= 0.5f;
+            put (fet, ids::fetRev, fetBlue ? 1.0f : 0.0f);
             plan.modules.push_back (tag (fet));
         }
         const float grOpto = juce::jlimit (2.0f, 7.0f, 2.0f + 0.35f * need);
@@ -1231,7 +1251,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
         put (opto, ids::laGain, juce::jlimit (-12.0f, 30.0f, 0.8f * grOpto));
         plan.modules.push_back (tag (opto));
         rep.add (u8 ("Dynamique ") + juce::String (srcDr, 1) + u8 (" dB → ") + juce::String (tgtDr, 1) + u8 (" dB : ")
-                 + (useCl1b ? u8 ("CL1B (≈ −") : u8 ("1176 (≈ −")) + juce::String (juce::roundToInt (grFet))
+                 + (useCl1b ? u8 ("CL1B (≈ −") : (fetBlue ? u8 ("1176 BLUE (≈ −") : u8 ("1176 BLACK (≈ −"))) + juce::String (juce::roundToInt (grFet))
                  + u8 (" dB sur les crêtes") + (fast > 0.5f ? u8 (", attaque et relâchement rapides du rap moderne") : juce::String())
                  + u8 (") puis LA-2A (≈ −") + juce::String (juce::roundToInt (grOpto)) + " dB)");
     }
