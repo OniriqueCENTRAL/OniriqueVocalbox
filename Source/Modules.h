@@ -60,7 +60,7 @@ inline const Info& info (int type)
         { "CREATIVE", "CREATIVE FX",      "Doubleur, chorus, flanger, phone",          3, host,        ids::creativeOn },
         { "PREAMP",   "PREAMP N73",       "Préampli micro ou ligne, grain de console", 1, oversampled, ids::preampOn },
         { "CL1B",     "CL1B OPTO",        "Optique à lampe : crêtes tenues en douceur", 2, oversampled, ids::cl1bOn },
-        { "TUNER",    "ONIRIQUE TUNER",   "Justesse naturelle ou effet robot",         1, host,        ids::tuneOn },
+        { "TUNER",    "ONIRIQUE TUNER",   "Autotune naturel ou effet robot",          1, host,        ids::tuneOn },
         { "DE-CLICK", "DE-CLICK",         "Clics de bouche, salive, lèvres",           0, host,        ids::dclkOn },
         { "BREATH",   "DE-BREATH",        "Respirations baissées, pas coupées",        0, host,        ids::dbrOn },
         { "DE-VERB",  "DE-REVERB",        "La pièce retirée de la voix",               0, host,        ids::drvOn },

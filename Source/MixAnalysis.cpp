@@ -1051,7 +1051,7 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
             {
                 const float rt = std::round (60.0f - 60.0f * a);              // 0,3 : 42 ms ; 0,45 : 33 ms
                 put (s, ids::tuneRetune, rt); put (s, ids::tuneHumanize, 50.0f); put (s, ids::tuneFlex, a < 0.4f ? 30.0f : 15.0f);
-                how = u8 ("une justesse naturelle (Retune ") + juce::String (juce::roundToInt (rt)) + u8 (" ms, Humanize, Flex-Tune : les inflexions restent)");
+                how = u8 ("un autotune naturel (Retune ") + juce::String (juce::roundToInt (rt)) + u8 (" ms, Humanize, Flex-Tune : les inflexions restent)");
             }
             plan.modules.push_back (tag (s));
             const juce::String keyText = key >= 0 ? juce::String (names[key % 12]) + (key >= 12 ? u8 (" mineur") : u8 (" majeur")) + " (" + keyWhy + ")"
