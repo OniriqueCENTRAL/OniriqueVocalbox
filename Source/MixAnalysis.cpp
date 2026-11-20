@@ -696,29 +696,70 @@ Hints parseHints (const juce::String& text)
     const char* to[] { "e", "e", "e", "e", "a", "a", "i", "i", "o", "u", "u", "c", "'" };
     for (int i = 0; i < 13; ++i) t = t.replace (u8 (from[i]), to[i]);
     juce::StringArray words;
-    words.addTokens (t, " ,;:.!?/()+-\"'·", "");
+    // la ponctuation sépare les idées : une négation ne la traverse pas (« voix pop, pas de delay »)
+    for (auto* p : { ",", ";", ":", ".", "!", "?" }) t = t.replace (p, " | ");
+    words.addTokens (t, " /()+-\"'·", "");
     words.removeEmptyStrings();
     const juce::String joined = " " + words.joinIntoString (" ") + " ";
     juce::StringArray used;
-    auto has = [&] (std::initializer_list<const char*> keys)
+    /*  Une occurrence niée ne compte pas : « compresse pas », « sans reverb », « pas de delay », « pas d'autotune », « aucun
+        effet » (retours ONR Neural Learning du 16/11 : « compresse pas » ajoutait de la compression). « pas trop de » et « pas
+        assez de » ne sont pas des refus. La négation se cherche dans les 3 mots d'avant, ou juste après (« compresse pas »). */
+    auto negatedAt = [&joined] (int start, int end)
+    {
+        juce::StringArray before, after;
+        before.addTokens (joined.substring (0, start), " ", ""); before.removeEmptyStrings();
+        after.addTokens (joined.substring (end), " ", ""); after.removeEmptyStrings();
+        // « compresse pas » ; mais pas « pop pas de delay » (ce « pas de » nie le mot suivant)
+        if (after.size() > 0 && after[0] == "pas"
+            && ! (after.size() > 1 && juce::StringArray { "de", "d", "du", "des", "trop", "assez" }.contains (after[1]))) return true;
+        bool neg = false;
+        int from = juce::jmax (0, before.size() - 3);
+        for (int i = before.size() - 1; i >= from; --i) if (before[i] == "|") { from = i + 1; break; }   // pas au-delà de la ponctuation
+        for (int i = from; i < before.size(); ++i)
+        {
+            const auto& w = before[i];
+            if (w == "trop" || w == "assez" || w == "moins" || w == "plus" || w == "peu") neg = false;   // « pas trop de », « sans trop de »
+            else if (w == "sans" || w == "aucun" || w == "aucune" || w == "zero" || w == "without" || w == "no" || w == "ni" || w == "jamais")
+                neg = true;
+            else if (w == "pas" && i + 1 < before.size() && (before[i + 1] == "de" || before[i + 1] == "d" || before[i + 1] == "du" || before[i + 1] == "des"))
+                neg = true;
+        }
+        return neg;
+    };
+    // pour chaque mot clé : présent (sans négation) et refusé (une occurrence niée)
+    auto scan = [&] (std::initializer_list<const char*> keys, bool& refused)
     {
         bool any = false;
+        refused = false;
         for (auto* k : keys)
-            if (joined.contains (" " + juce::String (k) + " ") || (juce::String (k).length() > 5 && joined.contains (juce::String (k))))
+        {
+            const juce::String key (k), spaced = " " + key + " ";
+            const bool loose = key.length() > 5;
+            for (int from = 0;;)
             {
-                any = true;
-                juce::StringArray kw; kw.addTokens (k, " ", ""); used.addArray (kw);
+                int at = joined.indexOf (from, spaced), len = spaced.length();
+                if (at < 0 && loose) { at = joined.indexOf (from, key); len = key.length(); }
+                if (at < 0) break;
+                { juce::StringArray kw; kw.addTokens (k, " ", ""); used.addArray (kw); }   // compris, même refusé (pas un nom d'artiste)
+                if (negatedAt (at, at + len)) refused = true; else any = true;
+                from = at + len;
             }
+        }
         return any;
     };
+    auto has = [&] (std::initializer_list<const char*> keys) { bool r = false; return scan (keys, r); };
+    auto refuses = [&] (std::initializer_list<const char*> keys) { bool r = false; const bool yes = scan (keys, r); return r && ! yes; };
+    auto ask = [&h] (int type) { if (std::find (h.asked.begin(), h.asked.end(), type) == h.asked.end()) h.asked.push_back (type); };
     auto note = [&h] (const char* s) { h.understood.addIfNotAlreadyThere (juce::String::fromUTF8 (s)); };
 
     // styles
     if (has ({ "chant", "chante", "chantee", "chanteur", "chanteuse", "sung", "singing", "singer", "melodique", "melodic", "ballade", "ballad", "toplines" })) { h.sung = 0.6f; note ("chant"); }
     // la chaîne d'enregistrement demandée : un préampli, le compresseur des crêtes, la vitesse
-    if (has ({ "preampli", "preamp", "neve", "1073", "console" })) { h.preamp = juce::jmax (h.preamp, 0.5f); h.preampMic = true; note ("préampli"); }
-    if (has ({ "cl1b", "tubetech", "tube-tech" })) { h.peakComp = 1; note ("CL1B"); }
-    if (has ({ "1176", "fet" })) { h.peakComp = 0; note ("1176"); }
+    bool askedPre = false, askedComp = false, askedColour = false, askedSat = false;
+    if (has ({ "preampli", "preamp", "neve", "1073", "console" })) { h.preamp = juce::jmax (h.preamp, 0.5f); h.preampMic = true; askedPre = true; note ("préampli"); }
+    if (has ({ "cl1b", "tubetech", "tube-tech" })) { h.peakComp = 1; askedComp = true; note ("CL1B"); }
+    if (has ({ "1176", "fet" })) { h.peakComp = 0; askedComp = true; note ("1176"); }
     if (has ({ "punchy", "agressif", "agressive", "nerveux", "nerveuse", "percutant", "percutante" })) { h.fast = true; note ("compression rapide"); }
     if (has ({ "rap", "hip hop", "hiphop", "drill", "trap", "rap fr", "boom bap" })) { h.rapStyle = true; h.comp += 0.5f; h.bright += 0.3f; h.air += 0.2f; if (h.reverb < 0) h.reverb = 0.12f; note ("rap"); }
     if (has ({ "rnb", "r&b", "r b", "soul", "neo soul" })) { h.warm += 0.4f; h.air += 0.3f; h.comp += 0.2f; h.reverb = juce::jmax (h.reverb, 0.3f); h.doubler += 0.3f; note ("R&B"); }
@@ -729,7 +770,8 @@ Hints parseHints (const juce::String& text)
     if (has ({ "ballade", "ballad", "piano voix" })) { h.reverb = juce::jmax (h.reverb, 0.4f); h.reverbSize = 0.8f; h.comp -= 0.1f; note ("ballade"); }
     if (has ({ "edm", "house", "techno", "dance", "electro" })) { h.bright += 0.4f; h.air += 0.4f; h.delay = juce::jmax (h.delay, 0.35f); h.comp += 0.4f; note ("électro"); }
     // l'accordage (TUNER) : refusé, naturel, ou l'effet robot
-    if (has ({ "sans autotune", "pas d autotune", "sans tune", "sans auto tune", "no autotune", "sans accordage" })) { h.tune = -1.0f; note ("sans autotune"); }
+    if (has ({ "sans autotune", "pas d autotune", "sans tune", "sans auto tune", "no autotune", "sans accordage" })
+        || refuses ({ "autotune", "auto tune", "tune", "tuner", "accordage" })) { h.tune = -1.0f; note ("sans autotune"); }
     else if (has ({ "hard tune", "hardtune", "robot", "robotique", "t pain", "tpain", "autotune fort", "autotune a fond", "gros autotune", "full autotune",
                     "effet autotune", "autotune marque", "autotune prononce" })) { h.tune = 1.0f; note ("autotune marqué"); }
     else if (has ({ "autotune", "auto tune", "tune", "tuner", "accorde", "accordee", "justesse", "pitch", "pitch correction" }))
@@ -741,10 +783,10 @@ Hints parseHints (const juce::String& text)
     { h.cleanRoom = true; note ("la pièce retirée"); }
 
     // couleurs
-    if (has ({ "aere", "aeree", "aerien", "aerienne", "air", "airy", "brillant", "brillante", "bright", "clair", "claire", "cristal", "cristalline", "crisp" })) { h.air += 0.6f; h.bright += 0.4f; note ("aérée"); }
-    if (has ({ "sombre", "dark", "fonce", "grave", "lourd", "lourde" })) { h.dark += 0.6f; note ("sombre"); }
-    if (has ({ "chaud", "chaude", "warm", "doux", "douce", "mellow", "velours", "smooth", "rond", "ronde" })) { h.warm += 0.6f; note ("chaude"); }
-    if (has ({ "agressif", "agressive", "aggressive", "punch", "punchy", "en avant", "upfront", "devant", "serre", "serree", "compresse", "compressee", "tight", "dense" })) { h.comp += 0.7f; note ("en avant"); }
+    if (has ({ "aere", "aeree", "aerien", "aerienne", "air", "airy", "brillant", "brillante", "bright", "clair", "claire", "cristal", "cristalline", "crisp" })) { h.air += 0.6f; h.bright += 0.4f; askedColour = true; note ("aérée"); }
+    if (has ({ "sombre", "dark", "fonce", "grave", "lourd", "lourde" })) { h.dark += 0.6f; askedColour = true; note ("sombre"); }
+    if (has ({ "chaud", "chaude", "warm", "doux", "douce", "mellow", "velours", "smooth", "rond", "ronde" })) { h.warm += 0.6f; askedColour = true; note ("chaude"); }
+    if (has ({ "agressif", "agressive", "aggressive", "punch", "punchy", "en avant", "upfront", "devant", "serre", "serree", "compresse", "compressee", "tight", "dense" })) { h.comp += 0.7f; askedComp = true; note ("en avant"); }
     if (has ({ "naturel", "naturelle", "natural", "leger", "legere", "light", "dynamique", "ouvert", "ouverte" })) { h.comp -= 0.6f; note ("naturelle"); }
     // espace
     if (has ({ "reverb", "reverbe", "reverberation", "espace", "spacieux", "spacieuse", "hall", "cathedrale", "cathedral", "atmospherique", "atmosphere", "ambiance", "ambient" })) { h.reverb = juce::jmax (h.reverb, 0.45f); h.reverbExplicit = true; h.reverbSize = juce::jmax (h.reverbSize, 0.6f); note ("réverbe"); }
@@ -755,19 +797,66 @@ Hints parseHints (const juce::String& text)
     if (has ({ "longue", "long", "grande", "large reverb", "big" })) h.reverbSize = juce::jmax (h.reverbSize, 0.8f);
     if (has ({ "courte", "short", "petite", "room", "piece" })) h.reverbSize = 0.15f;
     // texture
-    if (has ({ "sature", "saturee", "saturation", "grain", "granuleux", "distordu", "distorsion", "distortion", "crunch", "gras", "grasse", "sale", "dirty" })) { h.sat += 0.6f; note ("saturée"); }
+    if (has ({ "sature", "saturee", "saturation", "grain", "granuleux", "gras", "grasse" })) { h.sat += 0.6f; askedSat = true; note ("saturée"); }
+    /*  La distorsion : le PREAMP N73 poussé fort en MIC (son gain pousse le grain, pas le volume), plutôt qu'une SATURATION LAB
+        légère. Retour ONR Neural Learning du 11/11 : sur « distortion claire double voix », SATURATION LAB (drive 5) a été poussée
+        à fond puis retirée, et le N73 gardé. « claire » garde la brillance (les couleurs plus haut). */
+    if (has ({ "distordu", "distordue", "distorsion", "distortion", "disto", "crunch", "sale", "dirty", "fuzz", "overdrive" }))
+    { h.distortion = true; h.preamp = juce::jmax (h.preamp, 0.9f); h.preampMic = true; askedPre = true; note ("distorsion (préampli poussé)"); }
     if (has ({ "tape", "bande", "cassette", "lofi", "lo fi", "vintage", "retro", "old school" })) { h.sat += 0.4f; h.satType = 2; h.dark += 0.2f; note ("bande / vintage"); }
     if (has ({ "tube", "lampe", "lampes", "valve" })) { h.sat += 0.4f; h.satType = 0; note ("lampe"); }
     if (has ({ "analog", "analogique", "console" })) { h.sat += 0.3f; h.satType = 1; note ("analogique"); }
     // tenue
-    if (has ({ "multiband", "multibande", "multi band", "multi bande", "multibandes" })) { h.controlled = true; note ("multiband"); }
+    if (has ({ "multiband", "multibande", "multi band", "multi bande", "multibandes" })) { h.controlled = true; askedComp = true; note ("multiband"); }
     if (has ({ "controle", "controlee", "maitrise", "maitrisee", "carre", "carree", "propre", "pro", "professionnel", "radio", "commercial", "commerciale", "stable", "controlled", "polished", "clean" })) { h.controlled = true; h.comp += 0.2f; note ("bien contrôlée"); }
     if (has ({ "parallele", "parallel", "densite", "epais", "epaisse", "punch", "punchy", "gros", "grosse", "massive", "massif", "fat" })) { h.parallel = true; note ("dense"); }
     // effets
-    if (has ({ "telephone", "phone", "radio", "megaphone", "talkie" })) { h.phone = 0.7f; note ("téléphone"); }
+    if (has ({ "telephone", "phone", "radio", "megaphone", "talkie" })) { h.phone = 0.7f; h.phoneAsked = has ({ "telephone", "phone", "megaphone", "talkie" }); note ("téléphone"); }
     if (has ({ "double", "doublee", "doubled", "doubleur", "doubler", "stereo", "large", "wide", "epaisse", "thick" })) { h.doubler = juce::jmax (h.doubler, 0.6f); note ("doublée"); }
     if (has ({ "chorus" })) { h.chorus = 0.6f; note ("chorus"); }
     if (has ({ "flanger", "flange", "avion", "jet" })) { h.flanger = 0.6f; note ("flanger"); }
+
+    // ---- ce que la demande refuse en toutes lettres (« compresse pas », « sans reverb », « pas d'EQ », « aucun effet »)
+    if (refuses ({ "compresse", "compressee", "compresser", "compression", "compresseur", "compresseurs", "comp" }))
+    { h.noComp = true; h.comp = juce::jmin (h.comp, -0.6f); h.controlled = false; h.parallel = false; askedComp = false; note ("sans compression"); }
+    if (refuses ({ "reverb", "reverbe", "reverberation" })) { h.reverb = 0.0f; h.reverbExplicit = true; note ("sans réverbe"); }
+    if (refuses ({ "delay", "echo", "echos" })) { h.delay = 0.0f; note ("sans delay"); }
+    if (refuses ({ "saturation", "sature", "saturee", "grain", "distorsion", "distortion", "disto" })) { h.sat = 0.0f; h.satType = -1; h.distortion = false; askedSat = false; note ("sans saturation"); }
+    if (refuses ({ "eq", "egaliseur", "egalisation", "equaliseur", "equalizer" })) { h.noEq = true; note ("sans EQ"); }
+    if (refuses ({ "nettoyage", "nettoyages", "nettoyer", "traitement", "correction", "corrections" })) { h.noClean = true; note ("sans nettoyage"); }
+    if (refuses ({ "telephone", "phone" })) { h.phone = 0.0f; h.phoneAsked = false; }
+    if (refuses ({ "doubleur", "doubler", "doublee" })) h.doubler = 0.0f;
+    if (refuses ({ "effet", "effets", "fx" })) { h.phone = h.doubler = h.chorus = h.flanger = 0.0f; h.phoneAsked = false; note ("sans effet"); }
+
+    // ---- « juste un effet téléphone », « seulement de la reverb », « uniquement l'autotune » : rien d'autre que ce qui est
+    //      demandé (retour du 16/11 : tout a été retiré sauf PHONE). « juste » seul (« une voix juste ») ne compte pas.
+    {
+        juce::StringArray w; w.addTokens (joined, " ", ""); w.removeEmptyStrings();
+        const juce::StringArray after { "un", "une", "l", "le", "la", "les", "de", "du", "des", "d", "effet", "ca", "cela", "ce" };
+        for (int i = 0; i < w.size(); ++i)
+        {
+            const bool next = i + 1 < w.size() && after.contains (w[i + 1]);
+            if (((w[i] == "juste" || w[i] == "just") && next) || w[i] == "seulement" || w[i] == "uniquement" || w[i] == "only"
+                || (w[i] == "rien" && i + 1 < w.size() && (w[i + 1] == "d" || w[i + 1] == "que")))
+                h.only = true;
+        }
+    }
+    // les modules demandés en toutes lettres (ce que « juste » garde)
+    if (h.phoneAsked && h.phone > 0.0f) ask (modules::phone);
+    if (h.doubler > 0.0f) ask (modules::doubler);
+    if (h.chorus > 0.0f) ask (modules::chorus);
+    if (h.flanger > 0.0f) ask (modules::flanger);
+    if (h.reverbExplicit && h.reverb > 0.0f) ask (modules::reverb);
+    if (h.delay > 0.0f) ask (modules::delay);
+    if (h.tune > 0.0f) ask (modules::tuner);
+    if (askedSat && h.sat > 0.0f) ask (modules::sat);
+    if (askedPre && h.preamp > 0.0f) ask (modules::preamp);
+    if (askedComp && ! h.noComp) for (int t : { (int) modules::fet, (int) modules::opto, (int) modules::cl1b, (int) modules::multi, (int) modules::parallel }) ask (t);
+    if (h.cleanClicks) ask (modules::declick);
+    if (h.cleanBreath) ask (modules::debreath);
+    if (h.cleanRoom) ask (modules::dereverb);
+    if (askedColour && ! h.noEq) ask (modules::analog);
+    if (h.only && ! h.asked.empty()) note ("rien d'autre que ce qui est demandé");
 
     // les artistes que le cerveau connaît : leur façon de mixer la voix
     if (const auto brain = brainArtists())
@@ -784,7 +873,8 @@ Hints parseHints (const juce::String& text)
     static const juce::StringArray stop { "de", "la", "le", "les", "du", "des", "voix", "voice", "vocal", "vocals", "type", "facon", "style", "comme", "like",
         "un", "une", "et", "and", "avec", "with", "mix", "mixe", "mixee", "very", "tres", "plus", "more", "a", "en", "au", "aux", "sur", "pour", "the", "of",
         "sound", "son", "ma", "mon", "ta", "ton", "sa", "ses", "mes", "tes", "je", "veux", "want", "qui", "que", "dans", "in", "on", "my", "your", "un", "peu",
-        "bit", "little", "fa", "ex", "fr", "us", "uk", "bien", "well", "compression", "compresseur", "voix", "chaine", "chain", "bon", "bonne", "beaucoup", "lot", "pas", "trop", "too", "not", "no", "sans", "without" };
+        "bit", "little", "fa", "ex", "fr", "us", "uk", "bien", "well", "compression", "compresseur", "voix", "chaine", "chain", "bon", "bonne", "beaucoup", "lot", "pas", "trop", "too", "not", "no", "sans", "without",
+        "juste", "just", "seulement", "uniquement", "only", "rien", "autre", "effet", "effets", "intro", "outro", "refrain", "couplet", "aucun", "aucune", "ni" };
     for (auto& w : words)
         if (w.length() >= 3 && ! stop.contains (w) && ! used.contains (w) && ! w.containsOnly ("0123456789"))
             h.unknown.addIfNotAlreadyThere (w);
@@ -838,11 +928,11 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
     switch (h.role)
     {
         case 1: h.dark += 0.2f; h.comp += 0.3f; h.reverb = juce::jmax (h.reverb, 0.0f) + 0.15f; h.doubler = juce::jmax (h.doubler, 0.55f);
-                h.preamp = 0.0f; if (h.tune >= 0.0f && h.tune < 0.5f) h.tune = 0.5f; roleOut = -4.0f; break;
+                if (! h.distortion) h.preamp = 0.0f; if (h.tune >= 0.0f && h.tune < 0.5f) h.tune = 0.5f; roleOut = -4.0f; break;   // la distorsion demandée garde son préampli
         case 2: h.phone = juce::jmax (h.phone, 0.3f); h.delay = juce::jmax (h.delay, 0.0f) + 0.35f; h.reverb = juce::jmax (h.reverb, 0.0f) + 0.1f;
-                h.comp += 0.4f; h.preamp = 0.0f; roleOut = -3.0f; rolePan = 30.0f; break;
+                h.comp += 0.4f; if (! h.distortion) h.preamp = 0.0f; roleOut = -3.0f; rolePan = 30.0f; break;
         case 3: h.comp += 0.5f; h.dark += 0.1f; h.reverb = h.reverb > 0.0f ? h.reverb * 0.5f : 0.05f; h.delay = h.delay > 0.0f ? h.delay * 0.4f : 0.0f;
-                h.doubler = 0.0f; h.preamp = 0.0f; if (h.tune >= 0.0f && h.tune < 0.6f) h.tune = 0.6f; roleOut = -6.0f; break;
+                h.doubler = 0.0f; if (! h.distortion) h.preamp = 0.0f; if (h.tune >= 0.0f && h.tune < 0.6f) h.tune = 0.6f; roleOut = -6.0f; break;
         default: break;
     }
     h.dark = juce::jlimit (0.0f, 1.0f, h.dark); h.comp = juce::jlimit (-1.0f, 1.0f, h.comp);
@@ -986,14 +1076,16 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
     {
         const float a = juce::jlimit (0.2f, 1.0f, h.preamp > 0.0f ? h.preamp : (thin ? 0.45f : 0.35f) + 0.3f * h.warm);
         const bool mic = h.preampMic;
-        const float gdb = mic ? 22.0f + 8.0f * a : 9.0f * a;   // MIC +22 .. +30 dB ; LINE 0 .. +9 dB
+        // MIC +22 .. +30 dB ; LINE 0 .. +9 dB ; la distorsion demandée : MIC +38 dB (le grain franc d'un préampli poussé)
+        const float gdb = h.distortion ? 38.0f : mic ? 22.0f + 8.0f * a : 9.0f * a;
         Setting s { modules::preamp, 0, {} };
         put (s, ids::preampMic, mic ? 1.0f : 0.0f);
         put (s, ids::preampGain, std::round (gdb * 10.0f) / 10.0f);
         plan.modules.insert (plan.modules.begin(), tag (s));   // le tout premier de la chaîne, comme à l'enregistrement
         const int db = juce::roundToInt (gdb);
         rep.add (u8 ("Préampli N73 en tête (") + (mic ? "MIC +" : "LINE ") + juce::String (db) + u8 (" dB) : ")
-                 + (h.preamp > 0.0f ? (h.preampOf.isNotEmpty() ? u8 ("comme dans la chaîne d'enregistrement de ") + h.preampOf : u8 ("demandé"))
+                 + (h.distortion ? u8 ("poussé pour la distorsion demandée")
+                    : h.preamp > 0.0f ? (h.preampOf.isNotEmpty() ? u8 ("comme dans la chaîne d'enregistrement de ") + h.preampOf : u8 ("demandé"))
                                     : thin ? u8 ("de la densité pour une voix un peu fine") : u8 ("de la chaleur")));
     }
 
@@ -1457,6 +1549,58 @@ Plan buildPlan (const Profile& src, const Profile& tgtIn, const Hints& hIn)
         juce::StringArray lines;
         for (int i = s.repAt; i < end; ++i) lines.add (rep[i]);
         s.why = lines.joinIntoString (u8 (" · "));
+    }
+
+    /*  ---- CE QUE LA DEMANDE ÉCARTE, appliqué en dernier sur la chaîne construite (ONR Neural Learning, retours des 11 et 16/11) :
+        - « juste … », « seulement … » : rien d'autre que les modules demandés (« juste un bon effet téléphone » → PHONE) ;
+        - « compresse pas », « sans EQ », « sans nettoyage » : ces modules-là partent ;
+        - l'effet téléphone demandé : une voix sèche, ni accordée ni corrigée finement (TUNER, PARAMETRIC EQ, REVERB et DELAY
+          partent, sauf s'ils sont demandés aussi). Les lignes du compte rendu des modules retirés partent avec eux. */
+    {
+        auto isAsked = [&h] (int t) { return std::find (h.asked.begin(), h.asked.end(), t) != h.asked.end(); };
+        auto keep = [&] (const Setting& x)
+        {
+            const int t = x.type;
+            if (h.only && ! h.asked.empty()) return isAsked (t);
+            if (h.noComp && (t == modules::fet || t == modules::opto || t == modules::cl1b || t == modules::multi || t == modules::parallel)) return false;
+            if (h.noEq && (t == modules::peq || t == modules::analog)) return false;
+            if (h.noClean && (t == modules::declick || t == modules::debreath || t == modules::dereverb || t == modules::noise
+                              || t == modules::plosive || t == modules::gate || t == modules::reso)) return false;
+            if (h.phoneAsked && h.phone > 0.0f && ! isAsked (t)
+                && (t == modules::reverb || t == modules::tuner || t == modules::peq || t == modules::delay)) return false;
+            return true;
+        };
+        std::vector<Setting> kept;
+        std::vector<bool> gone;
+        juce::StringArray dropped;
+        for (const auto& x : plan.modules)
+        {
+            gone.push_back (! keep (x));
+            if (gone.back()) dropped.addIfNotAlreadyThere (modules::info (x.type).name);
+            else kept.push_back (x);
+        }
+        if (! dropped.isEmpty() && ! kept.empty())
+        {
+            // les lignes du compte rendu qui n'appartenaient qu'à des modules retirés
+            std::vector<int> owners ((size_t) rep.size(), 0), goneOwners ((size_t) rep.size(), 0);
+            for (size_t m = 0; m < plan.modules.size(); ++m)
+            {
+                const auto& x = plan.modules[m];
+                if (x.repAt < 0) continue;
+                const auto next = std::upper_bound (marks.begin(), marks.end(), x.repAt);
+                const int end = next != marks.end() ? *next : rep.size();
+                for (int i = x.repAt; i < end; ++i) { ++owners[(size_t) i]; if (gone[m]) ++goneOwners[(size_t) i]; }
+            }
+            juce::StringArray lines;
+            for (int i = 0; i < rep.size(); ++i)
+                if (owners[(size_t) i] == 0 || goneOwners[(size_t) i] < owners[(size_t) i]) lines.add (rep[i]);
+            juce::StringArray names;
+            for (const auto& x : kept) names.addIfNotAlreadyThere (modules::info (x.type).name);
+            lines.add (h.only ? u8 ("Juste ce que tu as demandé : ") + names.joinIntoString (", ")
+                              : u8 ("Écarté pour ta demande : ") + dropped.joinIntoString (", "));
+            rep = lines;
+            plan.modules = std::move (kept);
+        }
     }
     return plan;
 }

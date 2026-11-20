@@ -98,7 +98,13 @@ struct Hints
     float tune = 0.0f;           // TUNER : -1 refusé (« sans autotune »), 0 au choix, 0..1 de la justesse naturelle (0,3) à l'effet robot (1)
     juce::String tuneOf;         // l'artiste d'où vient l'accordage (compte rendu)
     bool cleanClicks = false, cleanBreath = false, cleanRoom = false;   // demandés en toutes lettres
-    int role = 0;                // LEAD, BACKS, ADLIBS, DOUBLES (le rôle choisi dans VOCALBOX)
+    // Ce que la demande refuse ou limite (retours ONR Neural Learning du 16/11 : « compresse pas, juste un bon effet téléphone »)
+    bool only = false;           // « juste », « seulement », « uniquement » : rien d'autre que ce qui est demandé
+    bool noComp = false, noEq = false, noClean = false;   // refusés en toutes lettres (« compresse pas », « sans EQ »)
+    bool phoneAsked = false;     // l'effet téléphone demandé en toutes lettres (pas celui du rôle ADLIBS)
+    bool distortion = false;     // « distorsion », « disto », « crunch » : le PREAMP N73 poussé (pas une saturation légère)
+    std::vector<int> asked;      // les modules demandés en toutes lettres (modules::Type)
+    int role = 0;               // LEAD, BACKS, ADLIBS, DOUBLES (le rôle choisi dans VOCALBOX)
     int sharedKey = -1;          // la tonalité trouvée par une autre instance de VOCALBOX du projet (0..23 : majeur, +12 mineur)
     juce::StringArray understood;   // ce qui a été compris (pour le compte rendu)
     juce::StringArray unknown;      // les mots non compris (des noms d'artistes, souvent)
